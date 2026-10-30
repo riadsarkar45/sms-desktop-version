@@ -569,7 +569,7 @@ export default function Summary() {
                                     <th
                                         key={index}
                                         scope="col"
-                                        className="px-3 py-3 font-medium whitespace-normal break-words"
+                                        className="px-3 py-3 font-medium whitespace-normal wrap-break-words"
                                         style={{
                                             backgroundColor: HEADER_BG,
                                             position: 'sticky',
@@ -587,13 +587,13 @@ export default function Summary() {
                                         }}
                                     >
                                         <div className="flex items-center gap-1 justify-center flex-wrap">
-                                            <span className="flex-1 text-center break-words">{col}</span>
+                                            <span className="flex-1 text-center wrap-break-words">{col}</span>
                                             {isFilterable && (
                                                 <button
                                                     ref={el => filterBtnRefs.current[index] = el}
                                                     onClick={(e) => openFilterDropdown(index, e)}
                                                     title={hasFilter ? "Filter active" : "Filter"}
-                                                    className={`flex-shrink-0 flex items-center justify-center w-5 h-5 rounded transition-colors ${hasFilter
+                                                    className={`shrink-0 flex items-center justify-center w-5 h-5 rounded transition-colors ${hasFilter
                                                         ? 'bg-teal-600 text-white'
                                                         : 'text-gray-500 hover:text-gray-700 hover:bg-white/60'
                                                         }`}
@@ -661,7 +661,7 @@ export default function Summary() {
                                         <div className="flex items-center justify-center gap-2">
                                             <span
                                                 onDoubleClick={() => handleRedirect(row.jobNo)}
-                                                className="cursor-pointer hover:text-teal-700 flex-1 text-center break-words"
+                                                className="cursor-pointer hover:text-teal-700 flex-1 text-center wrap-break-words"
                                             >
                                                 {row.jobNo}
                                             </span>
@@ -673,7 +673,7 @@ export default function Summary() {
                                                             e.stopPropagation();
                                                             openEditJobModal(row.jobNo);
                                                         }}
-                                                        className="p-1.5 text-teal-600 hover:bg-teal-100 rounded-md transition-colors flex-shrink-0 disabled:opacity-50"
+                                                        className="p-1.5 text-teal-600 hover:bg-teal-100 rounded-md transition-colors shrink-0 disabled:opacity-50"
                                                         title="Edit Job Details"
                                                     >
                                                         {editLoading ? <Loader size={16} className="animate-spin" /> : <Pen size={16} />}

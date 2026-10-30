@@ -1,5 +1,5 @@
 import { X, Save, Plus } from 'lucide-react';
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { RefreshCcw } from "lucide-react";
 import useAxiosPrivate from '../../hooks/UseAxiosPrivate';
 import { usePostData } from '../../hooks/post';
@@ -55,9 +55,17 @@ const StyleReqModal = ({ setShowModal, setRawData }) => {
             hodTypeDate: '',
         }
     )
+    const [successMessage, setSuccessMessage] = useState('');
 
-    const axiosPrivate = useAxiosPrivate    ();
+    const axiosPrivate = useAxiosPrivate();
     const { postData, loading, error } = usePostData();
+
+    // Auto-hide the success message after 5 seconds
+    useEffect(() => {
+        if (!successMessage) return;
+        const timer = setTimeout(() => setSuccessMessage(''), 5000);
+        return () => clearTimeout(timer);
+    }, [successMessage]);
 
     // Grid of input DOM refs, keyed by "rowIndex-fieldIndex", so arrow keys
     // and Ctrl+D can jump/copy between cells like a spreadsheet. Rebuilt
@@ -141,7 +149,7 @@ const StyleReqModal = ({ setShowModal, setRawData }) => {
         (sum, row) => sum + (Number(row.finishRequiredQty) || 0),
         0
     );
-    
+
     const totalYarnRequiredQty = rows.reduce(
         (sum, row) => {
             const finishReq = evaluateQtyExpression(row.finishRequiredQty) || 0;
@@ -152,6 +160,8 @@ const StyleReqModal = ({ setShowModal, setRawData }) => {
     );
 
     const createNewRequirement = async () => {
+        setSuccessMessage('');
+
         const payload = {
             orderInfo,
             rows: rows.map(row => {
@@ -174,6 +184,7 @@ const StyleReqModal = ({ setShowModal, setRawData }) => {
         try {
             const res = await postData("/api/new-style-requirements", payload);
             if (res?.type === "success") {
+                setSuccessMessage(res?.message || 'Requirement created successfully.');
                 axiosPrivate.get("/api/styles").then((res) => { setRawData(res.data.data) });
             }
         } catch (e) {
@@ -209,6 +220,12 @@ const StyleReqModal = ({ setShowModal, setRawData }) => {
                     {
                         error && (
                             <div className='bg-yellow-500 p-3 rounded-md mt-3 bg-opacity-25 border-yellow-500 text-yellow-700'>{error.message}</div>
+                        )
+                    }
+
+                    {
+                        successMessage && (
+                            <div className='bg-green-500 p-3 rounded-md mt-3 bg-opacity-25 border-green-500 text-green-700'>{successMessage}</div>
                         )
                     }
 

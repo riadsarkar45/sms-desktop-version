@@ -1,8 +1,8 @@
 
-import React, { useState } from 'react';
+import React, { useContext, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import logo from '../assets/react.svg';
-import { useAuth } from '../auth/AuthContext';
+import { AuthContext, useAuth } from '../auth/AuthContext';
 
 const Login = () => {
     const [phone, setPhone] = useState('');
@@ -13,7 +13,19 @@ const Login = () => {
     const [rememberMe, setRememberMe] = useState(true);
 
     const navigate = useNavigate();
-    const { login } = useAuth();
+    const { login, user, loading: authLoading } = useAuth();
+    // console.log(user);
+
+    useEffect(() => {
+        if (authLoading) return;
+
+        if (user) {
+            setLoading(true)
+            navigate('/dashboard/home', {
+                replace: true,
+            });
+        }
+    }, [user, authLoading, navigate]);
 
     // Normalize Bangladesh mobile numbers
     const normalizePhone = (value) => {

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useFetchData } from "../../../../hooks/fetch";
+import { useFetchData } from "../../../hooks/fetch";
 
 const UseDeliveryMonths = () => {
     const { fetchData, error, loading } = useFetchData();

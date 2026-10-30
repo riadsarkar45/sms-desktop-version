@@ -1,41 +1,41 @@
 
-{
-  "$schema": "https://schema.tauri.app/config/2",
-  "productName": "sm-erp",
-  "version": "0.1.0",
-  "identifier": "com.smsourcing.desktop",
-  "build": {
-    "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
-    "frontendDist": "../dist"
-  },
-  "app": {
-    "windows": [
-      {
-        "title": "SM Sourcing ERP",
-        "width": 1440,
-        "height": 900,
-        "minWidth": 1100,
-        "minHeight": 700,
-        "center": true,
-        "resizable": true,
-        "fullscreen": false
+  {
+    "$schema": "https://schema.tauri.app/config/2",
+    "productName": "SM Sourcing",
+    "version": "0.1.0",
+    "identifier": "com.smsourcing.desktop",
+    "build": {
+      "beforeDevCommand": "npm run dev",
+      "devUrl": "http://localhost:1420",
+      "beforeBuildCommand": "npm run build",
+      "frontendDist": "../dist"
+    },
+    "app": {
+      "windows": [
+        {
+          "title": "SM Sourcing ERP",
+          "width": 1440,
+          "height": 900,
+          "minWidth": 1100,
+          "minHeight": 700,
+          "center": true,
+          "resizable": true,
+          "fullscreen": false
+        }
+      ],
+      "security": {
+        "csp": null
       }
-    ],
-    "security": {
-      "csp": null
+    },
+    "bundle": {
+      "active": true,
+      "targets": "all",
+      "icon": [
+        "icons/32x32.png",
+        "icons/128x128.png",
+        "icons/128x128@2x.png",
+        "icons/icon.icns",
+        "icons/icon.ico"
+      ]
     }
-  },
-  "bundle": {
-    "active": true,
-    "targets": "all",
-    "icon": [
-      "icons/32x32.png",
-      "icons/128x128.png",
-      "icons/128x128@2x.png",
-      "icons/icon.icns",
-      "icons/icon.ico"
-    ]
   }
-}

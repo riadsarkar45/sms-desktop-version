@@ -29,6 +29,20 @@ import ViewDebitNote from "../pages/debit-note/ViewDebitNote";
 import DebitNoteLists from "../pages/debit-note/DebitNoteList";
 import DebitNote from "../pages/debit-note/NewDebitNote";
 import PartyWiseView from "../pages/partyWiseView/PartyWiseView";
+import GlanceReport from "../pages/mis/GlanceReport";
+import ReProcess from "../pages/movement/others/ReProcess";
+import Compacting from "../pages/movement/others/Compacting";
+import Knitting from "../pages/movement/Knitting";
+import Dyeing from "../pages/movement/Dyeing";
+import Aop from "../pages/movement/Aop";
+import Reconciliation from "../pages/reconciliation/Reconciliation";
+import BalanceSheet from "../pages/reconciliation/BalanceSheet";
+import YarnMovementReport from "../pages/yarns/MovementReport";
+import StockStatus from "../pages/yarns/StockStatus";
+import YarnDyedMovement from "../pages/yarns/YarnDyedMovement";
+import YarnDyedStock from "../pages/yarns/YarnDyedStock";
+import PurchaseOrderStatus from "../pages/yarns/PurchaseOrderStatus";
+import MovementSpinning from "../pages/yarns/MovementSpinning";
 
 const routers = createBrowserRouter([
     {
@@ -84,7 +98,7 @@ const routers = createBrowserRouter([
                         path: "productionsummary",
                         element: <ProductionSummary />
                     },
-                    
+
                     {
                         path: "daily-production/cutting",
                         element: <DailyCutting />
@@ -121,7 +135,7 @@ const routers = createBrowserRouter([
                         // ADJUST allowed roles if AUDITOR (or another role) should also manage users
                         path: "new-user",
                         element: <AddNewUser />
-                         
+
                     },
                     {
                         path: "user-permission/:userId/:userName",
@@ -151,13 +165,80 @@ const routers = createBrowserRouter([
                         path: "debit-note/requested",
                         element: <ApprovalRequestReceived />
                     },
-
-                    
                     {
                         // ADJUST allowed roles if AUDITOR (or another role) should also manage users
                         path: "party-wise-view",
                         element: <PartyWiseView />
-                        
+
+                    },
+                    {
+                        // ADJUST allowed roles if AUDITOR (or another role) should also manage users
+                        path: "new-user",
+                        element: <AddNewUser />
+                    },
+                    {
+                        // ADJUST allowed roles if AUDITOR (or another role) should also manage users
+                        path: "party-wise-view",
+                        element: <PartyWiseView />
+
+                    },
+                    {
+                        path: "challan/aop",
+                        element: <Aop />
+                    },
+                    {
+                        path: "challan/dyeing",
+                        element: <Dyeing />
+                    },
+                    {
+                        path: "challan/knitting",
+                        element: <Knitting />
+                    },
+                    {
+                        path: "challan/others/compacting",
+                        element: <Compacting />
+                    },
+                    {
+                        path: "challan/others/re-process",
+                        element: <ReProcess />
+                    },
+
+                    {
+                        path: "mis/glance",
+                        element: <GlanceReport />
+                    },
+                    {
+                        path: "style/reconciliation",
+                        element: <Reconciliation />
+                    },
+                    {
+                        path: "balance-sheet",
+                        element: <BalanceSheet />
+                    },
+                    {
+                        path: "yarn",
+                        element: <PurchaseOrderStatus />
+                    },
+                    {
+                        path: "yarn/movement",
+                        element: <YarnMovementReport />
+                    },
+                    {
+                        path: "yarn/stock",
+                        element: <StockStatus />
+                    },
+                    {
+                        path: "yarndyed/movement",
+                        element: <YarnDyedMovement />
+                    },
+                    {
+                        path: "yarndyed/stock",
+                        element: <YarnDyedStock />
+                    },
+
+                     {
+                        path: "spinning-yarn-movement",
+                        element: <MovementSpinning />
                     },
                 ]
             },

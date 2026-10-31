@@ -85,7 +85,7 @@ const UserList = () => {
     }
 
     const thBase =
-        'border border-gray-400 px-4 py-2 text-xs font-bold text-white bg-primary-500 text-center whitespace-nowrap'
+        'border border-gray-400 px-4 py-2 text-xs font-bold text-black bg-primary-500 text-center whitespace-nowrap'
 
     const tdBase =
         'border border-gray-300 px-4 py-2 text-sm text-gray-800'

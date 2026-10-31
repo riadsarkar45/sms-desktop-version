@@ -1491,17 +1491,17 @@ const Reconciliation = () => {
                         )}
                     </div>
 
-                    {
-
-                        sections?.styleRequirements?.reconciliationSubmission && (
-                            selectedJobs.size > 0 && (
-                                <button onClick={handleGlobalSubmit} disabled={savingJob} className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white border border-[#47637a] rounded-lg shadow-sm text-sm font-medium hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-                                    <CloudCog size={16} />
-                                    Submit Reconciliation ({selectedJobs.size})
-                                </button>
-                            )
+                    {sections?.styleRequirements?.reconciliationSubmission &&
+                        (selectedJobs?.size ?? 0) > 0 && (
+                            <button
+                                onClick={handleGlobalSubmit}
+                                disabled={savingJob}
+                                className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white border border-[#47637a] rounded-lg shadow-sm text-sm font-medium hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                <CloudCog size={16} />
+                                Submit Reconciliation ({selectedJobs?.size ?? 0})
+                            </button>
                         )
-
                     }
                 </div>
             </div>

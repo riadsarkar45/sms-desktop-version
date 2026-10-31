@@ -367,13 +367,13 @@ export default function Summary() {
         <DashboardLayout>
             <div className="flex gap-2 mb-4 items-center flex-wrap">
                 {
-                    sections.styleRequirements.addJob && (
+                    sections?.styleRequirements?.addJob && (
                         <button
                             onClick={() => {
                                 setEditingJobData(null);
                                 setShowModal(true);
                             }}
-                            className="flex items-center gap-2 px-6 py-2.5 bg-primary-500 text-white font-medium rounded-md hover:bg-primary-600 transition-colors border border-primary-600"
+                            className="flex items-center gap-2 px-6 py-2.5 bg-slate-800/80 text-white font-medium rounded-md hover:bg-primary-600 transition-colors border border-primary-600"
                         >
                             <PlusCircle size={18} /> Add Job
                         </button>
@@ -381,10 +381,10 @@ export default function Summary() {
                 }
                 {
                     isLoading.refreshLoading ?
-                        <button className="flex items-center gap-2 px-6 py-2.5 bg-primary-500 text-white font-medium rounded-md hover:bg-primary-600 transition-colors border border-primary-600">
+                        <button className="flex items-center gap-2 px-6 py-2.5 bg-slate-800/80 text-white font-medium rounded-md hover:bg-primary-600 transition-colors border border-primary-600">
                             <span className="animate-spin"><RefreshCcw size={18} /></span>
                         </button> :
-                        <button onClick={() => handleRefresh()} className="flex items-center gap-2 px-6 py-2.5 bg-primary-500 text-white font-medium rounded-md hover:bg-primary-600 transition-colors border border-primary-600">
+                        <button onClick={() => handleRefresh()} className="flex items-center gap-2 px-6 py-2.5 bg-slate-800/80 text-white font-medium rounded-md hover:bg-primary-600 transition-colors border border-primary-600">
                             <RefreshCcw size={18} />
                         </button>
                 }

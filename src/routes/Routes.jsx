@@ -43,6 +43,7 @@ import YarnDyedMovement from "../pages/yarns/YarnDyedMovement";
 import YarnDyedStock from "../pages/yarns/YarnDyedStock";
 import PurchaseOrderStatus from "../pages/yarns/PurchaseOrderStatus";
 import MovementSpinning from "../pages/yarns/MovementSpinning";
+import NewOrder from "../pages/workOrders/NewOrder";
 
 const routers = createBrowserRouter([
     {
@@ -239,6 +240,10 @@ const routers = createBrowserRouter([
                      {
                         path: "spinning-yarn-movement",
                         element: <MovementSpinning />
+                    },
+                    {
+                        path: "new-order/:jobNumber",
+                        element: <NewOrder />
                     },
                 ]
             },

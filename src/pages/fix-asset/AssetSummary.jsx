@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
     Boxes,
@@ -11,18 +11,57 @@ import {
     X,
     GripVertical,
     Download,
+    CheckCircle,
+    AlertCircle,
+    Loader2,
 } from 'lucide-react'
+import useAxiosPrivate from '../../hooks/UseAxiosPrivate'
+import { useAuth } from '../../auth/AuthContext'
 
 /* ------------------------------------------------------------------ */
-/*  Sample data — replace with your API data                           */
-/*  source: 'Own' | 'Rental'                                           */
-/*  Carrying Qty and Total Value are calculated below.                 */
+/*  Custom Toast Notification Component                                */
 /* ------------------------------------------------------------------ */
+const Toast = ({ notice, onClose }) => {
+    // hooks must run before any early return
+    const onCloseRef = useRef(onClose)
+    useEffect(() => {
+        onCloseRef.current = onClose
+    }, [onClose])
 
-const SAMPLE_ASSETS = [
-    { id: 1, source: 'Own', assetType: 'Machinery', category: 'Sewing Machine', description: 'Single Needle Lockstitch Machine', code: 'AST-MC-001', openingQty: 120, additionsQty: 10, disposedQty: 2, sentQty: 5, receivedQty: 3, pricePerPcs: 650000, remarks: 'Line 1 - 4' },
-    { id: 2, source: 'Own', assetType: 'Machinery', category: 'Sewing Machine', description: 'Overlock 4 Thread Machine', code: 'AST-MC-002', openingQty: 60, additionsQty: 6, disposedQty: 1, sentQty: 0, receivedQty: 2, pricePerPcs: 72000, remarks: '' },
-]
+    useEffect(() => {
+        if (!notice || notice.kind === 'loading') return undefined
+        const timer = setTimeout(() => onCloseRef.current(), 4000)
+        return () => clearTimeout(timer)
+    }, [notice])
+
+    if (!notice) return null
+
+    const bgColors = {
+        success: 'bg-green-50 border-green-500 text-green-800',
+        error: 'bg-red-50 border-red-500 text-red-800',
+        loading: 'bg-blue-50 border-blue-500 text-blue-800',
+    }
+
+    const icons = {
+        success: <CheckCircle size={20} className="text-green-600 shrink-0" />,
+        error: <AlertCircle size={20} className="text-red-600 shrink-0" />,
+        loading: <Loader2 size={20} className="text-blue-600 shrink-0 animate-spin" />,
+    }
+
+    return (
+        <div className="fixed top-4 right-4 z-[100] flex flex-col gap-2 pointer-events-none">
+            <div className={`pointer-events-auto flex items-center gap-3 px-4 py-3 rounded-lg shadow-lg border-l-4 ${bgColors[notice.kind]} min-w-[300px] max-w-md transition-all duration-300`}>
+                {icons[notice.kind]}
+                <span className="text-sm font-medium flex-1">{notice.text}</span>
+                {notice.kind !== 'loading' && (
+                    <button onClick={onClose} className="text-gray-400 hover:text-gray-600 shrink-0 transition-colors">
+                        <X size={16} />
+                    </button>
+                )}
+            </div>
+        </div>
+    )
+}
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -30,24 +69,42 @@ const SAMPLE_ASSETS = [
 
 // Carrying = Opening + Additions - Disposed - Sent + Received
 const getCarryingQty = (a) =>
-    a.openingQty + a.additionsQty - a.disposedQty - a.sentQty + a.receivedQty
+    Number(a.openingQty || 0) + Number(a.additionsQty || 0) - Number(a.disposedQty || 0) - Number(a.sentQty || 0) + Number(a.receivedQty || 0)
 
 const sumBy = (list, fn) => list.reduce((total, item) => total + fn(item), 0)
 
 const formatNumber = (n) => Number(n).toLocaleString('en-IN')
 const formatCurrency = (n) => `৳ ${Number(n).toLocaleString('en-IN')}`
 
-// Price typed in the editable cell: '' / not a number / negative = invalid (null)
-const parsePrice = (text) => {
-    const trimmed = String(text).trim()
-    if (trimmed === '') return null
-    const n = Number(trimmed)
-    return Number.isFinite(n) && n >= 0 ? n : null
-}
-
 const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
 
 const cellValue = (row, key) => String(row[key] ?? '').trim()
+
+// Keeps the real source value from the database. Only fixes the capitalization of
+// "own" / "rental"; any other value (e.g. "SKS") is left exactly as it is.
+const normalizeSource = (item) => {
+    const raw = String(item.source ?? '').trim()
+    if (!raw || raw.toUpperCase() === 'NULL') return ''
+    const lower = raw.toLowerCase()
+    if (lower === 'own') return 'Own'
+    if (lower === 'rental') return 'Rental'
+    return raw
+}
+
+/* ---------- Category helpers (tabs + cards follow Assets Category) ---------- */
+
+const ALL_TAB = '__ALL__'
+const BLANK_TAB = '__BLANK__'
+
+const cleanCategory = (value) => String(value ?? '').replace(/\s+/g, ' ').trim()
+
+const isBlankCategory = (value) => {
+    const v = cleanCategory(value)
+    return v === '' || v === '_' || v.toUpperCase() === 'NULL'
+}
+
+// Case-insensitive, whitespace-insensitive key so the same category never becomes two tabs
+const getCategoryKey = (value) => (isBlankCategory(value) ? BLANK_TAB : cleanCategory(value).toUpperCase())
 
 // filters = { columnKey: Set(selected values) } — a column with no entry is not filtered
 const rowMatches = (row, filters, skipKey) =>
@@ -71,15 +128,10 @@ const useMediaQuery = (query) => {
 }
 
 /* ===== XLSX EXPORT START ===== */
-/* ------------------------------------------------------------------ */
-/*  Excel export — writes a real .xlsx file (no extra package needed)  */
-/*  Slate header / Total row, green vertical borders, light horizontal */
-/*  borders, frozen columns, Excel formulas, filter arrows.            */
-/* ------------------------------------------------------------------ */
 
 const XLSX_COLUMNS = [
     { key: 'sl', header: 'Sl', width: 6, kind: 'sl' },
-    { key: 'factory name', header: 'FACTORY NAME', width: 16, kind: 'factory name' },
+    { key: 'factoryName', header: 'FACTORY NAME', width: 16, kind: 'text' },
     { key: 'source', header: 'Source', width: 11, kind: 'text' },
     { key: 'assetType', header: 'Assets Type', width: 16, kind: 'text' },
     { key: 'category', header: 'Assets Category', width: 18, kind: 'text' },
@@ -91,13 +143,12 @@ const XLSX_COLUMNS = [
     { key: 'sentQty', header: 'Send to Another Unit Qty', width: 16, kind: 'qty' },
     { key: 'receivedQty', header: 'Received From Another Unit Qty', width: 18, kind: 'qty' },
     { key: 'carryingQty', header: 'Carrying Qty', width: 12, kind: 'carrying' },
-    { key: 'totalValue', header: 'Total Value', width: 18, kind: 'total' },
+    { key: 'totalValue', header: 'Total Value', width: 22, kind: 'total' },
     { key: 'remarks', header: 'Remarks', width: 26, kind: 'text' },
 ]
-const XLSX_FROZEN_COLUMNS = 6 // Sl ... Asset Code stay frozen, like the table
+const XLSX_FROZEN_COLUMNS = 7 // Sl ... Asset Code stay frozen
 const XLSX_SUM_KEYS = ['openingQty', 'additionsQty', 'disposedQty', 'sentQty', 'receivedQty', 'carryingQty', 'totalValue']
 
-// cell style ids (see buildStylesXml)
 const XS = { TITLE: 1, HEADER: 2, HEADER_DIV: 3, TEXT: 4, CODE_DIV: 5, QTY: 6, CARRYING: 7, MONEY: 8, TOTAL_VALUE: 9, TOTAL_QTY: 10, TOTAL_MONEY: 11 }
 
 const xmlEscape = (value) =>
@@ -142,7 +193,7 @@ const buildStylesXml = () => {
 
     return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-<numFmts count="2"><numFmt numFmtId="164" formatCode="#,##0;-#,##0;&quot;-&quot;"/><numFmt numFmtId="165" formatCode="&quot;৳ &quot;#,##0"/></numFmts>
+<numFmts count="2"><numFmt numFmtId="164" formatCode="#,##0;-#,##0;&quot;-&quot;"/><numFmt numFmtId="165" formatCode="&quot; &quot;#,##0"/></numFmts>
 <fonts count="4">
 <font><sz val="10"/><color rgb="FF374151"/><name val="Calibri"/></font>
 <font><b/><sz val="10"/><color rgb="FF374151"/><name val="Calibri"/></font>
@@ -188,7 +239,6 @@ const buildSheetXml = (rows, totals, generatedOn) => {
 
     const xmlRows = []
 
-    // title (merged across all columns)
     const titleCells = XLSX_COLUMNS.map((_, i) =>
         i === 0
             ? cellText('A1', XS.TITLE, generatedOn ? `Asset Summary  |  ${generatedOn}` : 'Asset Summary')
@@ -196,13 +246,11 @@ const buildSheetXml = (rows, totals, generatedOn) => {
     )
     xmlRows.push(`<row r="${titleRow}" ht="28" customHeight="1">${titleCells.join('')}</row>`)
 
-    // header
     const headerCells = XLSX_COLUMNS.map((col, i) =>
         cellText(`${xlsxColLetter(i)}${headerRow}`, isDivider(i) ? XS.HEADER_DIV : XS.HEADER, col.header)
     )
     xmlRows.push(`<row r="${headerRow}" ht="40" customHeight="1">${headerCells.join('')}</row>`)
 
-    // data rows
     rows.forEach((row, rowIndex) => {
         const r = firstDataRow + rowIndex
         const cells = XLSX_COLUMNS.map((col, i) => {
@@ -211,30 +259,28 @@ const buildSheetXml = (rows, totals, generatedOn) => {
                 case 'sl':
                     return cellNumber(ref, XS.TEXT, rowIndex + 1)
                 case 'code':
-                    return cellText(ref, XS.CODE_DIV, row[col.key] || '-')
+                    return cellText(ref, XS.CODE_DIV, row[col.key] || '_')
                 case 'qty':
-                    return cellNumber(ref, XS.QTY, row[col.key])
+                    return cellNumber(ref, XS.QTY, row[col.key] || 0)
                 case 'carrying':
-                    // Opening + Additions - Disposed - Sent + Received
                     return cellFormula(
                         ref,
                         XS.CARRYING,
                         `${letter('openingQty')}${r}+${letter('additionsQty')}${r}-${letter('disposedQty')}${r}-${letter('sentQty')}${r}+${letter('receivedQty')}${r}`,
-                        row.carryingQty
+                        row.carryingQty || 0
                     )
-                case 'money':
-                    return cellNumber(ref, XS.MONEY, row[col.key])
                 case 'total':
-                    // Carrying Qty x Price Per Pcs (price is no longer a column, so this is a plain value)
-                    return cellNumber(ref, XS.TOTAL_VALUE, row.totalValue)
-                default:
-                    return cellText(ref, XS.TEXT, row[col.key] || '-')
+                    return cellNumber(ref, XS.TOTAL_VALUE, row.totalValue || 0)
+                default: {
+                    const val = row[col.key]
+                    const isNull = val === null || val === undefined || val === '' || String(val).trim().toUpperCase() === 'NULL'
+                    return cellText(ref, XS.TEXT, isNull ? '_' : val)
+                }
             }
         })
         xmlRows.push(`<row r="${r}" ht="24" customHeight="1">${cells.join('')}</row>`)
     })
 
-    // TOTAL row (label merged over the frozen columns, like the table footer)
     const totalCells = XLSX_COLUMNS.map((col, i) => {
         const ref = `${xlsxColLetter(i)}${totalRow}`
         if (i === 0) return cellText(ref, XS.HEADER, 'TOTAL')
@@ -245,10 +291,10 @@ const buildSheetXml = (rows, totals, generatedOn) => {
                 ref,
                 col.kind === 'total' ? XS.TOTAL_MONEY : XS.TOTAL_QTY,
                 `SUM(${l}${firstDataRow}:${l}${lastDataRow})`,
-                totals[col.key]
+                totals[col.key] || 0
             )
         }
-        return cellText(ref, XS.HEADER, '-')
+        return cellText(ref, XS.HEADER, '_')
     })
     xmlRows.push(`<row r="${totalRow}" ht="26" customHeight="1">${totalCells.join('')}</row>`)
 
@@ -271,7 +317,6 @@ const buildSheetXml = (rows, totals, generatedOn) => {
 </worksheet>`
 }
 
-// ---- minimal ZIP writer (stored, no compression) — an .xlsx is a zip of XML files ----
 const CRC_TABLE = (() => {
     const table = new Uint32Array(256)
     for (let n = 0; n < 256; n += 1) {
@@ -307,8 +352,8 @@ const buildZip = (files) => {
         const lv = new DataView(local.buffer)
         lv.setUint32(0, 0x04034b50, true)
         lv.setUint16(4, 20, true)
-        lv.setUint16(6, 0x0800, true) // UTF-8 file names
-        lv.setUint16(8, 0, true) // stored
+        lv.setUint16(6, 0x0800, true)
+        lv.setUint16(8, 0, true)
         lv.setUint16(10, dosTime, true)
         lv.setUint16(12, dosDate, true)
         lv.setUint32(14, crc, true)
@@ -358,7 +403,6 @@ const buildZip = (files) => {
     return zip
 }
 
-// rows = the rows shown in the table (with carryingQty / totalValue), totals = the table's Total row
 const buildAssetSummaryXlsx = (rows, totals, generatedOn = '') => {
     const xmlHeader = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
     const lastCol = xlsxColLetter(XLSX_COLUMNS.length - 1)
@@ -401,12 +445,9 @@ const downloadXlsx = (bytes, filename) => {
 /*  Column configuration                                               */
 /* ------------------------------------------------------------------ */
 
-const SOURCE_FILTERS = ['All', 'Own', 'Rental']
-
-// width = px (fixed layout + frozen-column offsets)
 const COLUMNS = [
-    { key: 'sl', label: 'Sl', width: 56, filterable: true },
-    { key: 'factory name', label: 'FACTORY NAME', width: 120, filterable: true },    
+    { key: 'sl', label: 'Sl', width: 56, kind: 'select', filterable: false },
+    { key: 'factoryName', label: 'FACTORY NAME', width: 120, filterable: true },
     { key: 'source', label: 'Source', width: 100, kind: 'badge' },
     { key: 'assetType', label: 'Assets Type', width: 120 },
     { key: 'category', label: 'Assets Category', width: 130 },
@@ -417,30 +458,25 @@ const COLUMNS = [
     { key: 'disposedQty', label: 'Disposed Qty', width: 100, kind: 'qty' },
     { key: 'sentQty', label: 'Send to Another Unit Qty', width: 120, kind: 'qty' },
     { key: 'receivedQty', label: 'Received From Another Unit Qty', width: 135, kind: 'qty' },
-    { key: 'carryingQty', label: 'Carrying Qty', width: 105, kind: 'carrying' },
-    { key: 'totalValue', label: 'Total Value', width: 145, kind: 'total', format: (v) => formatCurrency(v) },
+    { key: 'carryingQty', label: 'Carrying Qty', width: 120, kind: 'carrying' },
+    { key: 'totalValue', label: 'Total Value', width: 200, kind: 'total', format: (v) => formatCurrency(v) },
     { key: 'remarks', label: 'Remarks', width: 180, kind: 'remarks', cell: 'cursor-cell text-left' },
 ]
 
-// Columns that get a total in the footer
 const FOOTER_SUM_KEYS = ['openingQty', 'additionsQty', 'disposedQty', 'sentQty', 'receivedQty', 'carryingQty']
 
-// Columns from the first one through this column stay frozen while scrolling sideways
 const FROZEN_UNTIL = 'code'
 const FROZEN_COUNT = COLUMNS.findIndex((c) => c.key === FROZEN_UNTIL) + 1
 const LEFT_OFFSETS = COLUMNS.map((_, i) => COLUMNS.slice(0, i).reduce((sum, c) => sum + c.width, 0))
 const TOTAL_WIDTH = COLUMNS.reduce((sum, c) => sum + c.width, 0)
 
-// Table look: slate header / footer, green vertical lines, light horizontal lines
 const HEADER_CELL = 'border-r border-slate-400'
 const BODY_CELL = 'border-b border-gray-200 border-r border-emerald-500'
 const FOOTER_CELL = 'border-r border-slate-400'
 const FROZEN_DIVIDER = 'border-r-2 border-r-slate-700'
 
 /* ------------------------------------------------------------------ */
-/*  Draggable modal (drag by the title bar)                            */
-/*  Rendered in a portal so the page zoom in the layout never shifts   */
-/*  its position.                                                      */
+/*  Draggable modal                                                    */
 /* ------------------------------------------------------------------ */
 
 const DraggableModal = ({
@@ -457,7 +493,6 @@ const DraggableModal = ({
     const [pos, setPos] = useState(null)
     const [isDragging, setIsDragging] = useState(false)
 
-    // Place the modal (centered, or at the given position) before the first paint
     useLayoutEffect(() => {
         const el = modalRef.current
         if (!el) return
@@ -466,10 +501,8 @@ const DraggableModal = ({
         const x = initialPosition ? initialPosition.x : (window.innerWidth - w) / 2
         const y = initialPosition ? initialPosition.y : (window.innerHeight - h) / 2
         setPos(clampPosition(x, y, w, h))
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [])
 
-    // Keep it inside the window when the window is resized
     useEffect(() => {
         const handleResize = () => {
             const el = modalRef.current
@@ -480,7 +513,6 @@ const DraggableModal = ({
         return () => window.removeEventListener('resize', handleResize)
     }, [])
 
-    // Esc closes the modal
     useEffect(() => {
         const handleKeyDown = (e) => {
             if (e.key === 'Escape') onClose()
@@ -492,7 +524,7 @@ const DraggableModal = ({
     const handlePointerDown = (e) => {
         if (!pos) return
         if (e.button !== undefined && e.button !== 0) return
-        if (e.target.closest('button')) return // the close button must not start a drag
+        if (e.target.closest('button')) return
         dragRef.current = { offsetX: e.clientX - pos.x, offsetY: e.clientY - pos.y }
         e.currentTarget.setPointerCapture(e.pointerId)
         setIsDragging(true)
@@ -537,7 +569,6 @@ const DraggableModal = ({
                     visibility: pos ? 'visible' : 'hidden',
                 }}
             >
-                {/* Title bar = drag handle */}
                 <div
                     onPointerDown={handlePointerDown}
                     onPointerMove={handlePointerMove}
@@ -576,11 +607,9 @@ const DraggableModal = ({
 
 const ColumnFilterModal = ({ column, values, selected, position, onApply, onClose }) => {
     const [search, setSearch] = useState('')
-    // No active filter = everything ticked
     const [draft, setDraft] = useState(() => new Set(selected ?? values))
     const selectAllRef = useRef(null)
 
-    // What the user sees for a value (money columns are shown with the ৳ sign)
     const display = (value) => (value === '' ? '(Blanks)' : column.format ? column.format(value) : value)
 
     const visibleValues = useMemo(() => {
@@ -606,7 +635,6 @@ const ColumnFilterModal = ({ column, values, selected, position, onApply, onClos
         })
     }
 
-    // With a search typed, "Select All" only touches the matching values (like Excel)
     const toggleAllVisible = () => {
         setDraft((prev) => {
             const next = new Set(prev)
@@ -629,7 +657,7 @@ const ColumnFilterModal = ({ column, values, selected, position, onApply, onClos
                         type="button"
                         onClick={() => onApply(draft, values)}
                         disabled={draft.size === 0}
-                        className="px-4 py-1.5 text-sm font-bold text-white bg-primary-500 hover:bg-primary-600 rounded-md cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="px-4 py-1.5 text-sm font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-md cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                         OK
                     </button>
@@ -652,7 +680,7 @@ const ColumnFilterModal = ({ column, values, selected, position, onApply, onClos
                         onChange={(e) => setSearch(e.target.value)}
                         placeholder="Search"
                         autoFocus
-                        className="w-full pl-8 pr-2 py-1.5 text-sm border border-green-200 rounded-md outline-none focus:border-primary-500"
+                        className="w-full pl-8 pr-2 py-1.5 text-sm border border-green-200 rounded-md outline-none focus:border-emerald-500"
                     />
                 </div>
 
@@ -667,7 +695,7 @@ const ColumnFilterModal = ({ column, values, selected, position, onApply, onClos
                                     type="checkbox"
                                     checked={allVisibleSelected}
                                     onChange={toggleAllVisible}
-                                    className="w-4 h-4 cursor-pointer accent-primary-600"
+                                    className="w-4 h-4 cursor-pointer accent-emerald-600"
                                 />
                                 {search.trim() ? '(Select All Search Results)' : '(Select All)'}
                             </label>
@@ -680,7 +708,7 @@ const ColumnFilterModal = ({ column, values, selected, position, onApply, onClos
                                         type="checkbox"
                                         checked={draft.has(value)}
                                         onChange={() => toggleValue(value)}
-                                        className="w-4 h-4 cursor-pointer accent-primary-600"
+                                        className="w-4 h-4 cursor-pointer accent-emerald-600"
                                     />
                                     <span className="truncate">{display(value)}</span>
                                 </label>
@@ -706,7 +734,9 @@ const SummaryCard = ({ label, value, sub, icon: Icon, gradient }) => (
         </div>
         <div className="min-w-0">
             <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">{label}</p>
-            <p className="text-2xl font-bold text-gray-900 leading-tight truncate">{value}</p>
+            <p className="text-2xl font-bold text-gray-900 leading-tight truncate" title={String(value)}>
+                {value}
+            </p>
             <p className="text-xs text-gray-500 truncate">{sub}</p>
         </div>
     </div>
@@ -717,70 +747,159 @@ const SummaryCard = ({ label, value, sub, icon: Icon, gradient }) => (
 /* ------------------------------------------------------------------ */
 
 const AssetSummary = () => {
-    const [assets, setAssets] = useState(SAMPLE_ASSETS)
-    // Saved price / remarks of every asset (edits are kept separately until Save)
+    const [assets, setAssets] = useState([])
+
     const baseAssets = useMemo(
-        () => assets.map((a) => ({ ...a, savedPrice: a.pricePerPcs, savedRemarks: a.remarks ?? '' })),
+        () =>
+            assets.map((a) => ({
+                ...a,
+                savedPrice: Number(a.pricePerPcs || 0),
+                savedRemarks: a.remarks ?? '',
+            })),
         [assets]
     )
 
-    const [sourceFilter, setSourceFilter] = useState('All')
+    // tab = ALL_TAB, BLANK_TAB, or an upper-cased category key
+    const [categoryFilter, setCategoryFilter] = useState(ALL_TAB)
     const [search, setSearch] = useState('')
-    const [filters, setFilters] = useState({}) // { columnKey: Set }
-    const [filterModal, setFilterModal] = useState(null) // { key, position }
+    const [filters, setFilters] = useState({})
+    const [filterModal, setFilterModal] = useState(null)
     const [selectedIds, setSelectedIds] = useState(() => new Set())
-    const [remarkEdits, setRemarkEdits] = useState({}) // { asset id: typed remarks text } — unsaved Remarks edits
-    const [editingRemarkId, setEditingRemarkId] = useState(null) // the remarks cell open for typing (double-click)
-    const [notice, setNotice] = useState(null) // { kind: 'success' | 'error', text }
+    const [remarkEdits, setRemarkEdits] = useState({})
+    const [editingRemarkId, setEditingRemarkId] = useState(null)
+    const [notice, setNotice] = useState(null)
     const selectAllRef = useRef(null)
+    const lastNoticeRef = useRef({ text: '', time: 0 })
 
-    // Freezing needs room to scroll, so it is switched on for wide screens only
+    const { user } = useAuth()
+    const axiosPrivate = useAxiosPrivate()
+
+    const showNotice = useCallback((kind, text) => {
+        const now = Date.now()
+        if (lastNoticeRef.current.text === text && now - lastNoticeRef.current.time < 3000) {
+            return
+        }
+        lastNoticeRef.current = { text, time: now }
+        setNotice({ kind, text })
+    }, [])
+
+    const fetchAssetData = useCallback(async () => {
+        if (!user?.workingStation) return
+        showNotice('loading', 'Fetching asset data...')
+        try {
+            const res = await axiosPrivate.get(`/api/asset-items/${user.workingStation}`)
+            console.log('asset items response:', res.data)
+
+            const list = Array.isArray(res.data) ? res.data : res.data?.data ?? []
+
+            // Same category written differently (OWN / own / " Own ") uses ONE spelling
+            // everywhere, so tabs and column filters never show it twice.
+            const canonicalCategory = new Map()
+            const resolveCategory = (value) => {
+                if (isBlankCategory(value)) return '_'
+                const key = getCategoryKey(value)
+                if (!canonicalCategory.has(key)) canonicalCategory.set(key, cleanCategory(value))
+                return canonicalCategory.get(key)
+            }
+
+            const mappedList = list.map((item, index) => ({
+                ...item,
+                id: item.id || index + 1,
+                factoryName: item.factoryName || item['factory name'] || '_',
+                source: normalizeSource(item),
+                assetType: item.assetType || '_',
+                category: resolveCategory(item.category),
+                description: item.description || '_',
+                code: item.code || item.assetCode || '_',
+                pricePerPcs:
+                    item.pricePerPcs !== undefined
+                        ? item.pricePerPcs
+                        : item.priceValue !== undefined
+                          ? item.priceValue
+                          : 0,
+                remarks: item.remarks || '',
+                openingQty: Number(item.openingQty || 0),
+                additionsQty: Number(item.additionsQty || 0),
+                disposedQty: Number(item.disposedQty || 0),
+                sentQty: Number(item.sentQty || 0),
+                receivedQty: Number(item.receivedQty || 0),
+            }))
+
+            setAssets(mappedList)
+            showNotice('success', 'Assets fetched successfully.')
+        } catch (err) {
+            console.error(err)
+            showNotice('error', 'Could not load asset data.')
+        }
+    }, [user?.workingStation, showNotice, axiosPrivate])
+
+    useEffect(() => {
+        fetchAssetData()
+    }, [fetchAssetData])
+
     const freezeEnabled = useMediaQuery('(min-width: 1280px)')
-
     const editCount = Object.keys(remarkEdits).length
     const hasEdits = editCount > 0
 
-    // Add the calculated Carrying Qty and Total Value to every row.
     const rows = useMemo(
         () =>
             baseAssets.map((asset) => {
                 const pricePerPcs = asset.savedPrice
                 const carryingQty = getCarryingQty(asset)
                 const remarks = remarkEdits[asset.id] !== undefined ? remarkEdits[asset.id] : asset.savedRemarks
-                return { ...asset, pricePerPcs, remarks, carryingQty, totalValue: carryingQty * pricePerPcs }
+                return {
+                    ...asset,
+                    pricePerPcs,
+                    remarks,
+                    carryingQty,
+                    totalValue: carryingQty * pricePerPcs,
+                    categoryKey: getCategoryKey(asset.category),
+                }
             }),
         [baseAssets, remarkEdits]
     )
 
-    const sourceCounts = useMemo(
-        () => ({
-            All: rows.length,
-            Own: rows.filter((r) => r.source === 'Own').length,
-            Rental: rows.filter((r) => r.source === 'Rental').length,
-        }),
-        [rows]
-    )
+    // Tabs: All + one tab per unique category found in the data (each exactly once)
+    const categoryTabs = useMemo(() => {
+        const map = new Map()
+        rows.forEach((r) => {
+            const existing = map.get(r.categoryKey)
+            if (existing) existing.count += 1
+            else
+                map.set(r.categoryKey, {
+                    key: r.categoryKey,
+                    label: r.categoryKey === BLANK_TAB ? '(Blank)' : cleanCategory(r.category),
+                    count: 1,
+                })
+        })
+        const tabs = [...map.values()].sort((a, b) => {
+            if (a.key === BLANK_TAB) return 1
+            if (b.key === BLANK_TAB) return -1
+            return collator.compare(a.label, b.label)
+        })
+        return [{ key: ALL_TAB, label: 'All', count: rows.length }, ...tabs]
+    }, [rows])
 
-    // Rows after the Source tabs and the search box
+    // If the selected category no longer exists (e.g. after a reload), fall back to All
+    const activeTab = categoryTabs.some((t) => t.key === categoryFilter) ? categoryFilter : ALL_TAB
+
     const baseRows = useMemo(() => {
         const term = search.trim().toLowerCase()
         return rows.filter((r) => {
-            if (sourceFilter !== 'All' && r.source !== sourceFilter) return false
+            if (activeTab !== ALL_TAB && r.categoryKey !== activeTab) return false
             if (!term) return true
-            return [r.assetType, r.category, r.description, r.code, r.remarks]
+            return [r.factoryName, r.source, r.assetType, r.category, r.description, r.code, r.remarks]
                 .join(' ')
                 .toLowerCase()
                 .includes(term)
         })
-    }, [rows, sourceFilter, search])
+    }, [rows, activeTab, search])
 
-    // ...then the Excel-style column filters (a row being edited never disappears while typing)
     const filteredRows = useMemo(
         () => baseRows.filter((r) => remarkEdits[r.id] !== undefined || rowMatches(r, filters)),
         [baseRows, filters, remarkEdits]
     )
 
-    // Footer totals follow the rows currently shown
     const totals = useMemo(() => {
         const result = FOOTER_SUM_KEYS.reduce((acc, key) => {
             acc[key] = sumBy(filteredRows, (r) => r[key])
@@ -790,23 +909,29 @@ const AssetSummary = () => {
         return result
     }, [filteredRows])
 
-    // Quick summary = the table's Total row (always the rows currently shown)
+    // Rows in scope of the selected category tab (ignores search & column filters)
+    const scopedRows = useMemo(
+        () => (activeTab === ALL_TAB ? rows : rows.filter((r) => r.categoryKey === activeTab)),
+        [rows, activeTab]
+    )
+
+    // Summary cards follow the selected category tab.
+    // "Own" / "Rental" cards count rows whose Assets Category is OWN / RENTAL.
     const summary = useMemo(() => {
-        const own = filteredRows.filter((r) => r.source === 'Own')
-        const rental = filteredRows.filter((r) => r.source === 'Rental')
+        const own = scopedRows.filter((r) => r.categoryKey === 'OWN')
+        const rental = scopedRows.filter((r) => r.categoryKey === 'RENTAL')
         return {
-            totalQty: totals.carryingQty,
-            totalItems: filteredRows.length,
+            totalQty: sumBy(scopedRows, (r) => r.carryingQty),
+            totalItems: scopedRows.length,
             ownQty: sumBy(own, (r) => r.carryingQty),
             ownItems: own.length,
             ownValue: sumBy(own, (r) => r.totalValue),
             rentalQty: sumBy(rental, (r) => r.carryingQty),
             rentalItems: rental.length,
-            additionsQty: totals.additionsQty,
+            additionsQty: sumBy(scopedRows, (r) => r.additionsQty),
         }
-    }, [filteredRows, totals])
+    }, [scopedRows])
 
-    // Values listed in the filter modal (rows already narrowed by the other filters)
     const modalValues = useMemo(() => {
         if (!filterModal) return []
         const unique = new Set(
@@ -818,7 +943,6 @@ const AssetSummary = () => {
     const activeFilterCount = Object.keys(filters).length
     const filterColumn = filterModal ? COLUMNS.find((c) => c.key === filterModal.key) : null
 
-    /* ---- row selection (checkbox column) ---- */
     const selectedVisibleCount = filteredRows.filter((r) => selectedIds.has(r.id)).length
     const allSelected = filteredRows.length > 0 && selectedVisibleCount === filteredRows.length
     const someSelected = selectedVisibleCount > 0 && !allSelected
@@ -845,13 +969,11 @@ const AssetSummary = () => {
         })
     }
 
-    /* ---- editable Remarks (double-click a remarks cell to edit it) ---- */
     const handleRemarkChange = (id, value) => {
         setNotice(null)
         const original = baseAssets.find((a) => a.id === id)?.savedRemarks ?? ''
         setRemarkEdits((prev) => {
             const next = { ...prev }
-            // Typing the original remarks back = nothing left to save
             if (value === original) delete next[id]
             else next[id] = value
             return next
@@ -864,21 +986,31 @@ const AssetSummary = () => {
         setNotice(null)
     }
 
-    const saveEdits = () => {
+    const saveEdits = async () => {
         const remarkUpdates = { ...remarkEdits }
-        // TODO: send `remarkUpdates` (asset id -> value) to your API here
-        setAssets((prev) =>
-            prev.map((asset) => {
-                if (remarkUpdates[asset.id] !== undefined) return { ...asset, remarks: remarkUpdates[asset.id] }
-                return asset
-            })
-        )
-        setRemarkEdits({})
-        setEditingRemarkId(null)
-        setNotice({ kind: 'success', text: `Saved ${editCount} change${editCount > 1 ? 's' : ''}.` })
+        showNotice('loading', 'Saving remarks...')
+        try {
+            console.log('Saving remarks payload:', remarkUpdates)
+            // TODO: Replace with your actual API call to update remarks
+            // await axiosPrivate.put('/api/update-remarks', { updates: remarkUpdates })
+
+            await new Promise((resolve) => setTimeout(resolve, 500)) // Simulated delay
+
+            setAssets((prev) =>
+                prev.map((asset) => {
+                    if (remarkUpdates[asset.id] !== undefined) return { ...asset, remarks: remarkUpdates[asset.id] }
+                    return asset
+                })
+            )
+            setRemarkEdits({})
+            setEditingRemarkId(null)
+            showNotice('success', `Saved ${editCount} change${editCount > 1 ? 's' : ''}.`)
+        } catch (err) {
+            console.error(err)
+            showNotice('error', 'Failed to save changes.')
+        }
     }
 
-    // Esc discards the unsaved edits (the filter modal keeps its own Esc = close)
     useEffect(() => {
         if ((!hasEdits && editingRemarkId === null) || filterModal) return
         const handleKeyDown = (e) => {
@@ -892,20 +1024,22 @@ const AssetSummary = () => {
         return () => window.removeEventListener('keydown', handleKeyDown)
     }, [hasEdits, editingRemarkId, filterModal])
 
-    /* ---- Excel export (rows and totals exactly as shown in the table) ---- */
     const handleExport = () => {
         try {
-            const today = new Date().toLocaleDateString('en-CA') // yyyy-mm-dd
+            if (filteredRows.length === 0) {
+                showNotice('error', 'No data to export.')
+                return
+            }
+            const today = new Date().toLocaleDateString('en-CA')
             const bytes = buildAssetSummaryXlsx(filteredRows, totals, today)
             downloadXlsx(bytes, `Asset_Summary_${today}.xlsx`)
-            setNotice({ kind: 'success', text: `Exported ${filteredRows.length} row${filteredRows.length > 1 ? 's' : ''} to Excel.` })
+            showNotice('success', `Exported ${filteredRows.length} row${filteredRows.length > 1 ? 's' : ''} to Excel.`)
         } catch (error) {
             console.error(error)
-            setNotice({ kind: 'error', text: 'Export failed. Please try again.' })
+            showNotice('error', 'Export failed. Please try again.')
         }
     }
 
-    /* ---- column filter modal ---- */
     const openFilter = (key, e) => {
         const rect = e.currentTarget.getBoundingClientRect()
         setFilterModal({ key, position: { x: rect.left, y: rect.bottom + 6 } })
@@ -916,7 +1050,6 @@ const AssetSummary = () => {
     const applyFilter = (key, draft, values) => {
         setFilters((prev) => {
             const next = { ...prev }
-            // Everything ticked = no filter on this column
             if (values.every((v) => draft.has(v))) delete next[key]
             else next[key] = new Set(draft)
             return next
@@ -962,12 +1095,18 @@ const AssetSummary = () => {
         },
     ]
 
-    /* ---- frozen-column helpers ---- */
     const isFrozen = (index) => freezeEnabled && index < FROZEN_COUNT
     const dividerClass = (index) => (freezeEnabled && index === FROZEN_COUNT - 1 ? FROZEN_DIVIDER : '')
     const leftStyle = (index) => (isFrozen(index) ? { left: LEFT_OFFSETS[index] } : {})
 
     const renderCell = (col, row, rowIndex) => {
+        const rawValue = row[col.key]
+        const isNullish =
+            rawValue === null ||
+            rawValue === undefined ||
+            rawValue === '' ||
+            String(rawValue).trim().toUpperCase() === 'NULL'
+
         switch (col.kind) {
             case 'select':
                 return (
@@ -980,14 +1119,17 @@ const AssetSummary = () => {
                     />
                 )
             case 'badge':
+                if (isNullish) return <span className="text-gray-400">_</span>
                 return (
                     <span className="inline-block px-3 py-1 rounded-full bg-gray-100 text-gray-800 text-xs font-semibold">
                         {row.source}
                     </span>
                 )
             case 'qty':
-                return Number(row[col.key]) === 0 ? <span className="text-gray-400">-</span> : formatNumber(row[col.key])
+                if (isNullish || Number(rawValue) === 0 || Number.isNaN(Number(rawValue))) return <span className="text-gray-400">_</span>
+                return formatNumber(Number(rawValue))
             case 'carrying':
+                if (isNullish || Number(row.carryingQty) === 0 || Number.isNaN(Number(row.carryingQty))) return <span className="text-gray-400">_</span>
                 return <span className="font-bold text-gray-900">{formatNumber(row.carryingQty)}</span>
             case 'remarks': {
                 if (editingRemarkId === row.id) {
@@ -1008,6 +1150,7 @@ const AssetSummary = () => {
                     )
                 }
                 const edited = remarkEdits[row.id] !== undefined
+                if (isNullish && !edited) return <span className="text-gray-400">_</span>
                 return (
                     <div
                         title="Double-click to edit"
@@ -1015,296 +1158,304 @@ const AssetSummary = () => {
                             edited ? 'bg-amber-50 text-gray-900 ring-1 ring-amber-400 font-semibold' : 'text-gray-700'
                         }`}
                     >
-                        {row.remarks || <span className="text-gray-400">-</span>}
+                        {row.remarks || <span className="text-gray-400">_</span>}
                     </div>
                 )
             }
-            case 'total':
-                return <span className="font-bold text-gray-900">{formatCurrency(row.totalValue)}</span>
+            case 'total': {
+                if (isNullish || Number(row.totalValue) === 0 || Number.isNaN(Number(row.totalValue))) return <span className="text-gray-400">_</span>
+                const text = formatCurrency(row.totalValue)
+                return (
+                    <span
+                        className="block font-bold text-gray-900 whitespace-nowrap overflow-hidden text-ellipsis"
+                        title={text}
+                    >
+                        {text}
+                    </span>
+                )
+            }
             default:
                 if (col.key === 'sl') return rowIndex + 1
-                return row[col.key] || <span className="text-gray-400">-</span>
+                if (isNullish) return <span className="text-gray-400">_</span>
+                return row[col.key]
         }
     }
 
     return (
-        <div className="space-y-5">
-            {/* Quick total summary */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
-                {summaryCards.map((card) => (
-                    <SummaryCard key={card.label} {...card} />
-                ))}
-            </div>
-
-            {/* Table card */}
-            <div className="bg-white rounded-xl border border-green-200 shadow-sm overflow-hidden">
-                {/* Toolbar */}
-                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 px-4 py-3 border-b border-green-200 bg-emerald-50/60">
-                    <div className="flex flex-wrap items-center gap-2" role="tablist" aria-label="Filter by source">
-                        {SOURCE_FILTERS.map((filter) => {
-                            const active = sourceFilter === filter
-                            return (
-                                <button
-                                    key={filter}
-                                    type="button"
-                                    role="tab"
-                                    aria-selected={active}
-                                    onClick={() => setSourceFilter(filter)}
-                                    className={`px-3 py-1.5 rounded-full text-xs font-semibold cursor-pointer transition-colors ${
-                                        active
-                                            ? 'bg-primary-500 text-white shadow-sm'
-                                            : 'bg-white text-gray-600 border border-green-200 hover:bg-emerald-50'
-                                    }`}
-                                >
-                                    {filter}
-                                    <span className={`ml-1.5 ${active ? 'text-primary-100' : 'text-gray-400'}`}>
-                                        {sourceCounts[filter]}
-                                    </span>
-                                </button>
-                            )
-                        })}
-
-                        {/* Export tab */}
-                        <button
-                            type="button"
-                            onClick={handleExport}
-                            disabled={filteredRows.length === 0}
-                            title="Download the table as an Excel file"
-                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold text-emerald-700 bg-white border border-emerald-500 hover:bg-emerald-50 cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                            <Download size={14} />
-                            Export
-                        </button>
-                    </div>
-
-                    <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-                        {notice && (
-                            <span
-                                className={`text-xs font-semibold ${notice.kind === 'error' ? 'text-red-600' : 'text-green-700'}`}
-                                role="status"
-                            >
-                                {notice.text}
-                            </span>
-                        )}
-                        {selectedIds.size > 0 && (
-                            <span className="px-3 py-1.5 text-xs font-semibold text-emerald-800 bg-emerald-100 rounded-full">
-                                {selectedIds.size} selected
-                            </span>
-                        )}
-                        {activeFilterCount > 0 && (
-                            <button
-                                type="button"
-                                onClick={() => setFilters({})}
-                                className="px-3 py-1.5 text-xs font-semibold text-primary-700 bg-primary-100 hover:bg-primary-200 rounded-full cursor-pointer transition-colors"
-                            >
-                                Clear {activeFilterCount} filter{activeFilterCount > 1 ? 's' : ''}
-                            </button>
-                        )}
-                        {hasEdits && (
-                            <div className="flex items-center gap-2">
-                                <button
-                                    type="button"
-                                    onClick={saveEdits}
-                                    title="Save the edits"
-                                    className="px-3 py-1.5 text-xs font-bold text-white bg-primary-500 hover:bg-primary-600 rounded-md cursor-pointer transition-colors"
-                                >
-                                    Save ({editCount})
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={discardEdits}
-                                    title="Discard the edits (Esc)"
-                                    className="px-3 py-1.5 text-xs font-bold text-gray-800 bg-gray-200 hover:bg-gray-300 rounded-md cursor-pointer transition-colors"
-                                >
-                                    Discard
-                                </button>
-                            </div>
-                        )}
-                        <div className="relative w-full sm:w-72">
-                            <Search
-                                size={16}
-                                className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
-                            />
-                            <input
-                                type="text"
-                                value={search}
-                                onChange={(e) => setSearch(e.target.value)}
-                                placeholder="Search item, code, type, category..."
-                                className="w-full pl-9 pr-3 py-2 text-sm bg-white border border-green-200 rounded-lg outline-none focus:border-primary-400 focus:ring-2 focus:ring-primary-100"
-                            />
-                        </div>
-                    </div>
+        <>
+            <Toast notice={notice} onClose={() => setNotice(null)} />
+            <div className="space-y-5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
+                    {summaryCards.map((card) => (
+                        <SummaryCard key={card.label} {...card} />
+                    ))}
                 </div>
 
-                {/* Table — zoom-out fix: minWidth + width:100% so it fills the screen; frozen cols keep fixed min/max so sticky offsets stay correct */}
-                <div className="max-h-[60vh] overflow-auto bg-white">
-                    <table
-                        className="border-separate"
-                        style={{ minWidth: TOTAL_WIDTH, width: '100%', tableLayout: 'fixed', borderSpacing: 0 }}
-                    >
-                        <colgroup>
-                            {COLUMNS.map((col, index) => (
-                                <col
-                                    key={col.key}
-                                    style={{
-                                        width: col.width,
-                                        minWidth: index < FROZEN_COUNT ? col.width : undefined,
-                                        maxWidth: index < FROZEN_COUNT ? col.width : undefined,
-                                    }}
-                                />
-                            ))}
-                        </colgroup>
+                <div className="bg-white rounded-xl border border-green-200 shadow-sm overflow-hidden">
+                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 px-4 py-3 border-b border-green-200 bg-emerald-50/60">
+                        <div className="flex flex-wrap items-center gap-2" role="tablist" aria-label="Filter by assets category">
+                            {categoryTabs.map((tab) => {
+                                const active = activeTab === tab.key
+                                return (
+                                    <button
+                                        key={tab.key}
+                                        type="button"
+                                        role="tab"
+                                        aria-selected={active}
+                                        onClick={() => setCategoryFilter(tab.key)}
+                                        className={`px-3 py-1.5 rounded-full text-xs font-semibold cursor-pointer transition-colors ${
+                                            active
+                                                ? 'bg-emerald-600 text-white shadow-sm'
+                                                : 'bg-white text-gray-600 border border-green-200 hover:bg-emerald-50'
+                                        }`}
+                                    >
+                                        {tab.label}
+                                        <span className={`ml-1.5 ${active ? 'text-emerald-100' : 'text-gray-400'}`}>
+                                            {tab.count}
+                                        </span>
+                                    </button>
+                                )
+                            })}
 
-                        <thead>
-                            <tr>
-                                {COLUMNS.map((col, index) => {
-                                    const isFiltered = Boolean(filters[col.key])
-                                    return (
-                                        <th
-                                            key={col.key}
-                                            className={`bg-slate-500 text-white ${HEADER_CELL} ${dividerClass(index)} px-2 py-3 text-[11px] font-bold uppercase tracking-wide align-middle`}
+                            <button
+                                type="button"
+                                onClick={handleExport}
+                                disabled={filteredRows.length === 0}
+                                title="Download the table as an Excel file"
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold text-emerald-700 bg-white border border-emerald-500 hover:bg-emerald-50 cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                <Download size={14} />
+                                Export
+                            </button>
+                        </div>
+
+                        <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                            {selectedIds.size > 0 && (
+                                <span className="px-3 py-1.5 text-xs font-semibold text-emerald-800 bg-emerald-100 rounded-full">
+                                    {selectedIds.size} selected
+                                </span>
+                            )}
+                            {activeFilterCount > 0 && (
+                                <button
+                                    type="button"
+                                    onClick={() => setFilters({})}
+                                    className="px-3 py-1.5 text-xs font-semibold text-emerald-800 bg-emerald-100 hover:bg-emerald-200 rounded-full cursor-pointer transition-colors"
+                                >
+                                    Clear {activeFilterCount} filter{activeFilterCount > 1 ? 's' : ''}
+                                </button>
+                            )}
+                            {hasEdits && (
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={saveEdits}
+                                        title="Save the edits"
+                                        className="px-3 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-md cursor-pointer transition-colors"
+                                    >
+                                        Save ({editCount})
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={discardEdits}
+                                        title="Discard the edits (Esc)"
+                                        className="px-3 py-1.5 text-xs font-bold text-gray-800 bg-gray-200 hover:bg-gray-300 rounded-md cursor-pointer transition-colors"
+                                    >
+                                        Discard
+                                    </button>
+                                </div>
+                            )}
+                            <div className="relative w-full sm:w-72">
+                                <Search
+                                    size={16}
+                                    className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
+                                />
+                                <input
+                                    type="text"
+                                    value={search}
+                                    onChange={(e) => setSearch(e.target.value)}
+                                    placeholder="Search item, code, type, category..."
+                                    className="w-full pl-9 pr-3 py-2 text-sm bg-white border border-green-200 rounded-lg outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                                />
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="max-h-[60vh] overflow-auto bg-white">
+                        <table
+                            className="border-separate"
+                            style={{ minWidth: TOTAL_WIDTH, width: '100%', tableLayout: 'fixed', borderSpacing: 0 }}
+                        >
+                            <colgroup>
+                                {COLUMNS.map((col, index) => (
+                                    <col
+                                        key={col.key}
+                                        style={{
+                                            width: col.width,
+                                            minWidth: index < FROZEN_COUNT ? col.width : undefined,
+                                            maxWidth: index < FROZEN_COUNT ? col.width : undefined,
+                                        }}
+                                    />
+                                ))}
+                            </colgroup>
+
+                            <thead>
+                                <tr>
+                                    {COLUMNS.map((col, index) => {
+                                        const isFiltered = Boolean(filters[col.key])
+                                        return (
+                                            <th
+                                                key={col.key}
+                                                className={`bg-slate-500 text-white ${HEADER_CELL} ${dividerClass(index)} px-2 py-3 text-[11px] font-bold uppercase tracking-wide align-middle`}
+                                                style={{
+                                                    position: 'sticky',
+                                                    top: 0,
+                                                    height: 64,
+                                                    zIndex: isFrozen(index) ? 30 : 20,
+                                                    ...leftStyle(index),
+                                                }}
+                                            >
+                                                {col.kind === 'select' ? (
+                                                    <input
+                                                        ref={selectAllRef}
+                                                        type="checkbox"
+                                                        checked={allSelected}
+                                                        onChange={toggleAllRows}
+                                                        aria-label="Select all rows"
+                                                        className="w-4 h-4 cursor-pointer accent-emerald-600"
+                                                    />
+                                                ) : (
+                                                    <div className="flex items-center justify-center gap-1.5">
+                                                        <span className="leading-tight text-center whitespace-normal break-words">
+                                                            {col.label}
+                                                        </span>
+                                                        {col.filterable !== false && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={(e) => openFilter(col.key, e)}
+                                                                aria-label={`Filter ${col.label}`}
+                                                                title={isFiltered ? `Filtered: ${col.label}` : `Filter ${col.label}`}
+                                                                className={`shrink-0 p-1 rounded cursor-pointer transition-colors ${
+                                                                    isFiltered
+                                                                        ? 'bg-white text-slate-700'
+                                                                        : 'text-white/80 hover:bg-white/25 hover:text-white'
+                                                                }`}
+                                                            >
+                                                                <Filter size={13} />
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                )}
+                                            </th>
+                                        )
+                                    })}
+                                </tr>
+                            </thead>
+
+                            <tbody>
+                                {filteredRows.length === 0 ? (
+                                    <tr>
+                                        <td
+                                            colSpan={COLUMNS.length}
+                                            className="px-3 py-12 text-center text-sm text-gray-500 bg-white border-b border-gray-200"
+                                        >
+                                            No assets found
+                                        </td>
+                                    </tr>
+                                ) : (
+                                    filteredRows.map((row, rowIndex) => {
+                                        const rowBg = selectedIds.has(row.id) ? 'bg-emerald-50' : 'bg-white'
+                                        return (
+                                            <tr key={row.id} className="group">
+                                                {COLUMNS.map((col, index) => (
+                                                    <td
+                                                        key={col.key}
+                                                        className={`${rowBg} group-hover:bg-slate-50 ${BODY_CELL} ${dividerClass(index)} px-3 py-2 text-xs text-gray-700 text-center align-middle whitespace-normal break-words transition-colors ${col.cell || ''}`}
+                                                        onDoubleClick={
+                                                            col.kind === 'remarks' ? () => setEditingRemarkId(row.id) : undefined
+                                                        }
+                                                        style={{
+                                                            height: 42,
+                                                            ...(isFrozen(index)
+                                                                ? { position: 'sticky', zIndex: 10, ...leftStyle(index) }
+                                                                : {}),
+                                                        }}
+                                                    >
+                                                        {renderCell(col, row, rowIndex)}
+                                                    </td>
+                                                ))}
+                                            </tr>
+                                        )
+                                    })
+                                )}
+                            </tbody>
+
+                            {filteredRows.length > 0 && (
+                                <tfoot>
+                                    <tr>
+                                        <td
+                                            colSpan={FROZEN_COUNT}
+                                            className={`bg-slate-500 text-white ${FOOTER_CELL} ${
+                                                freezeEnabled ? FROZEN_DIVIDER : ''
+                                            } px-3 py-3 text-xs font-bold uppercase tracking-wide text-center`}
                                             style={{
                                                 position: 'sticky',
-                                                top: 0,
-                                                height: 64,
-                                                zIndex: isFrozen(index) ? 30 : 20,
-                                                ...leftStyle(index),
+                                                bottom: 0,
+                                                zIndex: freezeEnabled ? 30 : 20,
+                                                ...(freezeEnabled ? { left: 0 } : {}),
                                             }}
                                         >
-                                            {col.kind === 'select' ? (
-                                                <input
-                                                    ref={selectAllRef}
-                                                    type="checkbox"
-                                                    checked={allSelected}
-                                                    onChange={toggleAllRows}
-                                                    aria-label="Select all rows"
-                                                    className="w-4 h-4 cursor-pointer accent-emerald-600"
-                                                />
-                                            ) : (
-                                                <div className="flex items-center justify-center gap-1.5">
-                                                    <span className="leading-tight text-center whitespace-normal break-words">
-                                                        {col.label}
-                                                    </span>
-                                                    {col.filterable !== false && (
-                                                        <button
-                                                            type="button"
-                                                            onClick={(e) => openFilter(col.key, e)}
-                                                            aria-label={`Filter ${col.label}`}
-                                                            title={isFiltered ? `Filtered: ${col.label}` : `Filter ${col.label}`}
-                                                            className={`shrink-0 p-1 rounded cursor-pointer transition-colors ${
-                                                                isFiltered
-                                                                    ? 'bg-white text-slate-700'
-                                                                    : 'text-white/80 hover:bg-white/25 hover:text-white'
-                                                            }`}
-                                                        >
-                                                            <Filter size={13} />
-                                                        </button>
-                                                    )}
-                                                </div>
-                                            )}
-                                        </th>
-                                    )
-                                })}
-                            </tr>
-                        </thead>
-
-                        <tbody>
-                            {filteredRows.length === 0 ? (
-                                <tr>
-                                    <td
-                                        colSpan={COLUMNS.length}
-                                        className="px-3 py-12 text-center text-sm text-gray-500 bg-white border-b border-gray-200"
-                                    >
-                                        No assets found
-                                    </td>
-                                </tr>
-                            ) : (
-                                filteredRows.map((row, rowIndex) => {
-                                    const rowBg = selectedIds.has(row.id) ? 'bg-emerald-50' : 'bg-white'
-                                    return (
-                                        <tr key={row.id} className="group">
-                                            {COLUMNS.map((col, index) => (
-                                                <td
-                                                    key={col.key}
-                                                    className={`${rowBg} group-hover:bg-slate-50 ${BODY_CELL} ${dividerClass(index)} px-3 py-2 text-xs text-gray-700 text-center align-middle whitespace-normal break-words transition-colors ${col.cell || ''}`}
-                                                    onDoubleClick={
-                                                        col.kind === 'remarks' ? () => setEditingRemarkId(row.id) : undefined
-                                                    }
-                                                    style={{
-                                                        height: 42,
-                                                        ...(isFrozen(index)
-                                                            ? { position: 'sticky', zIndex: 10, ...leftStyle(index) }
-                                                            : {}),
-                                                    }}
-                                                >
-                                                    {renderCell(col, row, rowIndex)}
-                                                </td>
-                                            ))}
-                                        </tr>
-                                    )
-                                })
-                            )}
-                        </tbody>
-
-                        {filteredRows.length > 0 && (
-                            <tfoot>
-                                <tr>
-                                    <td
-                                        colSpan={FROZEN_COUNT}
-                                        className={`bg-slate-500 text-white ${FOOTER_CELL} ${
-                                            freezeEnabled ? FROZEN_DIVIDER : ''
-                                        } px-3 py-3 text-xs font-bold uppercase tracking-wide text-center`}
-                                        style={{
-                                            position: 'sticky',
-                                            bottom: 0,
-                                            zIndex: freezeEnabled ? 30 : 20,
-                                            ...(freezeEnabled ? { left: 0 } : {}),
-                                        }}
-                                    >
-                                        Total
-                                    </td>
-                                    {FOOTER_SUM_KEYS.map((key) => (
+                                            Total
+                                        </td>
+                                        {FOOTER_SUM_KEYS.map((key) => (
+                                            <td
+                                                key={key}
+                                                className={`bg-slate-500 text-white ${FOOTER_CELL} px-3 py-3 text-xs font-bold text-center`}
+                                                style={{ position: 'sticky', bottom: 0, zIndex: 20 }}
+                                            >
+                                                {totals[key] === 0 ? '_' : formatNumber(totals[key])}
+                                            </td>
+                                        ))}
                                         <td
-                                            key={key}
                                             className={`bg-slate-500 text-white ${FOOTER_CELL} px-3 py-3 text-xs font-bold text-center`}
                                             style={{ position: 'sticky', bottom: 0, zIndex: 20 }}
                                         >
-                                            {totals[key] === 0 ? '-' : formatNumber(totals[key])}
+                                            {totals.totalValue === 0 ? (
+                                                '_'
+                                            ) : (
+                                                <span
+                                                    className="block whitespace-nowrap overflow-hidden text-ellipsis"
+                                                    title={formatCurrency(totals.totalValue)}
+                                                >
+                                                    {formatCurrency(totals.totalValue)}
+                                                </span>
+                                            )}
                                         </td>
-                                    ))}
-                                    <td
-                                        className={`bg-slate-500 text-white ${FOOTER_CELL} px-3 py-3 text-xs font-bold text-center`}
-                                        style={{ position: 'sticky', bottom: 0, zIndex: 20 }}
-                                    >
-                                        {totals.totalValue === 0 ? '-' : formatCurrency(totals.totalValue)}
-                                    </td>
-                                    {/* Remarks has no total */}
-                                    <td
-                                        className={`bg-slate-500 text-white ${FOOTER_CELL} px-3 py-3 text-xs font-bold text-center`}
-                                        style={{ position: 'sticky', bottom: 0, zIndex: 20 }}
-                                    >
-                                        -
-                                    </td>
-                                </tr>
-                            </tfoot>
-                        )}
-                    </table>
+                                        <td
+                                            className={`bg-slate-500 text-white ${FOOTER_CELL} px-3 py-3 text-xs font-bold text-center`}
+                                            style={{ position: 'sticky', bottom: 0, zIndex: 20 }}
+                                        >
+                                            _
+                                        </td>
+                                    </tr>
+                                </tfoot>
+                            )}
+                        </table>
+                    </div>
                 </div>
-            </div>
 
-            {/* Excel-style filter modal */}
-            {filterModal && filterColumn && (
-                <ColumnFilterModal
-                    key={filterModal.key}
-                    column={filterColumn}
-                    values={modalValues}
-                    selected={filters[filterModal.key] || null}
-                    position={filterModal.position}
-                    onApply={(draft, values) => applyFilter(filterModal.key, draft, values)}
-                    onClose={closeFilter}
-                />
-            )}
-        </div>
+                {filterModal && filterColumn && (
+                    <ColumnFilterModal
+                        key={filterModal.key}
+                        column={filterColumn}
+                        values={modalValues}
+                        selected={filters[filterModal.key] || null}
+                        position={filterModal.position}
+                        onApply={(draft, values) => applyFilter(filterModal.key, draft, values)}
+                        onClose={closeFilter}
+                    />
+                )}
+            </div>
+        </>
     )
 }
 

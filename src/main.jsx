@@ -5,11 +5,13 @@ import routers from "./routes/Routes";
 import { AuthProvider } from "./auth/AuthContext";
 import "./index.css";
 import { SocketProvider } from "./hooks/socketProvider/SocketContext";
+import ChatLauncher from "./components/globalChatBox/ChatLauncher";
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
     <AuthProvider>
       <SocketProvider>
         <RouterProvider router={routers} />
+        <ChatLauncher/>
       </SocketProvider>
     </AuthProvider>
   </React.StrictMode>,

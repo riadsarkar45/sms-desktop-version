@@ -7,7 +7,6 @@ const SOCKET_URL =
     import.meta.env.VITE_BACKEND_URL ||
     'https://erp-eyf7.onrender.com';
 
-console.log('[Socket] Module loaded:', SOCKET_URL);
 
 const socket = io(SOCKET_URL, {
     withCredentials: true,
@@ -44,7 +43,6 @@ export function SocketProvider({ children }) {
         };
 
         const onConnect = () => {
-            console.log('[Socket] CONNECTED:', socket.id);
 
             socket.emit('register-user', {
                 userId: normalizedUserId,
@@ -59,14 +57,11 @@ export function SocketProvider({ children }) {
             console.error('[Socket] CONNECTION ERROR:', error.message);
         };
 
-        const onAny = (event, ...args) => {
-            console.log(`[Socket] RECEIVED: ${event}`, ...args);
-        };
+       
 
         socket.on('connect', onConnect);
         socket.on('disconnect', onDisconnect);
         socket.on('connect_error', onConnectError);
-        socket.onAny(onAny);
 
         if (!socket.connected) {
             socket.connect();
@@ -76,7 +71,6 @@ export function SocketProvider({ children }) {
             socket.off('connect', onConnect);
             socket.off('disconnect', onDisconnect);
             socket.off('connect_error', onConnectError);
-            socket.offAny(onAny);
         };
     }, [normalizedUserId]);
 

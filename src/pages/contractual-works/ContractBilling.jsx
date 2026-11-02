@@ -589,8 +589,11 @@ const ContractBilling = () => {
             else row.pcQty += qty;
         });
 
-        // Build groups. With a date filter (Today, Last 7 Days, month...) keep only
-        // rows that were actually produced inside the selected period.
+        // Build groups. With a date filter (Today, Last 7 Days, month...) keep every row that
+        // has RUNNING production in the selected period OR PREVIOUS production before it.
+        // So a job that was produced yesterday / earlier but has no running production today
+        // is still visible (running = 0, billed = 0), and a job produced before AND today
+        // shows both the previous and the running quantity.
         const groups = Array.from(jobs.entries())
             .map(([jobNo, comps]) => {
                 const compList = Array.from(comps.values())
@@ -599,7 +602,7 @@ const ContractBilling = () => {
                         orderQty: comp.orderQty,
                         label: comp.label,
                         rows: Array.from(comp.rowsByProcess.values())
-                            .filter((row) => !hasDateFilter || row.pcQty > 0)
+                            .filter((row) => !hasDateFilter || row.pcQty > 0 || row.prevQty > 0)
                             .map((row) => ({ ...row, totalQty: row.prevQty + row.pcQty })),
                     }))
                     .filter((comp) => comp.rows.length > 0);

@@ -4,13 +4,14 @@ import { Plus, Filter, X, GripVertical, Search, Download, CheckCircle, AlertCirc
 import useAxiosPublic from '../../hooks/AxiosPublic'
 import useAxiosPrivate from '../../hooks/UseAxiosPrivate'
 import { useAuth } from '../../auth/AuthContext'
+import { Link } from 'react-router-dom'
 
 /* ------------------------------------------------------------------ */
 /*  Custom Toast Notification Component                                */
 /* ------------------------------------------------------------------ */
 const Toast = ({ notice, onClose }) => {
     if (!notice) return null
-    
+
     useEffect(() => {
         if (notice.kind !== 'loading') {
             const timer = setTimeout(() => {
@@ -759,8 +760,7 @@ const AddChallanModal = ({ onSave, onClose, showNotice }) => {
     }
 
     const inputClass = (hasError) =>
-        `w-full px-3 py-2 text-sm text-gray-900 bg-white border rounded-md outline-none focus:ring-2 focus:ring-sky-100 ${
-            hasError ? 'border-red-400 focus:border-red-500' : 'border-gray-300 focus:border-primary-500'
+        `w-full px-3 py-2 text-sm text-gray-900 bg-white border rounded-md outline-none focus:ring-2 focus:ring-sky-100 ${hasError ? 'border-red-400 focus:border-red-500' : 'border-gray-300 focus:border-primary-500'
         }`
 
     const inputType = (col) => (col.input === 'date' ? 'date' : col.type === 'number' ? 'number' : 'text')
@@ -841,6 +841,8 @@ const AssetMovement = () => {
     const { user } = useAuth()
     const axiosPrivate = useAxiosPrivate()
 
+    const fileInputRef = useRef(null)
+
     const showNotice = useCallback((kind, text) => {
         const now = Date.now()
         if (lastNoticeRef.current.text === text && now - lastNoticeRef.current.time < 3000) {
@@ -858,12 +860,12 @@ const AssetMovement = () => {
             console.log('asset items response:', res.data)
 
             const list = Array.isArray(res.data) ? res.data : res.data?.data ?? []
-            
+
             const mappedList = list.map((item) => ({
                 ...item,
                 date: item.date || (item.createdAt ? item.createdAt.split('T')[0] : todayLocal()),
             }))
-            
+
             setRows(mappedList)
             showNotice('success', 'Assets fetched successfully.')
         } catch (err) {
@@ -969,12 +971,12 @@ const AssetMovement = () => {
 
     const renderCell = (col, row) => {
         const rawValue = row[col.key]
-        
+
         // Check for null, undefined, empty string, or the literal string "NULL" (case-insensitive)
-        const isNullish = 
-            rawValue === null || 
-            rawValue === undefined || 
-            rawValue === '' || 
+        const isNullish =
+            rawValue === null ||
+            rawValue === undefined ||
+            rawValue === '' ||
             String(rawValue).trim().toUpperCase() === 'NULL'
 
         if (col.type === 'number') {
@@ -1014,6 +1016,17 @@ const AssetMovement = () => {
                             <Plus size={14} />
                             Add Challan
                         </button>
+
+
+                        <Link to="/dashboard/upload">
+                            <button
+                                type="button"
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold text-white bg-slate-800/80 hover:bg-primary-600 shadow-sm cursor-pointer transition-colors"
+                            >
+                                <Plus size={14} />
+                                Upload
+                            </button>
+                        </Link>
 
                         <button
                             type="button"
@@ -1086,9 +1099,8 @@ const AssetMovement = () => {
                                                     onClick={(e) => openFilter(col.key, e)}
                                                     aria-label={`Filter ${col.label}`}
                                                     title={isFiltered ? `Filtered: ${col.label}` : `Filter ${col.label}`}
-                                                    className={`shrink-0 p-1 rounded cursor-pointer transition-colors ${
-                                                        isFiltered ? 'bg-white text-slate-700' : 'text-white/80 hover:bg-white/25 hover:text-white'
-                                                    }`}
+                                                    className={`shrink-0 p-1 rounded cursor-pointer transition-colors ${isFiltered ? 'bg-white text-slate-700' : 'text-white/80 hover:bg-white/25 hover:text-white'
+                                                        }`}
                                                 >
                                                     <Filter size={13} />
                                                 </button>
@@ -1167,8 +1179,8 @@ const AssetMovement = () => {
                                             {totals[col.key] === 0
                                                 ? '_'
                                                 : col.currency
-                                                ? formatCurrency(totals[col.key])
-                                                : formatNumber(totals[col.key])}
+                                                    ? formatCurrency(totals[col.key])
+                                                    : formatNumber(totals[col.key])}
                                         </td>
                                     ))}
                                     <td

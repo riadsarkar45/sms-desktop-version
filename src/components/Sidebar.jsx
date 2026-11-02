@@ -1,710 +1,926 @@
+import { useEffect, useMemo, useState } from "react";
 import { Link, Outlet, useLocation } from "react-router-dom";
-import { useState, useMemo } from "react";
 import {
     LayoutDashboard,
     Package,
     FileText,
-    PlusCircle,
-    PanelLeftClose,
-    PanelLeftOpen,
-    X,
-    Bell,
-    ChevronDown,
-    UserRoundPlus,
-    ZoomIn,
-    ZoomOut,
-    Users,
-    ClipboardList,
-    ArrowLeftRight,
     Factory,
+    ArrowLeftRight,
+    ClipboardList,
+    Users,
+    UserRoundPlus,
     FilePlus,
     SlidersHorizontal,
-    RotateCcw
+    ChevronDown,
+    Bell,
+    ZoomIn,
+    ZoomOut,
+    RotateCcw,
+    Menu,
+    X,
+    Boxes,
+    ChartNoAxesCombined,
+    Wallet,
+    Settings,
+    Building2,
+    Truck,
+    ClipboardCheck,
+    FileSpreadsheet,
+    Layers3,
+    ScanLine,
+    Landmark,
 } from "lucide-react";
+
 import UseUserRoles from "../hooks/all-users/UseUserRoles";
 import { useAuth } from "../auth/AuthContext";
 
-/**
- * Modern Thread/Yarn Cone Icon
- */
-function ModernThreadIcon({ size = 18, className = "" }) {
-    return (
-        <svg
-            xmlns="http://www.w3.org/2000/svg"
-            viewBox="0 0 24 24"
-            width={size}
-            height={size}
-            fill="none"
+// --------------------------------------------------
+// Custom yarn icon
+// --------------------------------------------------
+
+const ModernThreadIcon = ({ size = 19, className = "" }) => (
+    <svg
+        width={size}
+        height={size}
+        viewBox="0 0 24 24"
+        fill="none"
+        className={className}
+        xmlns="http://www.w3.org/2000/svg"
+    >
+        <path
+            d="M12 2.5C8.7 2.5 6 5.1 6 8.3C6 10.4 7.1 12.1 8.5 13.3L5.5 20.5H18.5L15.5 13.3C16.9 12.1 18 10.4 18 8.3C18 5.1 15.3 2.5 12 2.5Z"
             stroke="currentColor"
-            strokeWidth="1.8"
+            strokeWidth="1.6"
             strokeLinecap="round"
             strokeLinejoin="round"
-            className={className}
+        />
+        <path
+            d="M8 7.5C10 9 14 9 16 7.5M7.5 10.5C10 12 14 12 16.5 10.5M9 13.2C10.8 14 13.2 14 15 13.2"
+            stroke="currentColor"
+            strokeWidth="1.3"
+            strokeLinecap="round"
+        />
+        <path
+            d="M12 2.5V1"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+        />
+    </svg>
+);
+
+// --------------------------------------------------
+// Reusable menu link
+// --------------------------------------------------
+
+const MegaMenuLink = ({ item, onNavigate, isActive }) => {
+    const Icon = item.icon;
+
+    return (
+        <Link
+            to={item.path}
+            onClick={onNavigate}
+            className={`
+                group flex items-center gap-3 rounded-lg px-3 py-2.5
+                transition-all duration-150
+                ${isActive
+                    ? "bg-[#eaf0f7] text-[#173c63]"
+                    : "text-slate-600 hover:bg-slate-100 hover:text-[#173c63]"
+                }
+            `}
         >
-            <path d="M8 3h8l2 15a3 3 0 0 1-3 3H9a3 3 0 0 1-3-3L8 3z" />
-            <path d="M7.5 7h9" opacity="0.6" />
-            <path d="M7 11h10" opacity="0.6" />
-            <path d="M6.5 15h11" opacity="0.6" />
-            <ellipse cx="12" cy="3" rx="4" ry="1.5" />
-            <ellipse cx="12" cy="21" rx="6" ry="1.5" />
-        </svg>
+            {Icon && (
+                <span
+                    className={`
+                        flex h-8 w-8 shrink-0 items-center justify-center rounded-lg
+                        ${isActive
+                            ? "bg-white text-[#173c63]"
+                            : "bg-slate-100 text-slate-500 group-hover:bg-white group-hover:text-[#173c63]"
+                        }
+                    `}
+                >
+                    <Icon size={16} />
+                </span>
+            )}
+
+            <span className="min-w-0 flex-1">
+                <span className="block truncate text-[13px] font-semibold">
+                    {item.label}
+                </span>
+
+                {item.description && (
+                    <span className="mt-0.5 block truncate text-[11px] text-slate-400">
+                        {item.description}
+                    </span>
+                )}
+            </span>
+        </Link>
     );
-}
+};
+
+// --------------------------------------------------
+// Main Layout
+// --------------------------------------------------
 
 const Sidebar = () => {
     const location = useLocation();
-    const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-    const [isCollapsed, setIsCollapsed] = useState(false);
-    const [zoomLevel, setZoomLevel] = useState(100);
 
     const { user } = useAuth();
     const { sections = {} } = UseUserRoles() || {};
 
-    const isActive = (path) => location.pathname === path;
+    const [openMenu, setOpenMenu] = useState(null);
+    const [zoomLevel, setZoomLevel] = useState(100);
+    const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-    // Zoom handlers
-    const updateZoom = (val) => {
-        const clamped = Math.min(200, Math.max(40, Number(val) || 100));
-        setZoomLevel(clamped);
+    const currentPath = location.pathname;
+
+    // Close menus whenever the route changes.
+    useEffect(() => {
+        setOpenMenu(null);
+        setMobileMenuOpen(false);
+    }, [location.pathname]);
+
+    // --------------------------------------------------
+    // Zoom
+    // --------------------------------------------------
+
+    const handleZoomIn = () => {
+        setZoomLevel((previous) => Math.min(previous + 10, 200));
     };
 
-    const handleZoomStep = (delta) => {
-        updateZoom(zoomLevel + delta);
+    const handleZoomOut = () => {
+        setZoomLevel((previous) => Math.max(previous - 10, 40));
     };
 
-    // Sub-items definitions
-    const yarnSubItems = [
-        { path: "/dashboard/yarn", label: "Yarn Purchase", icon: Package },
-        { path: "/dashboard/spinning-yarn-movement", label: "Yarn Movement Spinning", icon: Package },
-        { path: "/dashboard/yarn/movement", label: "Raw Yarn Movement", icon: Package },
-        { path: "/dashboard/yarn/stock", label: "Raw Yarn Stock", icon: Package },
-        { path: "/dashboard/yarndyed/movement", label: "Yarn Dyed Movement", icon: Package },
-        { path: "/dashboard/yarndyed/stock", label: "Yarn Dyed Stock", icon: Package },
-    ];
-
-    const orderSubItems = [
-        { path: "/dashboard/knitting-order", label: "Knitting Orders", icon: Package, permission: "knittingOrder" },
-        { path: "/dashboard/dyeing-order", label: "Dyeing Orders", icon: Package, permission: "dyeingOrder" },
-        { path: "/dashboard/yarn-dye-order", label: "Yarn Dyeing Orders", icon: Package, permission: "yarnDyeingOrder" },
-        { path: "/dashboard/aop-order", label: "AOP Orders", icon: Package, permission: "aopOrder" },
-    ];
-
-    const movementSubItems = [
-        { path: "/dashboard/challan/aop", label: "AOP Challan", icon: Package, permission: "aopOrder" },
-        { path: "/dashboard/challan/dyeing", label: "Dyeing Challan", icon: Package, permission: "dyeingOrder" },
-        { path: "/dashboard/challan/knitting", label: "Knitting Challan", icon: Package, permission: "knittingOrder" },
-    ];
-
-    const othersSubItems = [
-        { path: "/dashboard/challan/others/compacting", label: "Compacting", icon: Package },
-        { path: "/dashboard/challan/others/heat-set", label: "Heat Set", icon: Package },
-        { path: "/dashboard/challan/others/trumble", label: "Trumble", icon: Package },
-        { path: "/dashboard/challan/others/re-process", label: "Re-Process", icon: Package },
-    ];
-
-    const misSubItems = [
-        { path: "/dashboard/mis/glance", label: "At A Glance (Stock)", icon: FileText },
-    ];
-
-    const dailyProductionSubItems = [
-        { path: "/dashboard/productionsummary", label: "Summary Overview", icon: PlusCircle },
-        { path: "/dashboard/daily-production/cutting", label: "Cutting Production", icon: Package },
-        { path: "/dashboard/daily-production/sewing", label: "Sewing Production", icon: Package },
-        { path: "/dashboard/daily-production/finishing", label: "Finishing Production", icon: Package },
-        { path: "/dashboard/daily-production/export", label: "Export Shipment", icon: Package },
-    ];
-
-    const assetSubItems = [
-        { path: "/dashboard/asset-summary", label: "Asset Summary", icon: ClipboardList },
-        { path: "/dashboard/asset-movement", label: "Asset Movement", icon: ArrowLeftRight },
-    ];
-
-    const contractSubItems = [
-        { path: "/dashboard/contract-billing", label: "Contract Manu. Bill", icon: Factory },
-        { path: "/dashboard/sewing-contract", label: "Partial Process Control", icon: Factory },
-    ];
-
-    const userSubItems = [
-        { path: "/dashboard/new-user", label: "Add New User", icon: UserRoundPlus, permission: "addNewUser" },
-        { path: "/dashboard/user-list", label: "User Directory & Roles", icon: Users, permission: "setUserPermission" },
-    ];
-
-    const workOrderSubItems = [
-        { path: "/dashboard/pending-work-orders", label: "My Work Orders", icon: FileText, permission: "seeMyWorkOrders" },
-        { path: "/dashboard/requested-work-orders", label: "Requested Orders", icon: ClipboardList, permission: "seeRequestedWorkOrders" },
-        { path: "/dashboard/high-loss-job", label: "Work Order Analysis", icon: FileText, permission: "workOrderAnalysis" }
-    ];
-
-    const debitNoteSubItems = [
-        { path: "/dashboard/debit-note", label: "Create Debit Note", icon: FilePlus },
-        { path: "/dashboard/debit-note/list", label: "Debit Note Lists", icon: FileText },
-        { path: "/dashboard/debit-note/requested", label: "Requested Debit Notes", icon: ClipboardList },
-    ];
-
-    const topNavItems = [
-        sections?.styleRequirements?.bookingView && { path: "/dashboard/style-requirement", label: "Style Requirements", icon: PlusCircle },
-        sections?.styleRequirements?.bookingView && { path: "/dashboard/factory-balance-comparison", label: "Compare Factory Stock", icon: PlusCircle },
-        sections?.styleRequirements?.bookingView && { path: "/dashboard/report-studio", label: "Report Studio", icon: PlusCircle },
-    ].filter(Boolean);
-
-    const bottomNavItems = [
-        { path: "/dashboard/party-wise-view", label: "Party Wise View", icon: UserRoundPlus },
-    ];
-
-    // Dropdown state tracking
-    const [openMenus, setOpenMenus] = useState(() => ({
-        yarn: yarnSubItems.some(i => i.path === location.pathname),
-        orders: orderSubItems.some(i => i.path === location.pathname),
-        movement: movementSubItems.some(i => i.path === location.pathname) || othersSubItems.some(i => i.path === location.pathname),
-        others: othersSubItems.some(i => i.path === location.pathname),
-        mis: misSubItems.some(i => i.path === location.pathname),
-        dailyProduction: dailyProductionSubItems.some(i => i.path === location.pathname),
-        user: userSubItems.some(i => i.path === location.pathname),
-        asset: assetSubItems.some(i => i.path === location.pathname),
-        contract: contractSubItems.some(i => i.path === location.pathname),
-        workOrders: workOrderSubItems.some(i => i.path === location.pathname),
-        debitNote: debitNoteSubItems.some(i => i.path === location.pathname),
-    }));
-
-    const toggleMenu = (key) => {
-        if (isCollapsed) setIsCollapsed(false);
-        setOpenMenus(prev => ({ ...prev, [key]: !prev[key] }));
+    const handleZoomReset = () => {
+        setZoomLevel(100);
     };
 
-    // Filtered lists based on user role sections
-    const visibleOrderItems = useMemo(() => {
-        if (!sections?.workOrders) return [];
-        return orderSubItems.filter(item => !item.permission || sections.workOrders?.[item.permission] === true);
-    }, [sections]);
-
-    const visibleMovementItems = useMemo(() => {
-        if (!sections?.movementBilling) return [];
-        return movementSubItems.filter(item => !item.permission || sections.movementBilling?.[item.permission] === true);
-    }, [sections]);
-
-    const visibleUserItems = useMemo(() => {
-        if (!sections?.userManagement) return [];
-        return userSubItems.filter(item => !item.permission || sections.userManagement?.[item.permission] === true);
-    }, [sections]);
-
-    const visibleWorkOrderItems = useMemo(() => {
-        return workOrderSubItems.filter(item => !item.permission || sections?.workOrders?.[item.permission] === true);
-    }, [sections]);
-
-    // Active state checkers
-    const isYarnActive = yarnSubItems.some(i => isActive(i.path));
-    const isOrdersActive = orderSubItems.some(i => isActive(i.path));
-    const isMovementActive = movementSubItems.some(i => isActive(i.path)) || othersSubItems.some(i => isActive(i.path));
-    const isOthersActive = othersSubItems.some(i => isActive(i.path));
-    const isMisActive = misSubItems.some(i => isActive(i.path));
-    const isDailyActive = dailyProductionSubItems.some(i => isActive(i.path));
-    const isAssetActive = assetSubItems.some(i => isActive(i.path));
-    const isContractActive = contractSubItems.some(i => isActive(i.path));
-    const isUserActive = userSubItems.some(i => isActive(i.path));
-    const isWorkOrdersActive = workOrderSubItems.some(i => isActive(i.path));
-    const isDebitActive = debitNoteSubItems.some(i => isActive(i.path));
-
-    // Dynamic Page Titles
-    const getPageInfo = () => {
-        const path = location.pathname;
-
-        if (path.includes('/factory-wise-report/')) {
-            const factoryName = path.split('/factory-wise-report/')[1];
-            return { title: `Factory Report: ${factoryName}`, subtitle: "Detailed production and stock audit" };
-        }
-
-        if (path.includes('style-requirement')) return { title: 'Style & Requirements', subtitle: 'Fabric specifications and booking requirements' };
-        if (path.includes('audits')) return { title: 'System Audits', subtitle: 'Compliance and inventory audit records' };
-        if (path.includes('cutting') && !path.includes('daily-production')) return { title: 'Fabric Cutting Log', subtitle: 'Daily cutting room efficiency' };
-        if (path.includes('new-user')) return { title: 'Create User Account', subtitle: 'Provision new staff credentials & roles' };
-        if (path.includes('user-list')) return { title: 'User Management', subtitle: 'Configure user permissions and access levels' };
-        if (path.includes('asset-summary')) return { title: 'Asset Summary', subtitle: 'Fixed assets register and valuations' };
-        if (path.includes('asset-movement')) return { title: 'Asset Movement', subtitle: 'Transfer and relocation history' };
-        if (path.includes('external-manufacturing')) return { title: 'Contract Manufacturing', subtitle: 'Outsourced stitching and process lines' };
-        if (path.includes('contract-billing')) return { title: 'Contract Manufacturing Billing', subtitle: 'Manage external vendor invoices' };
-        if (path.includes('sewing-contract')) return { title: 'Partial Process Control', subtitle: 'Subcontracted operations' };
-        if (path.includes('party-wise-view')) return { title: 'Party-Wise View', subtitle: 'Supplier and buyer breakdown' };
-        if (path.includes('management-view')) return { title: 'Executive Overview', subtitle: 'High-level business analytics' };
-        if (path.includes('pending-work-orders')) return { title: 'My Work Orders', subtitle: 'Track your assigned operations' };
-        if (path.includes('requested-work-orders')) return { title: 'Requested Orders', subtitle: 'Orders awaiting manager review' };
-        if (path.includes('high-loss-job')) return { title: 'Work Order Analysis', subtitle: 'Material variance and loss analysis' };
-        if (path.includes('debit-note/create') || path === '/dashboard/debit-note') return { title: 'Create Debit Note', subtitle: 'Issue financial debit claims' };
-        if (path.includes('debit-note/list')) return { title: 'Debit Notes Register', subtitle: 'Comprehensive audit list' };
-        if (path.includes('debit-note/requested')) return { title: 'Requested Debit Notes', subtitle: 'Pending authorization notes' };
-
-        const routeMap = {
-            '/dashboard/home': { title: 'Operational Dashboard', subtitle: 'Live overview of factory lines, orders & materials' },
-            '/dashboard/yarn': { title: 'Yarn Procurement', subtitle: 'Inbound PO statuses and schedules' },
-            '/dashboard/yarn/movement': { title: 'Raw Yarn Movement', subtitle: 'Floor-to-spinning transfer ledger' },
-            '/dashboard/yarn/stock': { title: 'Raw Yarn Stock', subtitle: 'Real-time warehouse lot inventory' },
-            '/dashboard/spinning-yarn-movement': { title: 'Spinning Yarn Movement', subtitle: 'Spinning stage batch transfers' },
-            '/dashboard/yarndyed/movement': { title: 'Dyed Yarn Movement', subtitle: 'Yarn dye-house transfer manifests' },
-            '/dashboard/yarndyed/stock': { title: 'Dyed Yarn Stock', subtitle: 'Finished dyed yarn cones inventory' },
-            '/dashboard/knitting-order': { title: 'Knitting Work Orders', subtitle: 'Machine allocation and fabric output' },
-            '/dashboard/dyeing-order': { title: 'Fabric Dyeing Orders', subtitle: 'Batch dye lot queues and recipe status' },
-            '/dashboard/yarn-dye-order': { title: 'Yarn Dyeing Orders', subtitle: 'Hank and cone dye programs' },
-            '/dashboard/aop-order': { title: 'AOP Print Orders', subtitle: 'All-over printing production jobs' },
-            '/dashboard/productionsummary': { title: 'Production Summary', subtitle: 'Consolidated end-to-end throughput' },
-            '/dashboard/daily-production/cutting': { title: 'Daily Cutting Report', subtitle: 'Fabric lays and cut piece counts' },
-            '/dashboard/daily-production/sewing': { title: 'Daily Sewing Output', subtitle: 'Line-wise garment assembly metrics' },
-            '/dashboard/daily-production/finishing': { title: 'Daily Finishing & Packing', subtitle: 'Quality check, pressing and packing' },
-            '/dashboard/daily-production/export': { title: 'Export & Shipment', subtitle: 'Container staging and customs dispatch' },
-            '/dashboard/mis/glance': { title: 'MIS Dashboard (Stock)', subtitle: 'Consolidated management intelligence' },
-            '/dashboard/factory-balance-comparison': { title: 'Factory Stock Comparison', subtitle: 'Cross-facility inventory balancing' },
-            '/dashboard/report-studio': { title: 'Report Studio', subtitle: 'Custom business intelligence reports' },
-        };
-
-        return routeMap[path] || { title: 'Textile ERP System', subtitle: 'Factory Operations & Audit Portal' };
-    };
-
-    const pageInfo = getPageInfo();
     const scale = zoomLevel / 100;
 
-    // Helper: Navigation item renderer
-    const renderNavItem = (item) => {
-        const Icon = item.icon || Package;
-        const active = isActive(item.path);
+    // --------------------------------------------------
+    // Active route
+    // --------------------------------------------------
+
+    const isPathActive = (path) => {
+        if (!path) return false;
 
         return (
-            <li key={item.path}>
-                <Link
-                    to={item.path}
-                    onClick={() => setIsMobileMenuOpen(false)}
-                    className={`group relative flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-medium transition-all duration-200 no-underline ${
-                        active
-                            ? "bg-blue-600 text-white shadow-sm shadow-blue-500/25 font-semibold"
-                            : "text-white hover:text-white hover:bg-slate-800/80"
-                    } ${isCollapsed ? "justify-center px-2" : ""}`}
-                    title={isCollapsed ? item.label : undefined}
-                >
-                    <Icon size={18} className={`shrink-0 transition-transform duration-200 ${active ? "text-white" : "text-white group-hover:text-white"}`} />
-                    {!isCollapsed && <span className="truncate">{item.label}</span>}
-                    {active && !isCollapsed && (
-                        <span className="ml-auto w-1.5 h-1.5 rounded-full bg-white/90" />
-                    )}
-                </Link>
-            </li>
+            currentPath === path ||
+            (path !== "/dashboard" && currentPath.startsWith(`${path}/`))
         );
     };
 
-    // Helper: Dropdown group renderer
-    const renderDropdown = ({
-        id,
-        label,
-        icon: Icon,
-        isOpen,
-        isActiveParent,
-        items,
-        extraContent = null
-    }) => {
-        if (!items || items.length === 0) return null;
+    const isGroupActive = (items = []) =>
+        items.some((item) => isPathActive(item.path));
 
-        return (
-            <li key={id} className="relative">
-                <button
-                    onClick={() => toggleMenu(id)}
-                    className={`w-full group flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-medium transition-all duration-200 ${
-                        isActiveParent
-                            ? "bg-slate-800/90 text-white font-semibold border-l-2 border-blue-500"
-                            : "text-white hover:text-white hover:bg-slate-800/60"
-                    } ${isCollapsed ? "justify-center px-2" : "justify-between"}`}
-                    title={isCollapsed ? label : undefined}
-                >
-                    <div className="flex items-center gap-3 min-w-0">
-                        <Icon size={18} className={`shrink-0 transition-colors ${isActiveParent ? "text-white" : "text-white group-hover:text-white"}`} />
-                        {!isCollapsed && <span className="truncate">{label}</span>}
-                    </div>
+    // --------------------------------------------------
+    // Page title
+    // --------------------------------------------------
 
-                    {!isCollapsed && (
-                        <div className="flex items-center gap-1.5 ml-auto">
-                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-800 text-white font-normal">
-                                {items.length}
-                            </span>
-                            <ChevronDown
-                                size={14}
-                                className={`text-white transition-transform duration-200 ${isOpen ? "rotate-180 text-white" : ""}`}
-                            />
-                        </div>
-                    )}
-                </button>
+    const pageTitles = {
+        "/dashboard": "Dashboard",
+        "/dashboard/home": "Dashboard",
+        "/dashboard/yarn": "Yarn Purchase",
+        "/dashboard/spinning-yarn-movement": "Yarn Movement Spinning",
+        "/dashboard/yarn/movement": "Raw Yarn Movement",
+        "/dashboard/yarn/stock": "Raw Yarn Stock",
+        "/dashboard/yarndyed/movement": "Yarn Dyed Movement",
+        "/dashboard/yarndyed/stock": "Yarn Dyed Stock",
 
-                {isOpen && !isCollapsed && (
-                    <div className="mt-1 ml-3.5 pl-3 border-l border-slate-800/80 space-y-0.5 py-1 animate-in fade-in duration-150">
-                        {items.map(subItem => {
-                            const subActive = isActive(subItem.path);
+        "/dashboard/knitting-order": "Knitting Orders",
+        "/dashboard/dyeing-order": "Dyeing Orders",
+        "/dashboard/yarn-dye-order": "Yarn Dyeing Orders",
+        "/dashboard/aop-order": "AOP Orders",
 
-                            return (
-                                <Link
-                                    key={subItem.path}
-                                    to={subItem.path}
-                                    onClick={() => setIsMobileMenuOpen(false)}
-                                    className={`group flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-xs font-normal transition-all duration-150 no-underline ${
-                                        subActive
-                                            ? "bg-blue-600/15 text-white font-medium"
-                                            : "text-white hover:text-white hover:bg-slate-800/40"
-                                    }`}
-                                >
-                                    <span className={`w-1.5 h-1.5 rounded-full transition-colors ${subActive ? "bg-blue-400 scale-125" : "bg-slate-600 group-hover:bg-slate-400"}`} />
-                                    <span className="truncate">{subItem.label}</span>
-                                </Link>
-                            );
-                        })}
-                        {extraContent}
-                    </div>
-                )}
-            </li>
-        );
+        "/dashboard/challan/aop": "AOP Challan",
+        "/dashboard/challan/dyeing": "Dyeing Challan",
+        "/dashboard/challan/knitting": "Knitting Challan",
+        "/dashboard/challan/others/compacting": "Compacting Challan",
+        "/dashboard/challan/others/re-process": "Re-Process Challan",
+
+        "/dashboard/style-requirement": "Style Requirements",
+        "/dashboard/factory-balance-comparison": "Compare Factory Stock",
+        "/dashboard/report-studio": "Report Studio",
+        "/dashboard/style/reconciliation": "Style Reconciliation",
+        "/dashboard/balance-sheet": "Balance Sheet",
+
+        "/dashboard/productionsummary": "Production Summary",
+        "/dashboard/daily-production/cutting": "Cutting Production",
+        "/dashboard/daily-production/sewing": "Sewing Production",
+        "/dashboard/daily-production/finishing": "Finishing Production",
+        "/dashboard/daily-production/export": "Export Shipment",
+
+        "/dashboard/asset-summary": "Asset Summary",
+        "/dashboard/asset-movement": "Asset Movement",
+        "/dashboard/contract-billing": "Contract Manufacturing Bill",
+        "/dashboard/sewing-contract": "Partial Process Control",
+
+        "/dashboard/new-user": "Add New User",
+        "/dashboard/user-list": "User Directory & Roles",
+        "/dashboard/party-wise-view": "Party Wise View",
+
+        "/dashboard/debit-note": "Create Debit Note",
+        "/dashboard/debit-note/list": "Debit Note Lists",
+        "/dashboard/debit-note/requested": "Requested Debit Notes",
+
+        "/dashboard/mis/glance": "At A Glance",
+        "/dashboard/upload": "Upload Data",
     };
 
-    // Section Category Header
-    const renderSectionHeader = (title) => {
-        if (isCollapsed) return <div className="my-2 border-t border-slate-800/60" />;
-        return (
-            <li className="pt-4 pb-1 px-3">
-                <span className="text-[10px] font-semibold tracking-wider text-white uppercase">
-                    {title}
-                </span>
-            </li>
-        );
+    const pageTitle =
+        pageTitles[currentPath] ||
+        (currentPath.includes("/dashboard/debit-notes/")
+            ? "Debit Note Details"
+            : currentPath.includes("/dashboard/edit-debit-notes/")
+                ? "Edit Debit Note"
+                : currentPath.includes("/dashboard/new-order/")
+                    ? "New Work Order"
+                    : "SM ERP");
+
+    // --------------------------------------------------
+    // Menu definitions
+    // --------------------------------------------------
+
+    const yarnItems = [
+        {
+            path: "/dashboard/yarn",
+            label: "Yarn Purchase",
+            description: "Yarn purchase records",
+            icon: Package,
+        },
+        {
+            path: "/dashboard/spinning-yarn-movement",
+            label: "Yarn Movement Spinning",
+            description: "Spinning yarn movement",
+            icon: ArrowLeftRight,
+        },
+        {
+            path: "/dashboard/yarn/movement",
+            label: "Raw Yarn Movement",
+            description: "Raw yarn movement records",
+            icon: ArrowLeftRight,
+        },
+        {
+            path: "/dashboard/yarn/stock",
+            label: "Raw Yarn Stock",
+            description: "Current raw yarn stock",
+            icon: Boxes,
+        },
+        {
+            path: "/dashboard/yarndyed/movement",
+            label: "Yarn Dyed Movement",
+            description: "Dyed yarn movement",
+            icon: ArrowLeftRight,
+        },
+        {
+            path: "/dashboard/yarndyed/stock",
+            label: "Yarn Dyed Stock",
+            description: "Current dyed yarn stock",
+            icon: Boxes,
+        },
+    ];
+
+    const workOrderItems = [
+        {
+            path: "/dashboard/knitting-order",
+            label: "Knitting Orders",
+            icon: ClipboardList,
+            permission: "knittingOrder",
+        },
+        {
+            path: "/dashboard/dyeing-order",
+            label: "Dyeing Orders",
+            icon: ClipboardList,
+            permission: "dyeingOrder",
+        },
+        {
+            path: "/dashboard/yarn-dye-order",
+            label: "Yarn Dyeing Orders",
+            icon: ClipboardList,
+            permission: "yarnDyeingOrder",
+        },
+        {
+            path: "/dashboard/aop-order",
+            label: "AOP Orders",
+            icon: ClipboardList,
+            permission: "aopOrder",
+        },
+    ].filter((item) => sections.workOrders?.[item.permission] === true);
+
+    const movementItems = [
+        {
+            path: "/dashboard/challan/knitting",
+            label: "Knitting Challan",
+            icon: FileText,
+            permission: "knittingOrder",
+        },
+        {
+            path: "/dashboard/challan/dyeing",
+            label: "Dyeing Challan",
+            icon: FileText,
+            permission: "dyeingOrder",
+        },
+        {
+            path: "/dashboard/challan/aop",
+            label: "AOP Challan",
+            icon: FileText,
+            permission: "aopOrder",
+        },
+        {
+            path: "/dashboard/challan/others/compacting",
+            label: "Compacting Challan",
+            icon: FileText,
+        },
+        {
+            path: "/dashboard/challan/others/re-process",
+            label: "Re-Process Challan",
+            icon: FileText,
+        },
+    ].filter((item) => {
+        if (!item.permission) return true;
+
+        return sections.movementBilling?.[item.permission] === true;
+    });
+
+    const productionItems = [
+        {
+            path: "/dashboard/productionsummary",
+            label: "Summary Overview",
+            icon: ChartNoAxesCombined,
+        },
+        {
+            path: "/dashboard/daily-production/cutting",
+            label: "Cutting Production",
+            icon: Factory,
+        },
+        {
+            path: "/dashboard/daily-production/sewing",
+            label: "Sewing Production",
+            icon: Factory,
+        },
+        {
+            path: "/dashboard/daily-production/finishing",
+            label: "Finishing Production",
+            icon: Factory,
+        },
+        {
+            path: "/dashboard/daily-production/export",
+            label: "Export Shipment",
+            icon: Truck,
+        },
+    ];
+
+    const planningItems = [
+        ...(sections.styleRequirements?.bookingView === true
+            ? [
+                {
+                    path: "/dashboard/style-requirement",
+                    label: "Style Requirements",
+                    icon: FileSpreadsheet,
+                },
+                {
+                    path: "/dashboard/factory-balance-comparison",
+                    label: "Compare Factory Stock",
+                    icon: ArrowLeftRight,
+                },
+                {
+                    path: "/dashboard/report-studio",
+                    label: "Report Studio",
+                    icon: ChartNoAxesCombined,
+                },
+            ]
+            : []),
+        {
+            path: "/dashboard/style/reconciliation",
+            label: "Style Reconciliation",
+            icon: ClipboardCheck,
+        },
+        {
+            path: "/dashboard/balance-sheet",
+            label: "Balance Sheet",
+            icon: FileSpreadsheet,
+        },
+    ];
+
+    const financeItems = [
+        {
+            path: "/dashboard/debit-note",
+            label: "Create Debit Note",
+            icon: FilePlus,
+        },
+        {
+            path: "/dashboard/debit-note/list",
+            label: "Debit Note Lists",
+            icon: FileText,
+        },
+        {
+            path: "/dashboard/debit-note/requested",
+            label: "Requested Debit Notes",
+            icon: ClipboardCheck,
+        },
+        {
+            path: "/dashboard/contract-billing",
+            label: "Contract Manufacturing Bill",
+            icon: Wallet,
+        },
+        {
+            path: "/dashboard/sewing-contract",
+            label: "Partial Process Control",
+            icon: Factory,
+        },
+    ];
+
+    const assetItems = [
+        {
+            path: "/dashboard/asset-summary",
+            label: "Asset Summary",
+            icon: Building2,
+        },
+        {
+            path: "/dashboard/asset-movement",
+            label: "Asset Movement",
+            icon: ArrowLeftRight,
+        },
+    ];
+
+    const userItems = [
+        {
+            path: "/dashboard/new-user",
+            label: "Add New User",
+            icon: UserRoundPlus,
+            permission: "addNewUser",
+        },
+        {
+            path: "/dashboard/user-list",
+            label: "User Directory & Roles",
+            icon: Users,
+            permission: "setUserPermission",
+        },
+    ].filter(
+        (item) =>
+            sections.userManagement?.[item.permission] === true
+    );
+
+    const workManagementItems = [
+        {
+            path: "/dashboard/party-wise-view",
+            label: "Party Wise View",
+            icon: Users,
+        },
+        ...(sections.mis
+            ? [
+                {
+                    path: "/dashboard/mis/glance",
+                    label: "At A Glance",
+                    icon: ChartNoAxesCombined,
+                },
+            ]
+            : []),
+        {
+            path: "/dashboard/upload",
+            label: "Upload Data",
+            icon: FilePlus,
+        },
+    ];
+
+    // --------------------------------------------------
+    // Mega menu configuration
+    // --------------------------------------------------
+
+    const menuGroups = useMemo(
+        () =>
+            [
+                {
+                    key: "yarn",
+                    label: "Yarn & Inventory",
+                    icon: Package,
+                    columns: [
+                        {
+                            title: "Yarn Management",
+                            description: "Purchase and stock",
+                            items: yarnItems,
+                        },
+                    ],
+                },
+                {
+                    key: "manufacturing",
+                    label: "Manufacturing",
+                    icon: Factory,
+                    columns: [
+                        {
+                            title: "Work Orders",
+                            description: "Production order management",
+                            items: workOrderItems,
+                        },
+                        {
+                            title: "Challan & Movement",
+                            description: "Factory movement records",
+                            items: movementItems,
+                        },
+                        {
+                            title: "Daily Production",
+                            description: "Production and shipment",
+                            items: productionItems,
+                        },
+                    ],
+                },
+                {
+                    key: "planning",
+                    label: "Planning & Reports",
+                    icon: ClipboardList,
+                    columns: [
+                        {
+                            title: "Planning",
+                            description: "Style and factory planning",
+                            items: planningItems,
+                        },
+                    ],
+                },
+                {
+                    key: "finance",
+                    label: "Finance & Assets",
+                    icon: Wallet,
+                    columns: [
+                        {
+                            title: "Finance & Billing",
+                            description: "Debit notes and contract billing",
+                            items: financeItems,
+                        },
+                        {
+                            title: "Asset Management",
+                            description: "Asset records and movement",
+                            items: assetItems,
+                        },
+                    ],
+                },
+                {
+                    key: "administration",
+                    label: "Administration",
+                    icon: Settings,
+                    columns: [
+                        {
+                            title: "User Management",
+                            description: "Users and permissions",
+                            items: userItems,
+                        },
+                        {
+                            title: "Management",
+                            description: "Business overview and utilities",
+                            items: workManagementItems,
+                        },
+                    ],
+                },
+            ].filter((group) =>
+                group.columns.some((column) => column.items.length > 0)
+            ),
+        [
+            sections,
+            workOrderItems.length,
+            movementItems.length,
+            userItems.length,
+            planningItems.length,
+        ]
+    );
+
+    const toggleMenu = (key) => {
+        setOpenMenu((previous) => (previous === key ? null : key));
     };
+
+    // --------------------------------------------------
+    // Render
+    // --------------------------------------------------
 
     return (
-        <div className="flex h-screen w-screen overflow-hidden bg-slate-100 font-sans text-slate-800 antialiased">
-            {/* Mobile Backdrop */}
-            {isMobileMenuOpen && (
-                <div
-                    className="lg:hidden fixed inset-0 bg-slate-950/70 backdrop-blur-sm z-40 transition-opacity duration-300"
-                    onClick={() => setIsMobileMenuOpen(false)}
-                />
-            )}
+        <div className="min-h-screen bg-[#f4f6f9] text-slate-800">
 
-            {/* Sidebar */}
-            <aside
-                className={`
-                    fixed lg:static inset-y-0 left-0 z-50
-                    ${isCollapsed ? "lg:w-20" : "lg:w-55"} w-60
-                    shrink-0 bg-slate-700 border-r border-slate-800
-                    flex flex-col text-white
-                    transform transition-all duration-300 ease-in-out shadow-2xl lg:shadow-none
-                    ${isMobileMenuOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}
-                `}
-            >
-                {/* Brand Header */}
-                <div className="h-16 px-4 border-b border-slate-700/80 bg-slate-700/40 border-b bg-slate-800/40 flex items-center justify-between shrink-0">
-                    <div className="flex items-center gap-3 min-w-0">
-                        <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 via-indigo-600 to-cyan-500 p-0.5 shadow-lg shadow-blue-500/20 shrink-0 flex items-center justify-center">
-                            <div className="w-full h-full bg-slate-700 rounded-[10px] flex items-center justify-center">
-                                <span className="font-black text-transparent bg-clip-text bg-gradient-to-br from-blue-400 to-cyan-300 text-sm tracking-tight">
-                                    ERP
-                                </span>
-                            </div>
-                        </div>
-                        {!isCollapsed && (
-                            <div className="flex-1 min-w-0 leading-tight">
-                                <div className="flex items-center gap-1.5">
-                                    <h1 className="text-sm font-bold text-white tracking-tight truncate">SM Sourcing</h1>
-                                </div>
-                                <p className="text-white text-[11px] truncate">Operations Portal</p>
-                            </div>
-                        )}
-                    </div>
+            {/* ================= TOP HEADER ================= */}
 
-                    <button
-                        onClick={() => setIsMobileMenuOpen(false)}
-                        className="lg:hidden p-1.5 text-white hover:text-white hover:bg-slate-800 rounded-lg transition-colors"
-                        aria-label="Close sidebar"
+            <header className="sticky top-0 z-50 border-b border-slate-200 bg-white shadow-sm">
+
+                {/* Main header row */}
+
+                <div className="flex h-[62px] items-center justify-between gap-4 px-5">
+
+                    {/* Brand */}
+
+                    <Link
+                        to="/dashboard/home"
+                        className="flex shrink-0 items-center gap-3"
                     >
-                        <X size={18} />
-                    </button>
-                </div>
-
-                {/* Navigation Items */}
-                <nav className="flex-1 px-3 py-3 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-transparent">
-                    <ul className="space-y-1">
-                        {/* CORE */}
-                        {renderSectionHeader("Main")}
-                        {renderNavItem({ path: "/dashboard/home", label: "Dashboard Overview", icon: LayoutDashboard })}
-
-                        {/* YARN & MATERIALS */}
-                        {renderSectionHeader("Yarn & Inventory")}
-                        {renderDropdown({
-                            id: "yarn",
-                            label: "Yarn Management",
-                            icon: ModernThreadIcon,
-                            isOpen: openMenus.yarn,
-                            isActiveParent: isYarnActive,
-                            items: yarnSubItems,
-                        })}
-
-                        {/* PRODUCTION & ORDERS */}
-                        {renderSectionHeader("Manufacturing")}
-                        {sections?.workOrders && renderDropdown({
-                            id: "orders",
-                            label: "Production Orders",
-                            icon: Package,
-                            isOpen: openMenus.orders,
-                            isActiveParent: isOrdersActive,
-                            items: visibleOrderItems,
-                        })}
-
-                        {renderDropdown({
-                            id: "dailyProduction",
-                            label: "Daily Production",
-                            icon: Factory,
-                            isOpen: openMenus.dailyProduction,
-                            isActiveParent: isDailyActive,
-                            items: dailyProductionSubItems,
-                        })}
-
-                        {sections?.movementBilling && renderDropdown({
-                            id: "movement",
-                            label: "Challan Movement",
-                            icon: ArrowLeftRight,
-                            isOpen: openMenus.movement,
-                            isActiveParent: isMovementActive,
-                            items: visibleMovementItems,
-                            extraContent: (
-                                <div className="mt-1 pt-1 border-t border-slate-800/60">
-                                    <button
-                                        onClick={() => setOpenMenus(p => ({ ...p, others: !p.others }))}
-                                        className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-md text-xs transition-colors ${
-                                            isOthersActive ? "text-white font-medium" : "text-white hover:text-white"
-                                        }`}
-                                    >
-                                        <span>Other Finishing Lines</span>
-                                        <ChevronDown size={12} className={`transition-transform ${openMenus.others ? "rotate-180" : ""}`} />
-                                    </button>
-                                    {openMenus.others && (
-                                        <div className="pl-3 mt-1 space-y-0.5 border-l border-slate-800">
-                                            {othersSubItems.map(item => (
-                                                <Link
-                                                    key={item.path}
-                                                    to={item.path}
-                                                    onClick={() => setIsMobileMenuOpen(false)}
-                                                    className={`block px-2 py-1 rounded text-[11px] no-underline ${
-                                                        isActive(item.path) ? "text-white font-medium" : "text-white hover:text-white"
-                                                    }`}
-                                                >
-                                                    {item.label}
-                                                </Link>
-                                            ))}
-                                        </div>
-                                    )}
-                                </div>
-                            )
-                        })}
-
-                        {/* OPERATIONS & WORK ORDERS */}
-                        {renderSectionHeader("Operations & Planning")}
-                        {topNavItems.map(item => renderNavItem(item))}
-
-                        {renderDropdown({
-                            id: "workOrders",
-                            label: "Work Orders Hub",
-                            icon: FileText,
-                            isOpen: openMenus.workOrders,
-                            isActiveParent: isWorkOrdersActive,
-                            items: visibleWorkOrderItems,
-                        })}
-
-                        {renderDropdown({
-                            id: "contract",
-                            label: "Contract Manufacturing",
-                            icon: Factory,
-                            isOpen: openMenus.contract,
-                            isActiveParent: isContractActive,
-                            items: contractSubItems,
-                        })}
-
-                        {/* FINANCE & ASSETS */}
-                        {renderSectionHeader("Finance & Assets")}
-                        {renderDropdown({
-                            id: "debitNote",
-                            label: "Debit Notes",
-                            icon: FilePlus,
-                            isOpen: openMenus.debitNote,
-                            isActiveParent: isDebitActive,
-                            items: debitNoteSubItems,
-                        })}
-
-                        {renderDropdown({
-                            id: "asset",
-                            label: "Fixed Assets",
-                            icon: ClipboardList,
-                            isOpen: openMenus.asset,
-                            isActiveParent: isAssetActive,
-                            items: assetSubItems,
-                        })}
-
-                        {/* ADMINISTRATION */}
-                        {renderSectionHeader("Administration")}
-                        {sections?.mis && renderDropdown({
-                            id: "mis",
-                            label: "MIS Reports",
-                            icon: SlidersHorizontal,
-                            isOpen: openMenus.mis,
-                            isActiveParent: isMisActive,
-                            items: misSubItems,
-                        })}
-
-                        {sections?.userManagement && renderDropdown({
-                            id: "user",
-                            label: "User Access Control",
-                            icon: Users,
-                            isOpen: openMenus.user,
-                            isActiveParent: isUserActive,
-                            items: visibleUserItems,
-                        })}
-
-                        {bottomNavItems.map(item => renderNavItem(item))}
-                    </ul>
-                </nav>
-
-                {/* Sidebar Footer */}
-                <div className="p-3 border-t border-slate-800/80 bg-slate-950/30">
-                    {!isCollapsed ? (
-                        <div className="flex items-center gap-3 p-2 rounded-lg bg-slate-800/50 border border-slate-800">
-                            <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 text-white font-bold text-xs flex items-center justify-center shrink-0 shadow-sm">
-                                {user?.name?.[0] || "A"}
-                            </div>
-                            <div className="flex-1 min-w-0">
-                                <p className="text-xs font-semibold text-white truncate">{user?.name || "System Admin"}</p>
-                                
-                            </div>
+                        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#173c63] text-white shadow-sm">
+                            <ModernThreadIcon size={23} />
                         </div>
-                    ) : (
-                        <div className="flex justify-center">
-                            <div className="w-8 h-8 rounded-full bg-blue-600 text-white font-bold text-xs flex items-center justify-center" title={user?.name || "Admin"}>
-                                {user?.name?.[0] || "A"}
-                            </div>
-                        </div>
-                    )}
-                </div>
-            </aside>
 
-            {/* Main Content Area */}
-            <main className="flex-1 flex flex-col overflow-hidden w-full bg-slate-100">
-                {/* Modern Top Header */}
-                <header className="h-16 bg-white/95 backdrop-blur-sm border-b border-slate-200/90 px-4 lg:px-8 flex items-center justify-between shrink-0 z-20 shadow-xs">
-                    {/* Left: Toggle & Page Title */}
-                    <div className="flex items-center gap-3.5 min-w-0">
-                        <button
-                            onClick={() => {
-                                if (window.innerWidth < 1024) setIsMobileMenuOpen(p => !p);
-                                else setIsCollapsed(p => !p);
-                            }}
-                            className="w-9 h-9 rounded-lg bg-slate-100 border border-slate-200 hover:bg-slate-200/80 text-slate-700 flex items-center justify-center transition-all duration-150 shrink-0"
-                            aria-label="Toggle sidebar"
-                            title={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-                        >
-                            {isCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
-                        </button>
-
-                        <div className="min-w-0">
-                            <div className="flex items-center gap-2">
-                                <h2 className="text-base lg:text-lg font-bold text-slate-900 tracking-tight truncate">
-                                    {pageInfo.title}
-                                </h2>
-                            </div>
-                            <p className="hidden sm:block text-xs text-slate-500 truncate font-normal">
-                                {pageInfo.subtitle}
+                        <div className="leading-tight">
+                            <h1 className="text-[17px] font-black tracking-tight text-[#173c63]">
+                                SM SOURCING
+                            </h1>
+                            <p className="mt-0.5 text-[9px] font-bold tracking-[2.5px] text-slate-400">
+                                ENTERPRISE ERP
                             </p>
                         </div>
-                    </div>
+                    </Link>
 
-                    {/* Right Controls */}
-                    <div className="flex items-center gap-2.5">
-                        {/* Quick Viewport Zoom Controls */}
-                        <div className="flex items-center bg-slate-100/90 border border-slate-200 rounded-lg p-1 text-slate-700 shadow-2xs">
+                    {/* Desktop controls */}
+
+                    <div className="hidden items-center gap-3 lg:flex">
+
+                        {/* Zoom controls */}
+
+                        <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1">
                             <button
-                                onClick={() => handleZoomStep(-10)}
-                                disabled={zoomLevel <= 40}
-                                className="p-1 hover:bg-white rounded text-slate-600 hover:text-slate-900 disabled:opacity-40 disabled:hover:bg-transparent transition-colors"
-                                title="Zoom Out (Ctrl -)"
+                                onClick={handleZoomOut}
+                                title="Zoom out"
+                                className="rounded-md p-1.5 text-slate-500 transition hover:bg-white hover:text-[#173c63]"
                             >
                                 <ZoomOut size={15} />
                             </button>
 
-                            <div className="px-2 flex items-center gap-1">
-                                <select
-                                    value={zoomLevel}
-                                    onChange={(e) => updateZoom(e.target.value)}
-                                    className="bg-transparent text-xs font-semibold text-slate-800 focus:outline-none cursor-pointer"
-                                >
-                                    <option value="40">40%</option>
-                                    <option value="50">50%</option>
-                                    <option value="60">60%</option>
-                                    <option value="70">70%</option>
-                                    <option value="80">80%</option>
-                                    <option value="90">90%</option>
-                                    <option value="100">100%</option>
-                                    <option value="110">110%</option>
-                                    <option value="125">125%</option>
-                                    <option value="150">150%</option>
-                                    <option value="175">175%</option>
-                                    <option value="200">200%</option>
-                                </select>
-                            </div>
+                            <span className="min-w-[43px] text-center text-[11px] font-bold tabular-nums text-slate-600">
+                                {zoomLevel}%
+                            </span>
 
                             <button
-                                onClick={() => handleZoomStep(10)}
-                                disabled={zoomLevel >= 200}
-                                className="p-1 hover:bg-white rounded text-slate-600 hover:text-slate-900 disabled:opacity-40 disabled:hover:bg-transparent transition-colors"
-                                title="Zoom In (Ctrl +)"
+                                onClick={handleZoomIn}
+                                title="Zoom in"
+                                className="rounded-md p-1.5 text-slate-500 transition hover:bg-white hover:text-[#173c63]"
                             >
                                 <ZoomIn size={15} />
                             </button>
 
-                            {zoomLevel !== 100 && (
-                                <button
-                                    onClick={() => updateZoom(100)}
-                                    className="p-1 ml-0.5 hover:bg-white text-blue-600 rounded transition-colors"
-                                    title="Reset Zoom to 100%"
-                                >
-                                    <RotateCcw size={13} />
-                                </button>
-                            )}
+                            <button
+                                onClick={handleZoomReset}
+                                title="Reset zoom"
+                                className="rounded-md p-1.5 text-slate-400 transition hover:bg-white hover:text-[#173c63]"
+                            >
+                                <RotateCcw size={13} />
+                            </button>
                         </div>
 
                         {/* Notifications */}
+
                         <button
-                            className="relative p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors"
-                            aria-label="View notifications"
+                            title="Notifications"
+                            className="relative flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-[#173c63]"
                         >
                             <Bell size={18} />
-                            <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-blue-600 rounded-full ring-2 ring-white" />
+                            <span className="absolute right-[8px] top-[7px] h-2 w-2 rounded-full border-2 border-white bg-red-500" />
                         </button>
 
-                        {/* User Profile Pill */}
-                        <div className="flex items-center gap-2 pl-2 border-l border-slate-200">
-                            <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 text-white flex items-center justify-center font-bold text-xs shadow-xs">
-                                {user?.name?.[0] || "A"}
+                        {/* User */}
+
+                        <div className="flex items-center gap-2.5 border-l border-slate-200 pl-4">
+                            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[#eaf0f7] text-sm font-bold text-[#173c63]">
+                                {user?.name?.charAt(0)?.toUpperCase() || "U"}
                             </div>
-                            <div className="hidden md:block leading-tight text-left">
-                                <span className="block text-xs font-semibold text-slate-800 leading-none">
-                                    {user?.name || "System Admin"}
-                                </span>
-                                <span className="text-[10px] text-slate-400 font-normal">Superuser</span>
+
+                            <div className="max-w-[150px]">
+                                <p className="truncate text-[12px] font-bold text-slate-700">
+                                    {user?.name || "User"}
+                                </p>
+                                <p className="text-[10px] text-slate-400">
+                                    ERP Account
+                                </p>
                             </div>
                         </div>
                     </div>
-                </header>
 
-                {/*
-                  Outlet viewport with zoom.
-                  FIX: CSS `zoom` replaces `transform: scale()`. A transform turns this wrapper
-                  into the containing block for every `position: fixed` descendant, which
-                  misplaced fixed/sticky form footers (like the work order Cancel / Submit bar).
-                  `zoom` scales the layout without creating that containing block, so the
-                  width / minHeight compensation is no longer needed.
-                */}
-                <div className="flex-1 overflow-auto bg-slate-100/70">
-                    <div
-                        className="p-4 lg:p-6 w-full min-h-full"
-                        style={{ zoom: scale }}
+                    {/* Mobile menu button */}
+
+                    <button
+                        onClick={() => setMobileMenuOpen((previous) => !previous)}
+                        className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 text-slate-600 lg:hidden"
                     >
-                        <Outlet />
+                        {mobileMenuOpen ? <X size={19} /> : <Menu size={19} />}
+                    </button>
+                </div>
+
+                {/* ================= HORIZONTAL NAVIGATION ================= */}
+
+                <div className="hidden border-t border-slate-100 bg-white lg:block">
+                    <div className="flex h-[47px] items-center gap-1 px-5">
+
+                        {/* Dashboard direct link */}
+
+                        <Link
+                            to="/dashboard/home"
+                            onClick={() => setOpenMenu(null)}
+                            className={`
+                                flex h-full shrink-0 items-center gap-2 border-b-2 px-3 text-[12px] font-bold transition
+                                ${isPathActive("/dashboard/home") || currentPath === "/dashboard"
+                                    ? "border-[#173c63] text-[#173c63]"
+                                    : "border-transparent text-slate-500 hover:border-slate-300 hover:text-[#173c63]"
+                                }
+                            `}
+                        >
+                            <LayoutDashboard size={15} />
+                            Dashboard
+                        </Link>
+
+                        {/* Dropdown categories */}
+
+                        {menuGroups.map((group) => {
+                            const Icon = group.icon;
+                            const isOpen = openMenu === group.key;
+
+                            const allItems = group.columns.flatMap(
+                                (column) => column.items
+                            );
+
+                            const groupActive = isGroupActive(allItems);
+
+                            return (
+                                <div
+                                    key={group.key}
+                                    className="relative h-full"
+                                    onMouseEnter={() => setOpenMenu(group.key)}
+                                    onMouseLeave={() => setOpenMenu(null)}
+                                >
+                                    <button
+                                        onClick={() => toggleMenu(group.key)}
+                                        aria-expanded={isOpen}
+                                        className={`
+                                            flex h-full items-center gap-2 border-b-2 px-3 text-[12px] font-bold transition
+                                            ${isOpen || groupActive
+                                                ? "border-[#173c63] text-[#173c63]"
+                                                : "border-transparent text-slate-500 hover:border-slate-300 hover:text-[#173c63]"
+                                            }
+                                        `}
+                                    >
+                                        <Icon size={15} />
+                                        {group.label}
+                                        <ChevronDown
+                                            size={13}
+                                            className={`transition-transform duration-200 ${isOpen ? "rotate-180" : ""}`}
+                                        />
+                                    </button>
+
+                                    {/* Mega dropdown */}
+
+                                    {isOpen && (
+                                        <div className="absolute left-0 top-full z-[60] w-max min-w-[300px] max-w-[calc(100vw-40px)] rounded-b-xl border border-slate-200 bg-white p-5 shadow-[0_18px_45px_rgba(15,23,42,0.14)]">
+
+                                            <div className="mb-4 flex items-center justify-between border-b border-slate-100 pb-3">
+                                                <div>
+                                                    <p className="text-[13px] font-extrabold text-[#173c63]">
+                                                        {group.label}
+                                                    </p>
+                                                    <p className="mt-1 text-[10px] text-slate-400">
+                                                        Select a module to continue
+                                                    </p>
+                                                </div>
+
+                                                <button
+                                                    onClick={() => setOpenMenu(null)}
+                                                    className="rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                                                >
+                                                    <X size={15} />
+                                                </button>
+                                            </div>
+
+                                            <div
+                                                className="grid gap-6"
+                                                style={{
+                                                    gridTemplateColumns: `repeat(${group.columns.length}, minmax(210px, 1fr))`,
+                                                }}
+                                            >
+                                                {group.columns.map((column) => (
+                                                    <div key={column.title}>
+                                                        <div className="mb-2 px-3">
+                                                            <h3 className="text-[10px] font-extrabold uppercase tracking-[1.2px] text-slate-400">
+                                                                {column.title}
+                                                            </h3>
+                                                            <p className="mt-1 text-[10px] text-slate-400">
+                                                                {column.description}
+                                                            </p>
+                                                        </div>
+
+                                                        <div className="space-y-1">
+                                                            {column.items.map((item) => (
+                                                                <MegaMenuLink
+                                                                    key={item.path}
+                                                                    item={item}
+                                                                    isActive={isPathActive(item.path)}
+                                                                    onNavigate={() => setOpenMenu(null)}
+                                                                />
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })}
                     </div>
+                </div>
+
+                {/* ================= MOBILE NAVIGATION ================= */}
+
+                {mobileMenuOpen && (
+                    <div className="max-h-[75vh] overflow-y-auto border-t border-slate-200 bg-white p-4 lg:hidden">
+
+                        <Link
+                            to="/dashboard/home"
+                            onClick={() => setMobileMenuOpen(false)}
+                            className="mb-3 flex items-center gap-3 rounded-lg bg-slate-50 px-3 py-3 text-sm font-bold text-[#173c63]"
+                        >
+                            <LayoutDashboard size={17} />
+                            Dashboard
+                        </Link>
+
+                        {menuGroups.map((group) => {
+                            const Icon = group.icon;
+                            const isOpen = openMenu === group.key;
+
+                            return (
+                                <div
+                                    key={group.key}
+                                    className="border-b border-slate-100"
+                                >
+                                    <button
+                                        onClick={() => toggleMenu(group.key)}
+                                        className="flex w-full items-center justify-between py-3 text-left text-[13px] font-bold text-slate-700"
+                                    >
+                                        <span className="flex items-center gap-3">
+                                            <Icon size={17} className="text-[#173c63]" />
+                                            {group.label}
+                                        </span>
+
+                                        <ChevronDown
+                                            size={15}
+                                            className={`transition-transform ${isOpen ? "rotate-180" : ""}`}
+                                        />
+                                    </button>
+
+                                    {isOpen && (
+                                        <div className="space-y-4 pb-4 pl-2">
+                                            {group.columns.map((column) => (
+                                                <div key={column.title}>
+                                                    <p className="mb-2 px-3 text-[10px] font-extrabold uppercase tracking-wider text-slate-400">
+                                                        {column.title}
+                                                    </p>
+
+                                                    {column.items.map((item) => (
+                                                        <MegaMenuLink
+                                                            key={item.path}
+                                                            item={item}
+                                                            isActive={isPathActive(item.path)}
+                                                            onNavigate={() => {
+                                                                setOpenMenu(null);
+                                                                setMobileMenuOpen(false);
+                                                            }}
+                                                        />
+                                                    ))}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })}
+
+                        <div className="mt-4 flex items-center justify-between rounded-lg bg-slate-50 p-3">
+                            <div className="flex items-center gap-2">
+                                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#eaf0f7] font-bold text-[#173c63]">
+                                    {user?.name?.charAt(0)?.toUpperCase() || "U"}
+                                </div>
+                                <span className="text-xs font-bold text-slate-700">
+                                    {user?.name || "User"}
+                                </span>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                                <button onClick={handleZoomOut} className="rounded-md border border-slate-200 bg-white p-2">
+                                    <ZoomOut size={14} />
+                                </button>
+                                <span className="text-xs font-bold tabular-nums">
+                                    {zoomLevel}%
+                                </span>
+                                <button onClick={handleZoomIn} className="rounded-md border border-slate-200 bg-white p-2">
+                                    <ZoomIn size={14} />
+                                </button>
+                                <button onClick={handleZoomReset} className="rounded-md border border-slate-200 bg-white p-2">
+                                    <RotateCcw size={13} />
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+            </header>
+
+           
+
+            {/* ================= PAGE CONTENT ================= */}
+
+            <main className="min-h-[calc(100vh-168px)] p-4 md:p-5">
+                <div
+                    style={{ zoom: scale }}
+                    className="min-h-full"
+                >
+                    <Outlet />
                 </div>
             </main>
         </div>

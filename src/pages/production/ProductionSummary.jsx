@@ -47,10 +47,6 @@ const exportColumns = [
     { key: 'leftFoundPercent', label: 'LEFT. FOUND (%)' }, { key: 'remarks', label: 'REMARKS' },
 ];
 
-const initialTableData = [
-    { buyer: 'Nike', jobNumber: 'JOB001', orderNo: 'ORD-001', color: 'Blue', orderQty: 1000, hod: 'John Doe', dailyCutting: 100, totalCutting: 500, dailyInput: 95, totalInput: 480, dailySewing: 90, totalSewing: 450, dailyFinishingRcvd: 85, totalFinishingRcvd: 430, dailyFinishing: 80, totalFinishing: 400, dailyShipment: 75, totalShipment: 380, plannedLeftover: 20, physicalFound: 18, leftFoundPercent: 90, remarks: 'On track' },
-];
-
 const isLastFrozen = (columnKey) => columnKey === 'hod';
 const thClass = 'sticky z-20 border-b border-r border-[#7f7f7f] px-1.5 text-center font-bold text-[11px] whitespace-nowrap align-middle box-border overflow-hidden';
 const clickableTdClass = 'cursor-pointer decoration-dotted underline decoration-1 underline-offset-2 hover:brightness-95';
@@ -226,11 +222,55 @@ const ModalJobHeader = ({ row, modalDate, onDateChange }) => (
     </div>
 );
 
+const Toast = ({ message, type, onClose }) => {
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            onClose();
+        }, 4000);
+        return () => clearTimeout(timer);
+    }, [onClose]);
+
+    const bgColor = type === 'success' ? 'bg-green-50 border-green-200 text-green-800' : 'bg-red-50 border-red-200 text-red-800';
+    const icon = type === 'success' ? (
+        <svg className="w-5 h-5 text-green-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path></svg>
+    ) : (
+        <svg className="w-5 h-5 text-red-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+    );
+
+    return (
+        <div className={`fixed top-5 right-5 z-[10000] px-4 py-3 rounded-lg border ${bgColor} shadow-xl flex items-center gap-3 min-w-[300px] transition-all duration-300`}>
+            {icon}
+            <span className="font-medium text-sm flex-1">{message}</span>
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 flex-shrink-0">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+            </button>
+        </div>
+    );
+};
+
+const Loader = () => (
+    <div className="flex items-center justify-center h-full w-full min-h-[400px]">
+        <div className="flex flex-col items-center gap-3">
+            <div className="w-10 h-10 border-4 border-[#217346] border-t-transparent rounded-full animate-spin"></div>
+            <p className="text-gray-600 font-medium text-sm">Loading production data...</p>
+        </div>
+    </div>
+);
+
+const EmptyState = () => (
+    <div className="flex items-center justify-center h-full w-full min-h-[400px]">
+        <div className="flex flex-col items-center gap-2 text-gray-500">
+            <svg className="w-12 h-12 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+            <p className="font-medium">No production data found</p>
+        </div>
+    </div>
+);
+
 const ProductionSummary = () => {
     const [filterValues, setFilterValues] = useState({});
     const [activeFilter, setActiveFilter] = useState(null);
     const [filterSearch, setFilterSearch] = useState('');
-    const [tableData, setTableData] = useState(initialTableData);
+    const [tableData, setTableData] = useState([]);
     const [activeModal, setActiveModal] = useState(null);
     const [modalDate, setModalDate] = useState('');
     const [modalRows, setModalRows] = useState([]);
@@ -241,50 +281,55 @@ const ProductionSummary = () => {
     const [colorId, setColorId] = useState("");
     const [modalError, setModalError] = useState('');
     
-    // Pagination states
     const [currentPage, setCurrentPage] = useState(1);
     const jobsPerPage = 30;
+
+    const [isLoading, setIsLoading] = useState(true);
+    const [isSubmitting, setIsSubmitting] = useState(false);
+    const [toast, setToast] = useState(null);
 
     const { fetchData } = useFetchData();
     const axiosPrivate = useAxiosPrivate();
 
-    const productionData = () => {
-        return fetchData('/api/production-data')
-            .then((res) => {
-                const responseData = res.data?.data || res.data;
-                const jobs = responseData?.jobs || [];
+    const productionData = async () => {
+        setIsLoading(true);
+        try {
+            const res = await fetchData('/api/production-data');
+            const responseData = res.data?.data || res.data;
+            const jobs = responseData?.jobs || [];
 
-                const formattedData = jobs.map(job => {
-                    let colorsArray = [];
-                    if (job.colors) {
-                        if (Array.isArray(job.colors)) {
-                            colorsArray = job.colors;
-                        } else {
-                            colorsArray = Object.values(job.colors);
-                        }
+            const formattedData = jobs.map(job => {
+                let colorsArray = [];
+                if (job.colors) {
+                    if (Array.isArray(job.colors)) {
+                        colorsArray = job.colors;
+                    } else {
+                        colorsArray = Object.values(job.colors);
                     }
+                }
 
-                    return {
-                        jobNumber: job.jobNo || job.jobNumber,
-                        buyer: job.buyerName || job.buyer || 'Unknown',
-                        hodDate: job.hodDate || '',
-                        remarks: job.remarks || '',
-                        colors: colorsArray
-                    };
-                });
-                setDataForProduction(formattedData);
-            })
-            .catch((e) => {
-                console.log("API Error:", e);
-                setDataForProduction([]);
+                return {
+                    jobNumber: job.jobNo || job.jobNumber,
+                    buyer: job.buyerName || job.buyer || 'Unknown',
+                    hodDate: job.hodDate || '',
+                    remarks: job.remarks || '',
+                    colors: colorsArray
+                };
             });
+            setDataForProduction(formattedData);
+        } catch (e) {
+            console.error("API Error:", e);
+            setDataForProduction([]);
+            setToast({ type: 'error', message: 'Failed to fetch production data. Please try again.' });
+        } finally {
+            setIsLoading(false);
+        }
     };
 
     useEffect(() => {
         productionData();
     }, []);
 
-    // Reset to page 1 when filters change
     useEffect(() => {
         setCurrentPage(1);
     }, [filterValues]);
@@ -295,7 +340,7 @@ const ProductionSummary = () => {
 
     const flattenedData = useMemo(() => {
         if (!dataForProduction || dataForProduction.length === 0) {
-            return initialTableData.map(item => ({ ...item, id: item.id || `static-${Math.random().toString(36).substr(2, 9)}`, hodDate: item.hod, jobNumber: item.jobNumber, buyer: item.buyer, color: item.color, orderQty: item.orderQty }));
+            return [];
         }
         const flat = [];
         dataForProduction.forEach(job => {
@@ -336,7 +381,6 @@ const ProductionSummary = () => {
         return filterValues[key].some(filter => String(row[key] ?? '').toLowerCase().includes(String(filter).toLowerCase()));
     })), [flattenedData, filterValues]);
 
-    // Group filtered data by jobNumber to prevent splitting jobs across pages
     const jobGroups = useMemo(() => {
         const groups = new Map();
         filteredData.forEach(row => {
@@ -374,12 +418,17 @@ const ProductionSummary = () => {
     const escapeCsvValue = (value) => { const str = String(value ?? ''); return (str.includes(',') || str.includes('"') || str.includes('\n')) ? `"${str.replace(/"/g, '""')}"` : str; };
 
     const exportToCSV = () => {
+        if (filteredData.length === 0) {
+            setToast({ type: 'error', message: 'No data available to export.' });
+            return;
+        }
         const headerRow = exportColumns.map(col => escapeCsvValue(col.label)).join(',');
         const dataRows = filteredData.map(row => exportColumns.map(col => escapeCsvValue(row[col.key])).join(','));
         const blob = new Blob(['\uFEFF' + [headerRow, ...dataRows].join('\r\n')], { type: 'text/csv;charset=utf-8;' });
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a'); link.href = url; link.setAttribute('download', `production_summary_${new Date().toISOString().slice(0, 10)}.csv`);
         document.body.appendChild(link); link.click(); document.body.removeChild(link); URL.revokeObjectURL(url);
+        setToast({ type: 'success', message: 'CSV exported successfully!' });
     };
 
     const openModal = (type, row) => {
@@ -421,11 +470,7 @@ const ProductionSummary = () => {
         }
 
         setColorId(row.id);
-
-        setActiveModal({
-            type,
-            row: originalJob
-        });
+        setActiveModal({ type, row: originalJob });
     };
 
     const closeModal = () => {
@@ -436,24 +481,19 @@ const ProductionSummary = () => {
     const updateModalRow = (index, field, value) => {
         setModalRows(prev =>
             prev.map((r, i) =>
-                i === index
-                    ? { ...r, [field]: value }
-                    : r
+                i === index ? { ...r, [field]: value } : r
             )
         );
     };
 
     const makeProductionPayload = () => {
         if (!activeModal) return null;
-
         const type = activeModal.type;
-
         const basePayload = {
             date: modalDate,
             jobNo: activeModal.row?.jobNo || activeModal.row?.jobNumber,
             productionType: type
         };
-
         let editedDetails = [];
 
         if (type === 'sewing-production-qty') {
@@ -490,49 +530,83 @@ const ProductionSummary = () => {
             });
         }
 
-        if (editedDetails.length === 0) {
-            return null;
-        }
+        if (editedDetails.length === 0) return null;
 
-        return {
-            ...basePayload,
-            details: editedDetails
-        };
+        return { ...basePayload, details: editedDetails };
     };
 
     const handleModalSave = async () => {
         if (!activeModal) return;
         const payload = makeProductionPayload();
-        if (!payload || !payload.details?.length) { closeModal(); return; }
+        if (!payload || !payload.details?.length) { 
+            setToast({ type: 'error', message: 'Please fill in at least one field before saving.' });
+            return; 
+        }
 
+        setIsSubmitting(true);
+        setModalError('');
         try {
             const response = await axiosPrivate.post(`/api/enter-production/${activeModal.type}`, payload);
             console.log("✅ Success:", response.data);
+            setToast({ type: 'success', message: 'Data saved successfully!' });
             await productionData();
             closeModal();
         } catch (error) {
             const message = error.response?.data?.errors?.join(', ') || error.response?.data?.message || error.message || 'Failed to save';
             console.error("❌ Error:", error.response?.data || error.message);
             setModalError(message);
+            setToast({ type: 'error', message: message });
+        } finally {
+            setIsSubmitting(false);
         }
     };
 
     const startEditingRemarks = (index, currentValue) => { setEditingRowIndex(index); setEditingRemarksValue(currentValue || ''); };
+    
     const saveRemarks = () => {
         if (editingRowIndex !== null) {
             const rowToUpdate = paginatedData[editingRowIndex];
-            setDataForProduction(prev => prev.map(job =>
-                (job.jobNumber === rowToUpdate.jobNumber)
-                    ? { ...job, remarks: editingRemarksValue }
-                    : job
-            ));
+            setDataForProduction(prev => prev.map(job => {
+                if (job.jobNumber === rowToUpdate.jobNumber) {
+                    return {
+                        ...job,
+                        remarks: editingRemarksValue,
+                        colors: job.colors.map(c => 
+                            (c.colorId === rowToUpdate.id || c.id === rowToUpdate.id) 
+                                ? { ...c, remarks: editingRemarksValue } 
+                                : c
+                        )
+                    };
+                }
+                return job;
+            }));
+            setToast({ type: 'success', message: 'Remarks updated successfully!' });
         }
-        setEditingRowIndex(null); setEditingRemarksValue('');
+        setEditingRowIndex(null); 
+        setEditingRemarksValue('');
     };
+    
     const discardRemarks = () => { setEditingRowIndex(null); setEditingRemarksValue(''); };
 
+    const SaveButton = () => (
+        <button 
+            onClick={handleModalSave} 
+            disabled={isSubmitting}
+            className="px-4 py-1.5 bg-[#217346] text-white rounded text-sm font-semibold hover:bg-[#185c37] shadow-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-colors"
+        >
+            {isSubmitting ? (
+                <>
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                    Saving...
+                </>
+            ) : 'Save'}
+        </button>
+    );
+
     return (
-        <div className="h-screen w-full flex flex-col bg-[#f3f4f6] font-sans text-xs overflow-hidden">
+        <div className="h-screen w-full flex flex-col bg-[#f3f4f6] font-sans text-xs overflow-hidden relative">
+            {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+            
             <div className="flex justify-between items-center px-5 pt-5 pb-4 flex-shrink-0">
                 <h2 className="text-xl font-bold text-gray-800">Production Summary</h2>
                 <div className="flex gap-2">
@@ -548,84 +622,82 @@ const ProductionSummary = () => {
                     <button className="px-4 py-2 bg-gray-100 border border-black rounded cursor-pointer text-sm hover:bg-gray-200" onClick={clearAllFilters}>Clear All Filters</button>
                 </div>
             </div>
+            
             <div className="flex-1 min-h-0 px-5 pb-5 flex flex-col">
-                <div className="flex-1 min-h-0 overflow-auto border border-[#7f7f7f] rounded-sm shadow-sm bg-white">
-                    <table className="bg-white" style={{ minWidth: '2000px', width: '100%', tableLayout: 'fixed', borderCollapse: 'separate', borderSpacing: 0, fontFamily: "Calibri, 'Segoe UI', Arial, sans-serif" }}>
-                        <colgroup>
-                            <col style={{ width: `${colWidths.buyer}px` }} /><col style={{ width: `${colWidths.jobNumber}px` }} /><col style={{ width: `${colWidths.color}px` }} /><col style={{ width: `${colWidths.orderQty}px` }} /><col style={{ width: `${colWidths.hod}px` }} />
-                            <col style={{ width: '120px' }} /><col style={{ width: '120px' }} /><col style={{ width: '120px' }} /><col style={{ width: '120px' }} /><col style={{ width: '120px' }} /><col style={{ width: '120px' }} /><col style={{ width: '120px' }} /><col style={{ width: '120px' }} />
-                            <col style={{ width: '120px' }} /><col style={{ width: '120px' }} /><col style={{ width: '120px' }} /><col style={{ width: '120px' }} /><col style={{ width: '135px' }} /><col style={{ width: '135px' }} /><col style={{ width: '135px' }} /><col style={{ width: '135px' }} />
-                        </colgroup>
-                        <thead>
-                            <tr>
-                                <StickyTh columnKey="buyer" label="Buyer" rowSpan={2} filterActive={!!filterValues.buyer?.length} onOpenFilter={(e) => openFilter('buyer', 'Buyer', e)}>BUYER</StickyTh>
-                                <StickyTh columnKey="jobNumber" label="Job Number" rowSpan={2} filterActive={!!filterValues.jobNumber?.length} onOpenFilter={(e) => openFilter('jobNumber', 'Job Number', e)}>JOB NUMBER</StickyTh>
-                                <StickyTh columnKey="color" label="Color" rowSpan={2} filterActive={!!filterValues.color?.length} onOpenFilter={(e) => openFilter('color', 'Color', e)}>COLOR</StickyTh>
-                                <StickyTh columnKey="orderQty" label="Order Qty" rowSpan={2} filterActive={!!filterValues.orderQty?.length} onOpenFilter={(e) => openFilter('orderQty', 'Order Qty', e)}>ORDER QTY</StickyTh>
-                                <StickyTh columnKey="hod" label="HOD" rowSpan={2} filterActive={!!filterValues.hod?.length} onOpenFilter={(e) => openFilter('hod', 'HOD', e)}>HOD</StickyTh>
-                                <th colSpan={2} className={`${thClass} bg-[#c6e0b4] text-[#375623]`} style={{ height: `${HEADER_ROW1_HEIGHT}px`, top: 0 }}>CUTTING</th>
-                                <th colSpan={4} className={`${thClass} bg-[#f8cbad] text-[#833c00]`} style={{ height: `${HEADER_ROW1_HEIGHT}px`, top: 0 }}>SEWING</th>
-                                <th colSpan={4} className={`${thClass} bg-[#c6e0b4] text-[#375623]`} style={{ height: `${HEADER_ROW1_HEIGHT}px`, top: 0 }}>FINISHING</th>
-                                <th colSpan={5} className={`${thClass} bg-[#bdd7ee] text-[#1f4e79]`} style={{ height: `${HEADER_ROW1_HEIGHT}px`, top: 0 }}>OTHERS</th>
-                                <StickyTh columnKey="remarks" label="Remarks" rowSpan={2} filterActive={!!filterValues.remarks?.length} onOpenFilter={(e) => openFilter('remarks', 'Remarks', e)}>REMARKS</StickyTh>
-                            </tr>
-                            <tr>
-                                {subHeaders.map((header) => {
-                                    const isCutting = header.key === 'dailyCutting' || header.key === 'totalCutting';
-                                    const isSewing = header.key === 'dailyInput' || header.key === 'totalInput' || header.key === 'dailySewing' || header.key === 'totalSewing';
-                                    const isFinishing = header.key === 'dailyFinishingRcvd' || header.key === 'totalFinishingRcvd' || header.key === 'dailyFinishing' || header.key === 'totalFinishing';
-                                    const colorClass = isCutting || isFinishing ? 'bg-[#e2efda] text-[#375623]' : isSewing ? 'bg-[#fbe5d5] text-[#833c00]' : 'bg-[#deebf7] text-[#1f4e79]';
-                                    return (<th key={header.key} className={`${thClass} ${colorClass}`} style={{ height: `${HEADER_ROW2_HEIGHT}px`, top: `${HEADER_ROW1_HEIGHT}px` }}><div className="flex items-center justify-center gap-1"><span className="whitespace-nowrap">{header.label}</span><FilterIcon active={!!filterValues[header.key]?.length} onOpen={(e) => openFilter(header.key, header.label, e)} /></div></th>);
+                <div className="flex-1 min-h-0 overflow-auto border border-[#7f7f7f] rounded-sm shadow-sm bg-white relative">
+                    {isLoading ? (
+                        <Loader />
+                    ) : filteredData.length === 0 ? (
+                        <EmptyState />
+                    ) : (
+                        <table className="bg-white" style={{ minWidth: '2000px', width: '100%', tableLayout: 'fixed', borderCollapse: 'separate', borderSpacing: 0, fontFamily: "Calibri, 'Segoe UI', Arial, sans-serif" }}>
+                            <colgroup>
+                                <col style={{ width: `${colWidths.buyer}px` }} /><col style={{ width: `${colWidths.jobNumber}px` }} /><col style={{ width: `${colWidths.color}px` }} /><col style={{ width: `${colWidths.orderQty}px` }} /><col style={{ width: `${colWidths.hod}px` }} />
+                                <col style={{ width: '120px' }} /><col style={{ width: '120px' }} /><col style={{ width: '120px' }} /><col style={{ width: '120px' }} /><col style={{ width: '120px' }} /><col style={{ width: '120px' }} /><col style={{ width: '120px' }} /><col style={{ width: '120px' }} />
+                                <col style={{ width: '120px' }} /><col style={{ width: '120px' }} /><col style={{ width: '120px' }} /><col style={{ width: '120px' }} /><col style={{ width: '135px' }} /><col style={{ width: '135px' }} /><col style={{ width: '135px' }} /><col style={{ width: '135px' }} />
+                            </colgroup>
+                            <thead>
+                                <tr>
+                                    <StickyTh columnKey="buyer" label="Buyer" rowSpan={2} filterActive={!!filterValues.buyer?.length} onOpenFilter={(e) => openFilter('buyer', 'Buyer', e)}>BUYER</StickyTh>
+                                    <StickyTh columnKey="jobNumber" label="Job Number" rowSpan={2} filterActive={!!filterValues.jobNumber?.length} onOpenFilter={(e) => openFilter('jobNumber', 'Job Number', e)}>JOB NUMBER</StickyTh>
+                                    <StickyTh columnKey="color" label="Color" rowSpan={2} filterActive={!!filterValues.color?.length} onOpenFilter={(e) => openFilter('color', 'Color', e)}>COLOR</StickyTh>
+                                    <StickyTh columnKey="orderQty" label="Order Qty" rowSpan={2} filterActive={!!filterValues.orderQty?.length} onOpenFilter={(e) => openFilter('orderQty', 'Order Qty', e)}>ORDER QTY</StickyTh>
+                                    <StickyTh columnKey="hod" label="HOD" rowSpan={2} filterActive={!!filterValues.hod?.length} onOpenFilter={(e) => openFilter('hod', 'HOD', e)}>HOD</StickyTh>
+                                    <th colSpan={2} className={`${thClass} bg-[#c6e0b4] text-[#375623]`} style={{ height: `${HEADER_ROW1_HEIGHT}px`, top: 0 }}>CUTTING</th>
+                                    <th colSpan={4} className={`${thClass} bg-[#f8cbad] text-[#833c00]`} style={{ height: `${HEADER_ROW1_HEIGHT}px`, top: 0 }}>SEWING</th>
+                                    <th colSpan={4} className={`${thClass} bg-[#c6e0b4] text-[#375623]`} style={{ height: `${HEADER_ROW1_HEIGHT}px`, top: 0 }}>FINISHING</th>
+                                    <th colSpan={5} className={`${thClass} bg-[#bdd7ee] text-[#1f4e79]`} style={{ height: `${HEADER_ROW1_HEIGHT}px`, top: 0 }}>OTHERS</th>
+                                    <StickyTh columnKey="remarks" label="Remarks" rowSpan={2} filterActive={!!filterValues.remarks?.length} onOpenFilter={(e) => openFilter('remarks', 'Remarks', e)}>REMARKS</StickyTh>
+                                </tr>
+                                <tr>
+                                    {subHeaders.map((header) => {
+                                        const isCutting = header.key === 'dailyCutting' || header.key === 'totalCutting';
+                                        const isSewing = header.key === 'dailyInput' || header.key === 'totalInput' || header.key === 'dailySewing' || header.key === 'totalSewing';
+                                        const isFinishing = header.key === 'dailyFinishingRcvd' || header.key === 'totalFinishingRcvd' || header.key === 'dailyFinishing' || header.key === 'totalFinishing';
+                                        const colorClass = isCutting || isFinishing ? 'bg-[#e2efda] text-[#375623]' : isSewing ? 'bg-[#fbe5d5] text-[#833c00]' : 'bg-[#deebf7] text-[#1f4e79]';
+                                        return (<th key={header.key} className={`${thClass} ${colorClass}`} style={{ height: `${HEADER_ROW2_HEIGHT}px`, top: `${HEADER_ROW1_HEIGHT}px` }}><div className="flex items-center justify-center gap-1"><span className="whitespace-nowrap">{header.label}</span><FilterIcon active={!!filterValues[header.key]?.length} onOpen={(e) => openFilter(header.key, header.label, e)} /></div></th>);
+                                    })}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {paginatedData.map((row, index) => {
+                                    const meta = rowMeta[index];
+                                    const isEvenRow = index % 2 === 0;
+                                    const tdClass = `border-b border-r border-[#d0d0d0] px-2 py-1.5 text-center align-middle text-[13px]`;
+                                    const isEditing = editingRowIndex === index;
+                                    return (
+                                        <tr key={row.id || index} className="cursor-pointer hover:bg-[#fff2cc] transition-colors">
+                                            {meta.isFirst && (<><StickyTd columnKey="buyer" isEvenRow={isEvenRow} rowSpan={meta.rowSpan}>{row.buyer}</StickyTd><StickyTd columnKey="jobNumber" isEvenRow={isEvenRow} rowSpan={meta.rowSpan}>{row.jobNumber}</StickyTd></>)}
+                                            <StickyTd columnKey="color" isEvenRow={isEvenRow} rowSpan={1}>{row.color}{row.id && <span className="text-gray-400 text-[10px] ml-1 font-normal">(ID: {row.id})</span>}</StickyTd>
+                                            <StickyTd columnKey="orderQty" isEvenRow={isEvenRow} rowSpan={1}>{row.orderQty}</StickyTd>
+                                            {meta.isFirst && (<StickyTd columnKey="hod" isEvenRow={isEvenRow} rowSpan={meta.rowSpan}>{row.hodDate}</StickyTd>)}
+                                            <td className={`${tdClass} ${clickableTdClass} bg-[#eaf3e3] text-[#375623]`} onDoubleClick={() => openModal('cutting', row)}>{row.dailyCutting}</td>
+                                            <td className={`${tdClass} bg-[#eaf3e3] text-[#375623]`}>{row.totalCutting}</td>
+                                            <td className={`${tdClass} bg-[#fdf0e6] text-[#833c00]`}>{row.dailyInput}</td>
+                                            <td className={`${tdClass} bg-[#fdf0e6] text-[#833c00]`}>{row.totalInput}</td>
+                                            <td className={`${tdClass} ${clickableTdClass} bg-[#fdf0e6] text-[#833c00]`} onDoubleClick={() => openModal('sewing-production-qty', row)}>{row.dailySewing}</td>
+                                            <td className={`${tdClass} bg-[#fdf0e6] text-[#833c00]`}>{row.totalSewing}</td>
+                                            <td className={`${tdClass} ${clickableTdClass} bg-[#eaf3e3] text-[#375623]`} onDoubleClick={() => openModal('finishing', row)}>{row.dailyFinishingRcvd}</td>
+                                            <td className={`${tdClass} bg-[#eaf3e3] text-[#375623]`}>{row.totalFinishingRcvd}</td>
+                                            <td className={`${tdClass} bg-[#eaf3e3] text-[#375623]`}>{row.dailyFinishing}</td>
+                                            <td className={`${tdClass} bg-[#eaf3e3] text-[#375623]`}>{row.totalFinishing}</td>
+                                            <td className={`${tdClass} ${clickableTdClass} bg-[#eaf1f9] text-[#1f4e79]`} onDoubleClick={() => openModal('shipment', row)}>{row.dailyShipment}</td>
+                                            <td className={`${tdClass} bg-[#eaf1f9] text-[#1f4e79]`}>{row.totalShipment}</td>
+                                            <td className={`${tdClass} bg-[#eaf1f9] text-[#1f4e79]`}>{row.plannedLeftover}</td>
+                                            <td className={`${tdClass} bg-[#eaf1f9] text-[#1f4e79]`}>{row.physicalFound}</td>
+                                            <td className={`${tdClass} bg-[#eaf1f9] text-[#1f4e79]`}>{row.leftFoundPercent}%</td>
+                                            <td className={`${tdClass} ${!isEditing ? clickableTdClass : ''} ${isEditing ? 'bg-yellow-50' : ''}`} onDoubleClick={() => !isEditing && startEditingRemarks(index, row.remarks)}>
+                                                {isEditing ? <input type="text" value={editingRemarksValue} onChange={(e) => setEditingRemarksValue(e.target.value)} className="w-full px-2 py-1 border border-[#217346] outline-none text-center text-[13px]" autoFocus onClick={(e) => e.stopPropagation()} /> : row.remarks}
+                                            </td>
+                                        </tr>
+                                    );
                                 })}
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {paginatedData.map((row, index) => {
-                                const meta = rowMeta[index];
-                                const isEvenRow = index % 2 === 0;
-                                const tdClass = `border-b border-r border-[#d0d0d0] px-2 py-1.5 text-center align-middle text-[13px]`;
-                                const isEditing = editingRowIndex === index;
-                                return (
-                                    <tr key={row.id || index} className="cursor-pointer hover:bg-[#fff2cc] transition-colors">
-                                        {/* Job-level cells: span across all color rows */}
-                                        {meta.isFirst && (<><StickyTd columnKey="buyer" isEvenRow={isEvenRow} rowSpan={meta.rowSpan}>{row.buyer}</StickyTd><StickyTd columnKey="jobNumber" isEvenRow={isEvenRow} rowSpan={meta.rowSpan}>{row.jobNumber}</StickyTd></>)}
-
-                                        {/* Color-level cells: render for EACH color row */}
-                                        <StickyTd columnKey="color" isEvenRow={isEvenRow} rowSpan={1}>{row.color}{row.id && <span className="text-gray-400 text-[10px] ml-1 font-normal">(ID: {row.id})</span>}</StickyTd>
-                                        <StickyTd columnKey="orderQty" isEvenRow={isEvenRow} rowSpan={1}>{row.orderQty}</StickyTd>
-
-                                        {meta.isFirst && (
-                                            <StickyTd columnKey="hod" isEvenRow={isEvenRow} rowSpan={meta.rowSpan}>{row.hodDate}</StickyTd>
-                                        )}
-
-                                        {/* Per-color quantity cells: NO rowSpan, render for each color */}
-                                        <td className={`${tdClass} ${clickableTdClass} bg-[#eaf3e3] text-[#375623]`} onDoubleClick={() => openModal('cutting', row)}>{row.dailyCutting}</td>
-                                        <td className={`${tdClass} bg-[#eaf3e3] text-[#375623]`}>{row.totalCutting}</td>
-                                        <td className={`${tdClass} bg-[#fdf0e6] text-[#833c00]`}>{row.dailyInput}</td>
-                                        <td className={`${tdClass} bg-[#fdf0e6] text-[#833c00]`}>{row.totalInput}</td>
-                                        <td className={`${tdClass} ${clickableTdClass} bg-[#fdf0e6] text-[#833c00]`} onDoubleClick={() => openModal('sewing-production-qty', row)}>{row.dailySewing}</td>
-                                        <td className={`${tdClass} bg-[#fdf0e6] text-[#833c00]`}>{row.totalSewing}</td>
-                                        <td className={`${tdClass} ${clickableTdClass} bg-[#eaf3e3] text-[#375623]`} onDoubleClick={() => openModal('finishing', row)}>{row.dailyFinishingRcvd}</td>
-                                        <td className={`${tdClass} bg-[#eaf3e3] text-[#375623]`}>{row.totalFinishingRcvd}</td>
-                                        <td className={`${tdClass} bg-[#eaf3e3] text-[#375623]`}>{row.dailyFinishing}</td>
-                                        <td className={`${tdClass} bg-[#eaf3e3] text-[#375623]`}>{row.totalFinishing}</td>
-                                        <td className={`${tdClass} ${clickableTdClass} bg-[#eaf1f9] text-[#1f4e79]`} onDoubleClick={() => openModal('shipment', row)}>{row.dailyShipment}</td>
-                                        <td className={`${tdClass} bg-[#eaf1f9] text-[#1f4e79]`}>{row.totalShipment}</td>
-                                        <td className={`${tdClass} bg-[#eaf1f9] text-[#1f4e79]`}>{row.plannedLeftover}</td>
-                                        <td className={`${tdClass} bg-[#eaf1f9] text-[#1f4e79]`}>{row.physicalFound}</td>
-                                        <td className={`${tdClass} bg-[#eaf1f9] text-[#1f4e79]`}>{row.leftFoundPercent}%</td>
-                                        <td className={`${tdClass} ${!isEditing ? clickableTdClass : ''} ${isEditing ? 'bg-yellow-50' : ''}`} onDoubleClick={() => !isEditing && startEditingRemarks(index, row.remarks)}>
-                                            {isEditing ? <input type="text" value={editingRemarksValue} onChange={(e) => setEditingRemarksValue(e.target.value)} className="w-full px-2 py-1 border border-[#217346] outline-none text-center text-[13px]" autoFocus onClick={(e) => e.stopPropagation()} /> : row.remarks}
-                                        </td>
-                                    </tr>
-                                );
-                            })}
-                        </tbody>
-                    </table>
+                            </tbody>
+                        </table>
+                    )}
                 </div>
                 
-                {/* Pagination Controls */}
-                {filteredData.length > 0 && (
+                {filteredData.length > 0 && !isLoading && (
                     <div className="flex items-center justify-between px-4 py-3 border-t border-gray-200 bg-white flex-shrink-0 mt-2 rounded-sm shadow-sm">
                         <div className="text-sm text-gray-700">
                             Showing <span className="font-medium">{jobGroups.length > 0 ? (currentPage - 1) * jobsPerPage + 1 : 0}</span> to <span className="font-medium">{Math.min(currentPage * jobsPerPage, jobGroups.length)}</span> of <span className="font-medium">{jobGroups.length}</span> jobs
@@ -652,6 +724,7 @@ const ProductionSummary = () => {
                     </div>
                 )}
             </div>
+            
             <FilterDropdown activeFilter={activeFilter} filterSearch={filterSearch} onSearchChange={setFilterSearch} filterValues={filterValues} onFilterChange={handleFilterChange} onClose={closeFilter} data={flattenedData} />
 
             {activeModal && activeModal.type === 'cutting' && (
@@ -662,7 +735,10 @@ const ProductionSummary = () => {
                         <tbody>{modalRows.map((r, i) => (<tr key={r.id || i} className="hover:bg-[#f2f2f2]"><td className="border border-gray-300 px-2 py-1.5 text-center font-medium bg-[#fafafa] text-gray-700">{r.color} {r.id && <span className="text-gray-400 text-[10px]">(ID: {r.id})</span>}</td><td className="border border-gray-300 p-0 h-8"><ExcelInput numeric value={r.cuttingQty} placeholder="0" onChange={(v) => updateModalRow(i, 'cuttingQty', v)} className="text-center" /></td><td className="border border-gray-300 p-0 h-8"><ExcelInput value={r.remarks} onChange={(v) => updateModalRow(i, 'remarks', v)} /></td></tr>))}</tbody>
                     </table>
                     {modalError && <div className="mt-3 px-3 py-2 rounded bg-red-50 border border-red-300 text-red-700 text-sm">{modalError}</div>}
-                    <div className="flex justify-end mt-4 gap-2"><button onClick={closeModal} className="px-4 py-1.5 bg-white border border-gray-400 rounded text-sm font-semibold hover:bg-gray-100 text-gray-700">Cancel</button><button onClick={handleModalSave} className="px-4 py-1.5 bg-[#217346] text-white rounded text-sm font-semibold hover:bg-[#185c37] shadow-sm">Save</button></div>
+                    <div className="flex justify-end mt-4 gap-2">
+                        <button onClick={closeModal} className="px-4 py-1.5 bg-white border border-gray-400 rounded text-sm font-semibold hover:bg-gray-100 text-gray-700">Cancel</button>
+                        <SaveButton />
+                    </div>
                 </DraggableModal>
             )}
 
@@ -676,7 +752,10 @@ const ProductionSummary = () => {
                         </tbody>
                     </table>
                     {modalError && <div className="mt-3 px-3 py-2 rounded bg-red-50 border border-red-300 text-red-700 text-sm">{modalError}</div>}
-                    <div className="flex justify-end mt-4 gap-2"><button onClick={closeModal} className="px-4 py-1.5 bg-white border border-gray-400 rounded text-sm font-semibold hover:bg-gray-100 text-gray-700">Cancel</button><button onClick={handleModalSave} className="px-4 py-1.5 bg-[#217346] text-white rounded text-sm font-semibold hover:bg-[#185c37] shadow-sm">Save</button></div>
+                    <div className="flex justify-end mt-4 gap-2">
+                        <button onClick={closeModal} className="px-4 py-1.5 bg-white border border-gray-400 rounded text-sm font-semibold hover:bg-gray-100 text-gray-700">Cancel</button>
+                        <SaveButton />
+                    </div>
                 </DraggableModal>
             )}
 
@@ -686,19 +765,16 @@ const ProductionSummary = () => {
                     <table className="w-full border-collapse border border-gray-400 text-sm mt-2">
                         <thead><tr className="bg-[#e7e6e6] text-gray-800"><th className="border border-gray-400 px-2 py-1.5 text-left font-semibold">Color</th><th className="border border-gray-400 px-2 py-1.5 text-left font-semibold">Received Quantity</th><th className="border border-gray-400 px-2 py-1.5 text-left font-semibold">Produced Quantity</th><th className="border border-gray-400 px-2 py-1.5 text-left font-semibold">Remarks</th></tr></thead>
                         <tbody>{modalRows.map((r, i) => (<tr key={r.id || i} className="hover:bg-[#f2f2f2]"><td className="border border-gray-300 px-2 py-1.5 text-center font-medium bg-[#fafafa] text-gray-700">{r.color} {r.id && <span className="text-gray-400 text-[10px]">(ID: {r.id})</span>}</td>
-                            <td className="border border-gray-300 p-0 h-8">
-                                <ExcelInput numeric value={r.finishDeptRecvdQty} placeholder="0" onChange={(v) => updateModalRow(i, 'finishDeptRecvdQty', v)} className="text-center" />
-                            </td>
-                            <td className="border border-gray-300 p-0 h-8">
-                                <ExcelInput numeric value={r.finishDeptProdQty} placeholder="0" onChange={(v) => updateModalRow(i, 'finishDeptProdQty', v)} className="text-center" />
-                            </td>
-                            <td className="border border-gray-300 p-0 h-8">
-                                <ExcelInput value={r.remarks} onChange={(v) => updateModalRow(i, 'remarks', v)} />
-                            </td></tr>))}
+                            <td className="border border-gray-300 p-0 h-8"><ExcelInput numeric value={r.finishDeptRecvdQty} placeholder="0" onChange={(v) => updateModalRow(i, 'finishDeptRecvdQty', v)} className="text-center" /></td>
+                            <td className="border border-gray-300 p-0 h-8"><ExcelInput numeric value={r.finishDeptProdQty} placeholder="0" onChange={(v) => updateModalRow(i, 'finishDeptProdQty', v)} className="text-center" /></td>
+                            <td className="border border-gray-300 p-0 h-8"><ExcelInput value={r.remarks} onChange={(v) => updateModalRow(i, 'remarks', v)} /></td></tr>))}
                         </tbody>
                     </table>
                     {modalError && <div className="mt-3 px-3 py-2 rounded bg-red-50 border border-red-300 text-red-700 text-sm">{modalError}</div>}
-                    <div className="flex justify-end mt-4 gap-2"><button onClick={closeModal} className="px-4 py-1.5 bg-white border border-gray-400 rounded text-sm font-semibold hover:bg-gray-100 text-gray-700">Cancel</button><button onClick={handleModalSave} className="px-4 py-1.5 bg-[#217346] text-white rounded text-sm font-semibold hover:bg-[#185c37] shadow-sm">Save</button></div>
+                    <div className="flex justify-end mt-4 gap-2">
+                        <button onClick={closeModal} className="px-4 py-1.5 bg-white border border-gray-400 rounded text-sm font-semibold hover:bg-gray-100 text-gray-700">Cancel</button>
+                        <SaveButton />
+                    </div>
                 </DraggableModal>
             )}
 
@@ -710,17 +786,20 @@ const ProductionSummary = () => {
                             <tr className="bg-[#e7e6e6] text-gray-800">
                                 <th className="border border-gray-400 px-2 py-1.5 text-left font-semibold">Color</th>
                                 <th className="border border-gray-400 px-2 py-1.5 text-left font-semibold">Shipped Quantity</th>
-                                <th className="border border-gray-400 px-2 py-1.5 text-left font-semibold">Remarks</th></tr></thead>
+                                <th className="border border-gray-400 px-2 py-1.5 text-left font-semibold">Remarks</th>
+                            </tr>
+                        </thead>
                         <tbody>{modalRows.map((r, i) => (<tr key={r.id || i} className="hover:bg-[#f2f2f2]">
-                            <td className="border border-gray-300 px-2 py-1.5 text-center font-medium bg-[#fafafa] text-gray-700">
-                                {r.color} {r.id &&
-                                    <span className="text-gray-400 text-[10px]">(ID: {r.id})</span>}</td><td className="border border-gray-300 p-0 h-8">
-                                <ExcelInput numeric value={r.shipmentQty} placeholder="0" onChange={(v) => updateModalRow(i, 'shipmentQty', v)} className="text-center" /></td>
-                            <td className="border border-gray-300 p-0 h-8">
-                                <ExcelInput value={r.remarks} onChange={(v) => updateModalRow(i, 'remarks', v)} /></td></tr>))}</tbody>
+                            <td className="border border-gray-300 px-2 py-1.5 text-center font-medium bg-[#fafafa] text-gray-700">{r.color} {r.id && <span className="text-gray-400 text-[10px]">(ID: {r.id})</span>}</td>
+                            <td className="border border-gray-300 p-0 h-8"><ExcelInput numeric value={r.shipmentQty} placeholder="0" onChange={(v) => updateModalRow(i, 'shipmentQty', v)} className="text-center" /></td>
+                            <td className="border border-gray-300 p-0 h-8"><ExcelInput value={r.remarks} onChange={(v) => updateModalRow(i, 'remarks', v)} /></td>
+                        </tr>))}</tbody>
                     </table>
                     {modalError && <div className="mt-3 px-3 py-2 rounded bg-red-50 border border-red-300 text-red-700 text-sm">{modalError}</div>}
-                    <div className="flex justify-end mt-4 gap-2"><button onClick={closeModal} className="px-4 py-1.5 bg-white border border-gray-400 rounded text-sm font-semibold hover:bg-gray-100 text-gray-700">Cancel</button><button onClick={handleModalSave} className="px-4 py-1.5 bg-[#217346] text-white rounded text-sm font-semibold hover:bg-[#185c37] shadow-sm">Save</button></div>
+                    <div className="flex justify-end mt-4 gap-2">
+                        <button onClick={closeModal} className="px-4 py-1.5 bg-white border border-gray-400 rounded text-sm font-semibold hover:bg-gray-100 text-gray-700">Cancel</button>
+                        <SaveButton />
+                    </div>
                 </DraggableModal>
             )}
         </div>

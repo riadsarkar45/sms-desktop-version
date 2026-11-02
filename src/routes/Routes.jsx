@@ -44,6 +44,7 @@ import YarnDyedStock from "../pages/yarns/YarnDyedStock";
 import PurchaseOrderStatus from "../pages/yarns/PurchaseOrderStatus";
 import MovementSpinning from "../pages/yarns/MovementSpinning";
 import NewOrder from "../pages/workOrders/NewOrder";
+import UploadFile from "../pages/upload/Upload";
 
 const routers = createBrowserRouter([
     {
@@ -244,6 +245,10 @@ const routers = createBrowserRouter([
                     {
                         path: "new-order/:jobNumber",
                         element: <NewOrder />
+                    },
+                    {
+                        path: "upload",
+                        element: <UploadFile />
                     },
                 ]
             },

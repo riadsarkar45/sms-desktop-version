@@ -11,7 +11,8 @@ const AopOrder = ({
     FROZEN_COUNT,
     currentFrozenWidths,
     currentFrozenLefts,
-    searchTerm = ""
+    searchTerm = "",
+    getDataForCancellation
 }) => {
     const [hoveredIndex, setHoveredIndex] = useState(null);
 
@@ -25,7 +26,7 @@ const AopOrder = ({
         textAlign: "center",
         verticalAlign: "top",
         boxSizing: "border-box"
-        
+
     };
 
     // Data cell style
@@ -277,7 +278,12 @@ const AopOrder = ({
                             {/* JOB NO (per job) */}
                             {isFirstOfJob && (
                                 <td style={stickyTd(4, isHovered)} rowSpan={jobRowSpan}>
-                                    <div onDoubleClick={() => handleRedirect(job.jobNo)} className={cellPad}>{job.jobNo || "NO JOB FOUND"}</div>
+                                    <div onDoubleClick={() => handleRedirect(job.jobNo)} className={cellPad}>
+
+                                        <span onClick={() => getDataForCancellation({
+                                            jobNo: job.jobNo,
+                                            isOpen: true,
+                                        })} >{job.jobNo || "_"} </span></div>
                                 </td>
                             )}
 

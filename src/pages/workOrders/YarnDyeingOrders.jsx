@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 
-const YarnDyeOrders = ({ orders, isEdit, updatedFields, handleOnChange, handleInlineEdit, handleEditRowData }) => {
+const YarnDyeOrders = ({ orders, isEdit, getDataForCancellation, updatedFields, handleOnChange, handleInlineEdit, handleEditRowData }) => {
 
     const cellClass = "cursor-pointer px-3 py-1.5";
     const compCellClass = "hover:bg-red-500/10 hover:text-red-500 cursor-pointer px-3 py-1.5";
@@ -108,7 +108,7 @@ const YarnDyeOrders = ({ orders, isEdit, updatedFields, handleOnChange, handleIn
                                 </td>
                             )}
 
-                            
+
 
                             {/* WORK ORDER NO (per work order) */}
                             {isFirstOfWo && (
@@ -127,7 +127,10 @@ const YarnDyeOrders = ({ orders, isEdit, updatedFields, handleOnChange, handleIn
                             {/* JOB NO (per job) */}
                             {isFirstOfJob && (
                                 <td className="border border-gray-200 px-3 py-1.5 text-sm align-top" rowSpan={jobRowSpan}>
-                                    {job.jobNo}
+                                    <span onClick={() =>getDataForCancellation({
+                                        jobNo: job.jobNo,
+                                        isOpen: true,
+                                    })} >{job.jobNo}</span>
                                 </td>
                             )}
 
@@ -149,7 +152,7 @@ const YarnDyeOrders = ({ orders, isEdit, updatedFields, handleOnChange, handleIn
                                     Color
                                 </div>
                             </td>
-                            
+
                             {/* COMPOSITION (per composition) */}
                             <td className="border border-gray-200 align-top">
                                 <div className={compCellClass}>{comp?.composition}</div>
@@ -158,7 +161,7 @@ const YarnDyeOrders = ({ orders, isEdit, updatedFields, handleOnChange, handleIn
                             {/* FINISH DIA */}
                             <td className="border border-gray-200 align-top">
                                 <div className={compCellClass}>{comp?.id}</div>
-                            </td>                      
+                            </td>
 
                             {/* SHADE (%) (per composition) */}
                             <td className="border border-gray-200 align-top">

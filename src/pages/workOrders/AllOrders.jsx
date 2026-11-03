@@ -12,6 +12,7 @@ import DyeingOrder from "./DyeingOrder";
 import AopOrder from "./AopOrders";
 import YarnDyeOrders from "./YarnDyeingOrders";
 import Toast from '../../components/tost/Tost';
+import WorkOrderCancelModal from "../../components/modals/WorkOrderCancellModal";
 export const FROZEN_COUNT = 8;
 
 const FILTERABLE_COLUMNS = new Set([
@@ -79,6 +80,8 @@ const AllOrders = ({ orderType }) => {
     const [openFilter, setOpenFilter] = useState(null);
     const [filterSearch, setFilterSearch] = useState("");
     const [filterTempSelected, setFilterTempSelected] = useState([]);
+    const [dataForCancellation, setDataForCancellation] = useState([]);
+    const [isCancelModalOpen, setIsCancelModalOpen] = useState(false)
     const filterDropdownRef = useRef(null);
     const [dropdownPosition, setDropdownPosition] = useState({ top: 0, left: 0 });
 
@@ -355,6 +358,25 @@ const AllOrders = ({ orderType }) => {
             return newFilters;
         });
     };
+
+    const getDataForCancellation = async ({ jobNo, isOpen }) => {
+
+        if (!jobNo || !orderType) return null;
+
+        setIsCancelModalOpen(true)
+        console.log("clicked");
+        try {
+
+            const response = await axiosPrivate.get(`/api/work-order-for-cancellation/${jobNo}/${orderType}`)
+
+            console.log(response?.data?.workOrder, "cancellation data");
+            setDataForCancellation(response?.data?.workOrder);
+
+        } catch (error) {
+            console.log(error);
+        }
+
+    }
 
     const handleRemoveFilter = (columnName) => {
         setFilters(prev => {
@@ -1082,6 +1104,17 @@ const AllOrders = ({ orderType }) => {
                         />
                     )}
 
+                    {
+                        isCancelModalOpen && (
+                            <WorkOrderCancelModal 
+                            dataForCancellation = {dataForCancellation}
+                            setIsCancelModalOpen={setIsCancelModalOpen}
+                            orderType={orderType}
+
+                        />
+                        )
+                    }
+
                     <table ref={tableRef}>
                         <colgroup>
                             {COLUMNS.map((col, i) => (
@@ -1162,6 +1195,7 @@ const AllOrders = ({ orderType }) => {
                             handleInlineEdit={handleInlineEdit}
                             handleRedirect={handleRedirect}
                             columnWidths={columnWidths}
+                            getDataForCancellation={getDataForCancellation}
                         />}
                         {orderType === "knittingOrder" && <KnittingOrder
                             orders={orders}
@@ -1177,6 +1211,7 @@ const AllOrders = ({ orderType }) => {
                             handleInlineEdit={handleInlineEdit}
                             handleRedirect={handleRedirect}
                             columnWidths={columnWidths}
+                            getDataForCancellation={getDataForCancellation}
                         />}
                         {orderType === "dyeingOrder" && <DyeingOrder
                             orders={orders}
@@ -1191,6 +1226,7 @@ const AllOrders = ({ orderType }) => {
                             currentFrozenLefts={safeFrozenLefts}
                             handleRedirect={handleRedirect}
                             columnWidths={columnWidths}
+                            getDataForCancellation={getDataForCancellation}
                         />}
                         {orderType === "aopOrder" && <AopOrder
                             orders={orders}
@@ -1206,6 +1242,7 @@ const AllOrders = ({ orderType }) => {
                             handleInlineEdit={handleInlineEdit}
                             handleRedirect={handleRedirect}
                             columnWidths={columnWidths}
+                            getDataForCancellation={getDataForCancellation}
                         />}
                     </table>
                 </div>

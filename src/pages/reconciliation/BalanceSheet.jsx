@@ -182,8 +182,8 @@ const BalanceSheet = () => {
     const [currentPage, setCurrentPage] = useState(1);
     const [isLoading, setIsLoading] = useState(true);
     const [isExporting, setIsExporting] = useState(false);
-    
-    // --- ADDED: Loading progress state ---
+
+    // --- Loading progress state ---
     const [loadingProgress, setLoadingProgress] = useState(0);
     const [loadingMessage, setLoadingMessage] = useState("Initializing...");
 
@@ -488,7 +488,7 @@ const BalanceSheet = () => {
             });
 
             // Subtotal row
-            // FIX: dyeing process loss must use Grey Received (greyRcvd) as the base,
+            // Dyeing process loss uses Grey Received (greyRcvd) as the base,
             // matching the per-row formula dyeProcessLoss() — not Grey Delivery.
             const dyeLossTotal = totals.greyRcvd
                 ? (totals.greyRcvd - totals.finishRcvd) / totals.greyRcvd : null;
@@ -616,277 +616,281 @@ const BalanceSheet = () => {
         };
     };
 
-    // --- UPDATED: Fetch data with Socket.IO progress tracking ---
-        // --- BULLETPROOF DEBUGGING: Fetch data with Socket.IO progress tracking ---
- 
-useEffect(() => {
-    if (!socket) {
-        console.error("[BalanceSheet] Socket is not available.");
-        setIsLoading(false);
-        return;
-    }
-
-    let isActive = true;
-    let joinedRoom = false;
-
-    const requestId = `balance_${Date.now()}_${Math.random()
-        .toString(36)
-        .slice(2, 10)}`;
-
-    console.log("[BalanceSheet] Socket connected:", socket.connected);
-    console.log("[BalanceSheet] Socket ID:", socket.id);
-    console.log("[BalanceSheet] Request ID:", requestId);
-
-    // IMPORTANT: Register the listener BEFORE joining the room
-    // and BEFORE starting the API request.
-    const handleProgress = (data) => {
-        if (!isActive || !data) return;
-
-        console.log("[BalanceSheet] Progress received:", data);
-
-        const percentage = Number(data.percentage);
-
-        if (Number.isFinite(percentage)) {
-            setLoadingProgress(
-                Math.min(100, Math.max(0, percentage))
-            );
+    // --- Fetch data with Socket.IO progress tracking ---
+    useEffect(() => {
+        if (!socket) {
+            console.error("[BalanceSheet] Socket is not available.");
+            setIsLoading(false);
+            return;
         }
 
-        if (data.message) {
-            setLoadingMessage(data.message);
-        }
-    };
+        let isActive = true;
+        let joinedRoom = false;
 
-    // Do not remove listeners belonging to other components.
-    socket.on("reportProgress", handleProgress);
+        const requestId = `balance_${Date.now()}_${Math.random()
+            .toString(36)
+            .slice(2, 10)}`;
 
-    const fetchBalanceSheetData = async () => {
-        setIsLoading(true);
-        setLoadingProgress(0);
-        setLoadingMessage("Connecting to report server...");
+        console.log("[BalanceSheet] Socket connected:", socket.connected);
+        console.log("[BalanceSheet] Socket ID:", socket.id);
+        console.log("[BalanceSheet] Request ID:", requestId);
 
-        try {
-            // Wait until the socket is connected.
-            if (!socket.connected) {
-                await new Promise((resolve, reject) => {
-                    const timeout = setTimeout(() => {
-                        cleanup();
-                        reject(new Error("Socket connection timeout"));
-                    }, 10000);
+        // IMPORTANT: Register the listener BEFORE joining the room
+        // and BEFORE starting the API request.
+        const handleProgress = (data) => {
+            if (!isActive || !data) return;
 
-                    const onConnect = () => {
-                        cleanup();
-                        resolve();
-                    };
+            console.log("[BalanceSheet] Progress received:", data);
 
-                    const onConnectError = (error) => {
-                        cleanup();
-                        reject(error);
-                    };
+            const percentage = Number(data.percentage);
 
-                    const cleanup = () => {
-                        clearTimeout(timeout);
-                        socket.off("connect", onConnect);
-                        socket.off("connect_error", onConnectError);
-                    };
-
-                    socket.once("connect", onConnect);
-                    socket.once("connect_error", onConnectError);
-                });
+            if (Number.isFinite(percentage)) {
+                setLoadingProgress(
+                    Math.min(100, Math.max(0, percentage))
+                );
             }
 
-            if (!isActive) return;
+            if (data.message) {
+                setLoadingMessage(data.message);
+            }
+        };
 
-            console.log("[BalanceSheet] Joining room:", requestId);
-            setLoadingMessage("Joining report progress channel...");
+        // Do not remove listeners belonging to other components.
+        socket.on("reportProgress", handleProgress);
 
-            // Wait for server acknowledgement before making API request.
-            await new Promise((resolve, reject) => {
-                socket.timeout(7000).emit(
-                    "joinRoom",
-                    requestId,
-                    (error, response) => {
-                        if (error) {
-                            reject(
-                                new Error("Server did not acknowledge joinRoom")
-                            );
-                            return;
-                        }
+        const fetchBalanceSheetData = async () => {
+            setIsLoading(true);
+            setLoadingProgress(0);
+            setLoadingMessage("Connecting to report server...");
 
-                        if (!response?.success) {
-                            reject(
-                                new Error(
-                                    response?.message || "Failed to join report room"
-                                )
-                            );
-                            return;
-                        }
+            try {
+                // Wait until the socket is connected.
+                if (!socket.connected) {
+                    await new Promise((resolve, reject) => {
+                        const timeout = setTimeout(() => {
+                            cleanup();
+                            reject(new Error("Socket connection timeout"));
+                        }, 10000);
 
-                        joinedRoom = true;
+                        const onConnect = () => {
+                            cleanup();
+                            resolve();
+                        };
 
-                        console.log(
-                            "[BalanceSheet] Successfully joined room:",
-                            response
-                        );
+                        const onConnectError = (error) => {
+                            cleanup();
+                            reject(error);
+                        };
 
-                        resolve(response);
-                    }
-                );
-            });
+                        const cleanup = () => {
+                            clearTimeout(timeout);
+                            socket.off("connect", onConnect);
+                            socket.off("connect_error", onConnectError);
+                        };
 
-            if (!isActive) return;
-
-            setLoadingMessage("Preparing balance sheet report...");
-
-            console.log(
-                "[BalanceSheet] Calling API:",
-                `/api/balance/sheet?requestId=${requestId}`
-            );
-
-            const response = await axiosSecure.get(
-                `/api/balance/sheet?requestId=${encodeURIComponent(requestId)}`
-            );
-
-            if (!isActive) return;
-
-            const rawData = response.data.jobs || response.data || [];
-
-            const transformed = rawData.map((job) => {
-                const yarnRows = [];
-                const dyeingRows = [];
-                const aopRows = [];
-
-                (job.dyeingRows || []).forEach((row) => {
-                    const dt = row.deliveryTypeTotals || {};
-
-                    const hasYarn =
-                        dt["Yarn Delivery"] ||
-                        dt["Yarn Return"] ||
-                        dt["Grey Fabric Received"];
-
-                    const hasDyeing =
-                        dt["Grey Delivery"] ||
-                        dt["Grey Received"] ||
-                        dt["Finish Received"] ||
-                        dt["Grey Return"] ||
-                        dt["Received From Compacting"] ||
-                        dt["Received From Reprocess"] ||
-                        dt["Received From HEAT Set"];
-
-                    const hasAop =
-                        dt["Sent For Aop"] ||
-                        dt["Received From Aop"] ||
-                        dt["AOP Finish Fabric Rcvd"] ||
-                        dt["Return From Aop"];
-
-                    if (hasYarn) {
-                        yarnRows.push({
-                            factory: row.factoryName,
-                            req: row.workOrderQty || 0,
-                            issue: dt["Yarn Delivery"] || 0,
-                            knittingGrey: dt["Grey Fabric Received"] || 0,
-                            yarnReturn: dt["Yarn Return"] || 0,
-                        });
-                    }
-
-                    if (hasDyeing) {
-                        dyeingRows.push({
-                            factoryName: row.factoryName,
-                            greyDelivery: dt["Grey Delivery"] || 0,
-                            greyRcvd: dt["Grey Received"] || 0,
-                            finishRcvd: dt["Finish Received"] || 0,
-                            greyReturn: dt["Grey Return"] || 0,
-                            receivedFromCompacting:
-                                dt["Received From Compacting"] || 0,
-                            receivedFromReprocess:
-                                dt["Received From Reprocess"] || 0,
-                            receivedFromHeatSet:
-                                dt["Received From HEAT Set"] || 0,
-                        });
-                    }
-
-                    if (hasAop) {
-                        aopRows.push({
-                            factoryName: row.factoryName,
-                            sentForAop: dt["Sent For Aop"] || 0,
-                            receivedFromAop: dt["Received From Aop"] || 0,
-                            aopFinishRcvd:
-                                dt["AOP Finish Fabric Rcvd"] || 0,
-                            returnFromAop: dt["Return From Aop"] || 0,
-                        });
-                    }
-                });
-
-                if (
-                    yarnRows.length === 0 &&
-                    dyeingRows.length === 0 &&
-                    aopRows.length === 0
-                ) {
-                    yarnRows.push({
-                        factory: "N/A",
-                        req: job.totalWorkOrderQty || 0,
-                        issue: 0,
-                        knittingGrey: 0,
-                        yarnReturn: 0,
+                        socket.once("connect", onConnect);
+                        socket.once("connect_error", onConnectError);
                     });
                 }
 
-                return {
-                    ...job,
-                    yarnRows,
-                    dyeingRows,
-                    aopRows,
-                    remarks: job.remarks || "",
-                };
-            });
+                if (!isActive) return;
 
-            setJobs(transformed);
-            setLoadingProgress(100);
-            setLoadingMessage("Balance sheet loaded successfully.");
+                console.log("[BalanceSheet] Joining room:", requestId);
+                setLoadingMessage("Joining report progress channel...");
 
-            console.log(
-                `[BalanceSheet] Loaded ${transformed.length} jobs successfully.`
-            );
-        } catch (error) {
-            console.error("[BalanceSheet] Report loading failed:", error);
+                // Wait for server acknowledgement before making API request.
+                await new Promise((resolve, reject) => {
+                    socket.timeout(7000).emit(
+                        "joinRoom",
+                        requestId,
+                        (error, response) => {
+                            if (error) {
+                                reject(
+                                    new Error("Server did not acknowledge joinRoom")
+                                );
+                                return;
+                            }
 
-            if (isActive) {
-                setLoadingMessage(
-                    error.message || "Failed to load balance sheet."
+                            if (!response?.success) {
+                                reject(
+                                    new Error(
+                                        response?.message || "Failed to join report room"
+                                    )
+                                );
+                                return;
+                            }
+
+                            joinedRoom = true;
+
+                            console.log(
+                                "[BalanceSheet] Successfully joined room:",
+                                response
+                            );
+
+                            resolve(response);
+                        }
+                    );
+                });
+
+                if (!isActive) return;
+
+                setLoadingMessage("Preparing balance sheet report...");
+
+                console.log(
+                    "[BalanceSheet] Calling API:",
+                    `/api/balance/sheet?requestId=${requestId}`
+                );
+
+                const response = await axiosSecure.get(
+                    `/api/balance/sheet?requestId=${encodeURIComponent(requestId)}`
+                );
+
+                if (!isActive) return;
+
+                const rawData = response.data.jobs || response.data || [];
+
+                const transformed = rawData.map((job) => {
+                    const yarnRows = [];
+                    const dyeingRows = [];
+                    const aopRows = [];
+
+                    (job.dyeingRows || []).forEach((row) => {
+                        const dt = row.deliveryTypeTotals || {};
+
+                        const hasYarn =
+                            dt["Yarn Delivery"] ||
+                            dt["Yarn Return"] ||
+                            dt["Grey Fabric Received"];
+
+                        const hasDyeing =
+                            dt["Grey Delivery"] ||
+                            dt["Grey Received"] ||
+                            dt["Finish Received"] ||
+                            dt["Grey Return"] ||
+                            dt["Received From Compacting"] ||
+                            dt["Received From Reprocess"] ||
+                            dt["Received From HEAT Set"];
+
+                        const hasAop =
+                            dt["Sent For Aop"] ||
+                            dt["Received From Aop"] ||
+                            dt["AOP Finish Fabric Rcvd"] ||
+                            dt["Return From Aop"];
+
+                        // FIX: a factory that has a work order but no deliveries yet
+                        // (e.g. TAIPEI KNIT & COMP. LTD) used to match none of the
+                        // three groups and was silently dropped. Keep it in the
+                        // Yarn table so it always shows up in the report.
+                        const hasNothing = !hasYarn && !hasDyeing && !hasAop;
+
+                        if (hasYarn || hasNothing) {
+                            yarnRows.push({
+                                factory: row.factoryName,
+                                req: row.workOrderQty || 0,
+                                issue: dt["Yarn Delivery"] || 0,
+                                knittingGrey: dt["Grey Fabric Received"] || 0,
+                                yarnReturn: dt["Yarn Return"] || 0,
+                            });
+                        }
+
+                        if (hasDyeing) {
+                            dyeingRows.push({
+                                factoryName: row.factoryName,
+                                greyDelivery: dt["Grey Delivery"] || 0,
+                                greyRcvd: dt["Grey Received"] || 0,
+                                finishRcvd: dt["Finish Received"] || 0,
+                                greyReturn: dt["Grey Return"] || 0,
+                                receivedFromCompacting:
+                                    dt["Received From Compacting"] || 0,
+                                receivedFromReprocess:
+                                    dt["Received From Reprocess"] || 0,
+                                receivedFromHeatSet:
+                                    dt["Received From HEAT Set"] || 0,
+                            });
+                        }
+
+                        if (hasAop) {
+                            aopRows.push({
+                                factoryName: row.factoryName,
+                                sentForAop: dt["Sent For Aop"] || 0,
+                                receivedFromAop: dt["Received From Aop"] || 0,
+                                aopFinishRcvd:
+                                    dt["AOP Finish Fabric Rcvd"] || 0,
+                                returnFromAop: dt["Return From Aop"] || 0,
+                            });
+                        }
+                    });
+
+                    if (
+                        yarnRows.length === 0 &&
+                        dyeingRows.length === 0 &&
+                        aopRows.length === 0
+                    ) {
+                        yarnRows.push({
+                            factory: "N/A",
+                            req: job.totalWorkOrderQty || 0,
+                            issue: 0,
+                            knittingGrey: 0,
+                            yarnReturn: 0,
+                        });
+                    }
+
+                    return {
+                        ...job,
+                        yarnRows,
+                        dyeingRows,
+                        aopRows,
+                        remarks: job.remarks || "",
+                    };
+                });
+
+                setJobs(transformed);
+                setLoadingProgress(100);
+                setLoadingMessage("Balance sheet loaded successfully.");
+
+                console.log(
+                    `[BalanceSheet] Loaded ${transformed.length} jobs successfully.`
+                );
+            } catch (error) {
+                console.error("[BalanceSheet] Report loading failed:", error);
+
+                if (isActive) {
+                    setLoadingMessage(
+                        error.message || "Failed to load balance sheet."
+                    );
+                }
+            } finally {
+                if (isActive) {
+                    setIsLoading(false);
+                }
+
+                // Remove only this component's listener.
+                socket.off("reportProgress", handleProgress);
+
+                if (joinedRoom && socket.connected) {
+                    socket.emit("leaveRoom", requestId);
+                }
+
+                console.log(
+                    "[BalanceSheet] Request completed:",
+                    requestId
                 );
             }
-        } finally {
-            if (isActive) {
-                setIsLoading(false);
-            }
+        };
 
-            // Remove only this component's listener.
+        fetchBalanceSheetData();
+
+        return () => {
+            isActive = false;
+
+            // Component-specific cleanup only.
             socket.off("reportProgress", handleProgress);
 
             if (joinedRoom && socket.connected) {
                 socket.emit("leaveRoom", requestId);
             }
-
-            console.log(
-                "[BalanceSheet] Request completed:",
-                requestId
-            );
-        }
-    };
-
-    fetchBalanceSheetData();
-
-    return () => {
-        isActive = false;
-
-        // Component-specific cleanup only.
-        socket.off("reportProgress", handleProgress);
-
-        if (joinedRoom && socket.connected) {
-            socket.emit("leaveRoom", requestId);
-        }
-    };
-}, [axiosSecure, socket]);
+        };
+    }, [axiosSecure, socket]);
 
 
     return (
@@ -971,46 +975,45 @@ useEffect(() => {
             )}
 
             <div className="overflow-auto border border-[#b4bcc2] rounded-2xl shadow-sm bg-white relative flex-1 min-h-0">
-                {/* --- UPDATED: Loading overlay with real-time progress bar --- */}
-                
-{isLoading && (
-    <div className="absolute inset-0 bg-white/90 z-50 flex items-center justify-center">
-        <div className="flex flex-col items-center gap-3 w-64">
+                {/* Loading overlay with real-time progress bar */}
+                {isLoading && (
+                    <div className="absolute inset-0 bg-white/90 z-50 flex items-center justify-center">
+                        <div className="flex flex-col items-center gap-3 w-64">
 
-            {/* Progress Track */}
-            <div
-                className="w-full h-2.5 rounded-full overflow-hidden"
-                style={{
-                    backgroundColor: "#e2e8f0",
-                }}
-                role="progressbar"
-                aria-valuenow={loadingProgress}
-                aria-valuemin={0}
-                aria-valuemax={100}
-            >
-                {/* Progress Fill */}
-                <div
-                    style={{
-                        width: "100%",
-                        height: "100%",
-                        backgroundColor: "#0f2544",
-                        transform: `scaleX(${Math.min(
-                            100,
-                            Math.max(0, Number(loadingProgress) || 0)
-                        ) / 100})`,
-                        transformOrigin: "left center",
-                        transition: "transform 300ms ease-in-out",
-                    }}
-                />
-            </div>
+                            {/* Progress Track */}
+                            <div
+                                className="w-full h-2.5 rounded-full overflow-hidden"
+                                style={{
+                                    backgroundColor: "#e2e8f0",
+                                }}
+                                role="progressbar"
+                                aria-valuenow={loadingProgress}
+                                aria-valuemin={0}
+                                aria-valuemax={100}
+                            >
+                                {/* Progress Fill */}
+                                <div
+                                    style={{
+                                        width: "100%",
+                                        height: "100%",
+                                        backgroundColor: "#0f2544",
+                                        transform: `scaleX(${Math.min(
+                                            100,
+                                            Math.max(0, Number(loadingProgress) || 0)
+                                        ) / 100})`,
+                                        transformOrigin: "left center",
+                                        transition: "transform 300ms ease-in-out",
+                                    }}
+                                />
+                            </div>
 
-            <span className="text-xs font-medium text-slate-600 text-center">
-                {loadingMessage} ({loadingProgress}%)
-            </span>
+                            <span className="text-xs font-medium text-slate-600 text-center">
+                                {loadingMessage} ({loadingProgress}%)
+                            </span>
 
-        </div>
-    </div>
-)}
+                        </div>
+                    </div>
+                )}
 
 
                 <table className="border-separate border-spacing-0 tabular-nums text-[11px] border border-[#b4bcc2]" style={{ width: '100%', minWidth: TOTAL_WIDTH }}>

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSocket } from "../../hooks/socketProvider/SocketContext";
+import { useAuth } from "../../auth/AuthContext";
 
 const EMPTY_USERS = []; // stable default so effects do not re-run on every render
 
@@ -125,9 +126,8 @@ const ChatWindow = ({ peerId, user, online, minimized, unread, messages, me, onT
                                 <div key={m.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
                                     <div
                                         title={formatTime(m.createdAt)}
-                                        className={`max-w-[80%] whitespace-pre-wrap break-words rounded-2xl px-2.5 py-1 text-xs ${
-                                            mine ? "bg-blue-600 text-white" : "bg-gray-200 text-gray-900"
-                                        }`}
+                                        className={`max-w-[80%] whitespace-pre-wrap break-words rounded-2xl px-2.5 py-1 text-xs ${mine ? "bg-blue-600 text-white" : "bg-gray-200 text-gray-900"
+                                            }`}
                                     >
                                         {m.text}
                                     </div>
@@ -194,6 +194,7 @@ const GlobalChatBox = ({ currentUserId, users = EMPTY_USERS }) => {
     const [onlineUserIds, setOnlineUserIds] = useState(new Set()); // Set of string ids
     const [contactsOpen, setContactsOpen] = useState(false);
     const [search, setSearch] = useState("");
+    const { user } = useAuth();
 
     // Refs so socket handlers always see current values
     const windowsRef = useRef([]);
@@ -322,6 +323,15 @@ const GlobalChatBox = ({ currentUserId, users = EMPTY_USERS }) => {
                     }
                     resolve(res);
                 });
+
+                socket.emit("notify-work-order-request", {
+                    senderUserId: senderId,
+                    userName: user?.name,
+                    receiverUserId: peerId,
+                    message: `Received a new message.`,
+                });
+
+                console.log("notified");
             }),
         [socket, addMessages]
     );

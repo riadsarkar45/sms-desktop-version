@@ -20,7 +20,7 @@ import {
 import { useAuth } from "../../auth/AuthContext";
 
 // ================= CONSTANTS & DEFAULTS =================
-const TOTAL_COLS = 14;
+const TOTAL_COLS = 16;
 
 // Default rate per dozen (Taka/Doz) by process operation
 const DEFAULT_RATES = {
@@ -34,7 +34,7 @@ const DEFAULT_RATES = {
 };
 
 // Columns that have an Excel-style header filter
-const COLUMN_FILTER_KEYS = ["jobNo", "style", "process", "unit", "orderQty", "rate"];
+const COLUMN_FILTER_KEYS = ["jobNo", "style", "process", "unit", "orderQty", "rate", "partyName", "productionType"];
 const NUMERIC_FILTER_KEYS = ["orderQty", "rate"];
 
 // ================= HELPERS =================
@@ -117,6 +117,8 @@ const getRecordFields = (r, rates) => {
         unit: getUnitName(r) || "—",
         orderQty: String(orderQty),
         rate: String(Number(rawRate) || 0),
+        partyName: r.partyName || "—",
+        productionType: r.productionType || "—",
     };
 };
 
@@ -390,6 +392,7 @@ const ContractBilling = () => {
     const [processInputs, setProcessInputs] = useState([]);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const { user } = useAuth();
+    
     // Keep time fresh
     useEffect(() => {
         const timer = setInterval(() => setNow(new Date()), 30000);
@@ -543,6 +546,8 @@ const ContractBilling = () => {
         scopedRecords.forEach((r) => {
             const jobNo = r.jobs?.jobNo || "—";
             const process = r.processType || "—";
+            const partyName = r.partyName || "—";
+            const productionType = r.productionType || "—";
             const unit = getUnitName(r) || "—";
             const qty = Number(r.output) || 0;
             const orderQty = Number(r.styleReqRows?.orderQty) || 0;
@@ -582,6 +587,8 @@ const ContractBilling = () => {
                     prevQty: 0,
                     pcQty: 0, // running production (billed)
                     rate,
+                    partyName,
+                    productionType,
                 });
             }
             const row = comp.rowsByProcess.get(rowKey);
@@ -695,15 +702,17 @@ const ContractBilling = () => {
                 { width: 18 },  // 3  Style
                 { width: 24 },  // 4  Process
                 { width: 20 },  // 5  Manufacturing Unit
-                { width: 12 },  // 6  Order Qty
-                { width: 14 },  // 7  Previous
-                { width: 14 },  // 8  Running
-                { width: 14 },  // 9  Total
-                { width: 16 },  // 10 Short / Excess
-                { width: 12 },  // 11 Billed Pcs
-                { width: 11 },  // 12 Doz
-                { width: 13 },  // 13 Rate
-                { width: 16 },  // 14 Total Taka
+                { width: 20 },  // 6  Party Name
+                { width: 20 },  // 7  Production Type
+                { width: 12 },  // 8  Order Qty
+                { width: 14 },  // 9  Previous
+                { width: 14 },  // 10 Running
+                { width: 14 },  // 11 Total
+                { width: 16 },  // 12 Short / Excess
+                { width: 12 },  // 13 Billed Pcs
+                { width: 11 },  // 14 Doz
+                { width: 13 },  // 15 Rate
+                { width: 16 },  // 16 Total Taka
             ];
 
             // Title
@@ -743,6 +752,8 @@ const ContractBilling = () => {
                 "Style",
                 "Process Operation",
                 "Manufacturing Unit",
+                "Party Name",
+                "Production Type",
                 "Order Qty",
                 "Previous Production",
                 "Running Production",
@@ -785,6 +796,8 @@ const ContractBilling = () => {
                             group.style || "",
                             item.process,
                             item.unit === "—" ? "" : item.unit,
+                            item.partyName === "—" ? "" : item.partyName,
+                            item.productionType === "—" ? "" : item.productionType,
                             comp.orderQty > 0 ? comp.orderQty : "",
                             item.prevQty || 0,
                             item.pcQty || 0,
@@ -798,7 +811,7 @@ const ContractBilling = () => {
                         rowIdx++;
                     });
 
-                    if (comp.rows.length > 1) ws.mergeCells(compStart, 6, rowIdx - 1, 6);
+                    if (comp.rows.length > 1) ws.mergeCells(compStart, 8, rowIdx - 1, 8);
                 });
 
                 if (group.rowCount > 1) {
@@ -818,19 +831,19 @@ const ContractBilling = () => {
                     cell.font = { size: 10 };
                     cell.alignment = {
                         vertical: "middle",
-                        horizontal: c === 1 || c === 2 || c === 3 ? "center" : c === 4 || c === 5 ? "left" : "right",
+                        horizontal: c === 1 || c === 2 || c === 3 ? "center" : c === 4 || c === 5 || c === 6 || c === 7 ? "left" : "right",
                         wrapText: c === 3,
                     };
 
-                    if ([6, 7, 8, 9, 11].includes(c)) cell.numFmt = "#,##0";
-                    if (c === 10) cell.numFmt = "+#,##0;-#,##0;0";
-                    if (c === 12) cell.numFmt = "0.00";
-                    if (c === 13) cell.numFmt = "0.00";
-                    if (c === 14) cell.numFmt = "#,##0";
+                    if ([8, 9, 10, 11, 13].includes(c)) cell.numFmt = "#,##0";
+                    if (c === 12) cell.numFmt = "+#,##0;-#,##0;0";
+                    if (c === 14) cell.numFmt = "0.00";
+                    if (c === 15) cell.numFmt = "0.00";
+                    if (c === 16) cell.numFmt = "#,##0";
 
                     if (c === 2) cell.font = { size: 10, bold: true, color: { argb: "FF3730A3" } };
-                    if (c === 8 || c === 9 || c === 11 || c === 14) cell.font = { size: 10, bold: true };
-                    if (c === 10 && typeof cell.value === "number") {
+                    if (c === 10 || c === 11 || c === 13 || c === 16) cell.font = { size: 10, bold: true };
+                    if (c === 12 && typeof cell.value === "number") {
                         cell.font = {
                             size: 10,
                             bold: true,
@@ -843,25 +856,25 @@ const ContractBilling = () => {
             // Footer: statement total (this is the final bill, no deduction)
             const totalRowNum = lastDataRow + 1;
             const totalRow = ws.getRow(totalRowNum);
-            ws.mergeCells(totalRowNum, 1, totalRowNum, 5);
+            ws.mergeCells(totalRowNum, 1, totalRowNum, 7);
             totalRow.getCell(1).value = "STATEMENT TOTAL";
-            totalRow.getCell(6).value = totalOrderQty > 0 ? totalOrderQty : "";
-            totalRow.getCell(7).value = totalPrevPcs;
-            totalRow.getCell(8).value = totalBillingPcs;
-            totalRow.getCell(9).value = totalProductionPcs;
-            totalRow.getCell(10).value = "";
-            totalRow.getCell(11).value = totalBillingPcs;
-            totalRow.getCell(12).value = Number(totalDozens.toFixed(2));
-            totalRow.getCell(13).value = "Total Bill";
-            totalRow.getCell(14).value = totalBillAmount;
+            totalRow.getCell(8).value = totalOrderQty > 0 ? totalOrderQty : "";
+            totalRow.getCell(9).value = totalPrevPcs;
+            totalRow.getCell(10).value = totalBillingPcs;
+            totalRow.getCell(11).value = totalProductionPcs;
+            totalRow.getCell(12).value = "";
+            totalRow.getCell(13).value = totalBillingPcs;
+            totalRow.getCell(14).value = Number(totalDozens.toFixed(2));
+            totalRow.getCell(15).value = "Total Bill";
+            totalRow.getCell(16).value = totalBillAmount;
 
             for (let c = 1; c <= TOTAL_COLS; c++) {
                 const cell = totalRow.getCell(c);
-                cell.font = { bold: true, size: 10, color: { argb: c >= 13 ? "FF064E3B" : "FF0F172A" } };
+                cell.font = { bold: true, size: 10, color: { argb: c >= 15 ? "FF064E3B" : "FF0F172A" } };
                 cell.fill = {
                     type: "pattern",
                     pattern: "solid",
-                    fgColor: { argb: c >= 13 ? "FFD1FAE5" : "FFF1F5F9" },
+                    fgColor: { argb: c >= 15 ? "FFD1FAE5" : "FFF1F5F9" },
                 };
                 cell.border = {
                     top: { style: "medium", color: { argb: "FF94A3B8" } },
@@ -870,18 +883,18 @@ const ContractBilling = () => {
                     right: thin,
                 };
                 cell.alignment = { vertical: "middle", horizontal: c === 1 ? "center" : "right" };
-                if ([6, 7, 8, 9, 11, 14].includes(c)) cell.numFmt = "#,##0";
-                if (c === 12) cell.numFmt = "0.00";
+                if ([8, 9, 10, 11, 13, 16].includes(c)) cell.numFmt = "#,##0";
+                if (c === 14) cell.numFmt = "0.00";
             }
             totalRow.height = 24;
 
             // Signature lines
             const sigRow = totalRowNum + 4;
             const sigs = [
-                { col: 1, to: 3, label: "Prepared By" },
-                { col: 4, to: 6, label: "Floor Supervisor" },
-                { col: 7, to: 9, label: "Accounts / Audit" },
-                { col: 10, to: 14, label: "Contractor Signature" },
+                { col: 1, to: 4, label: "Prepared By" },
+                { col: 5, to: 7, label: "Floor Supervisor" },
+                { col: 8, to: 10, label: "Accounts / Audit" },
+                { col: 11, to: 16, label: "Contractor Signature" },
             ];
             sigs.forEach(({ col, to, label }) => {
                 ws.mergeCells(sigRow, col, sigRow, to);
@@ -1292,6 +1305,20 @@ const ContractBilling = () => {
                                             onApply={handleApplyColumnFilter}
                                         />
                                         <FilterTh
+                                            label="Party Name"
+                                            columnKey="partyName"
+                                            options={columnOptions.partyName}
+                                            selected={columnFilters.partyName}
+                                            onApply={handleApplyColumnFilter}
+                                        />
+                                        <FilterTh
+                                            label="Production Type"
+                                            columnKey="productionType"
+                                            options={columnOptions.productionType}
+                                            selected={columnFilters.productionType}
+                                            onApply={handleApplyColumnFilter}
+                                        />
+                                        <FilterTh
                                             label="Order Qty"
                                             columnKey="orderQty"
                                             align="right"
@@ -1404,6 +1431,13 @@ const ContractBilling = () => {
                                                                 {renderUnitChip(item.unit)}
                                                             </td>
 
+                                                            <td className="py-3 px-4 border-r border-slate-200/70">
+                                                                {item.partyName || <span className="text-slate-400">—</span>}
+                                                            </td>
+                                                            <td className="py-3 px-4 border-r border-slate-200/70">
+                                                                {item.productionType || <span className="text-slate-400">—</span>}
+                                                            </td>
+
                                                             {/* Order Qty (Rowspan) */}
                                                             {isFirstOfComp && (
                                                                 <td
@@ -1471,7 +1505,7 @@ const ContractBilling = () => {
                                 {/* Bill Summary Footer (total bill is the final amount) */}
                                 <tfoot>
                                     <tr className="border-t-2 border-slate-300 bg-slate-50 font-bold text-slate-900">
-                                        <td colSpan={5} className="py-3.5 px-4 text-center uppercase tracking-wider text-slate-600 border-r border-slate-200/70">
+                                        <td colSpan={7} className="py-3.5 px-4 text-center uppercase tracking-wider text-slate-600 border-r border-slate-200/70">
                                             Statement Total
                                         </td>
                                         <td className="py-3.5 px-4 text-right font-extrabold text-slate-900 border-r border-slate-200/70">

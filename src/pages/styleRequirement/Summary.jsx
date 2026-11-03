@@ -521,7 +521,7 @@ export default function Summary() {
             <div
                 ref={scrollContainerRef}
                 className="relative overflow-auto shadow-xs"
-                style={{ maxHeight: 'calc(100vh - 250px)', border: `1px solid ${BORDER_COLOR}`, borderRadius: '14px' }}
+                style={{ height: '40rem', border: `1px solid ${BORDER_COLOR}`, borderRadius: '14px' }}
             >
                 <table
                     className="w-full text-sm text-left rtl:text-right text-body"

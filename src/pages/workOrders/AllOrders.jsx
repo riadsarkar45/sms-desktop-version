@@ -843,7 +843,7 @@ const AllOrders = ({ orderType }) => {
             </div>
 
             <div className="bg-white rounded-lg border border-gray-200" style={{ borderTop: "3px solid #217346", overflow: "hidden" }}>
-                <div className="order-table-wrapper" style={{ position: "relative", overflowX: "auto", overflowY: "auto", maxHeight: "80vh" }}>
+                <div className="order-table-wrapper" style={{ position: "relative", overflowX: "auto", overflowY: "auto", height: "40rem" }}>
                     <style>{`
                         .filter-icon-btn {
                             cursor: pointer;

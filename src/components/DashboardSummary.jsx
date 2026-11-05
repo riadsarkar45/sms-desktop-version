@@ -110,6 +110,7 @@ const TotalSummary = ({ height, bgColor, color }) => {
                 signal,
             });
             setDetailData(res.data ?? {});
+            console.log(res.data)
         } catch (err) {
             if (err?.code === 'ERR_CANCELED' || err?.name === 'CanceledError') return;
             console.error('Failed to fetch summary', err);
@@ -160,6 +161,7 @@ const TotalSummary = ({ height, bgColor, color }) => {
 
     return (
         <div className='bg-white p-2'>
+            777777777777777777777777777
             <div className='flex flex-wrap items-end gap-2 mb-2'>
                 <Input
                     name="orderType"

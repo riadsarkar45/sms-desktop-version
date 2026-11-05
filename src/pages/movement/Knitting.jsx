@@ -215,20 +215,68 @@ const parseDeliveryMonth = (raw) => {
 // ===== END DELIVERY MONTH PARSING =====
 
 // ===== EXCEL EXPORT CONFIG =====
-// The knitting factory (party) a row belongs to.
-//  - Yarn Delivery  : yarn goes OUT to the knitting factory  -> party = toFactory
-//  - Yarn Return / Grey (Greige) Received : goods come BACK from the knitting factory -> party = fromFactory
-// This way delivery + return + received of the same factory always land in ONE sheet.
-const getPartyFactory = (row) => {
-    const to = String(row.toFactory || '').trim();
-    const from = String(row.fromFactory || '').trim();
-    const isDelivery = Number(row.yarnDelivery) > 0;
-    const isBack = Number(row.yarnReturn) > 0 || Number(row.greyFabricReceived) > 0;
-    let party;
-    if (isDelivery && !isBack) party = to || from;
-    else if (isBack && !isDelivery) party = from || to;
-    else party = to || from; // mixed / no qty
-    return party || 'Unknown';
+// Which factory sheet each quantity goes to (strict, no borrowing from the other factory):
+//  - Yarn Delivery                 : SM yarn store -> knitting factory   => party = To Factory
+//  - Yarn Return / Greige Received : knitting factory -> SM              => party = From Factory
+// So delivery, return and received of the same knitting factory always land in ONE sheet.
+//
+// FACTORY TO FACTORY TRANSFER (e.g. KHANDOKAR returns yarn to SALIM):
+//  the system saves a pair of rows -> Yarn Return (From KHANDOKAR, To SALIM)
+//                                  and Yarn Delivery (From SALIM, To KHANDOKAR, mirrored).
+//  The factory that RECEIVES the yarn is SALIM, so the delivery row is kept in the SALIM sheet
+//  (the delivery's From Factory) and the return row stays in the KHANDOKAR sheet (the return's From Factory).
+//  A delivery is treated as such a transfer only when a mirrored Yarn Return row exists for the
+//  same challan / job / composition / color. All other deliveries follow the normal To Factory rule.
+const DELIVERY_PARTY_KEY = 'toFactory';
+const BACK_PARTY_KEY = 'fromFactory';
+
+const cleanFactoryName = (name) => String(name || '').replace(/\s+/g, ' ').trim();
+
+const rowPairKey = (r) => [r.challanNo, r.jobNo, r.composition, r.color]
+    .map((v) => String(v ?? '').trim().toLowerCase())
+    .join('|');
+
+// Index of all Yarn Return rows: "pair|fromFactory|toFactory"
+const buildReturnIndex = (rows) => {
+    const set = new Set();
+    rows.forEach((r) => {
+        if ((Number(r.yarnReturn) || 0) > 0) {
+            set.add(`${rowPairKey(r)}|${factoryKey(r.fromFactory)}|${factoryKey(r.toFactory)}`);
+        }
+    });
+    return set;
+};
+
+// Delivery row is the mirror of a return row (return From = delivery To, return To = delivery From)
+const isTransferDelivery = (row, returnIndex) =>
+    !!returnIndex && returnIndex.has(`${rowPairKey(row)}|${factoryKey(row.toFactory)}|${factoryKey(row.fromFactory)}`);
+
+// A row that carries both kinds of quantity is split in two export entries
+// (only when the two quantities belong to different factories), so nothing is double counted.
+// If the required factory name is empty the entry goes to "Unknown".
+// Rows with no quantity at all are kept under To Factory (fallback From Factory).
+const splitRowByParty = (row, returnIndex) => {
+    const transfer = isTransferDelivery(row, returnIndex);
+    const deliveryParty = cleanFactoryName(transfer ? row.fromFactory : row[DELIVERY_PARTY_KEY]) || 'Unknown';
+    const backParty = cleanFactoryName(row[BACK_PARTY_KEY]) || 'Unknown';
+    const delivery = Number(row.yarnDelivery) || 0;
+    const yarnRet = Number(row.yarnReturn) || 0;
+    const greige = Number(row.greyFabricReceived) || 0;
+    const hasDelivery = delivery > 0;
+    const hasBack = yarnRet > 0 || greige > 0;
+
+    if (hasDelivery && hasBack) {
+        if (deliveryParty.toLowerCase() === backParty.toLowerCase()) {
+            return [{ party: deliveryParty, row }];
+        }
+        return [
+            { party: deliveryParty, row: { ...row, yarnReturn: 0, greyFabricReceived: 0, billingAmount: 0 } },
+            { party: backParty, row: { ...row, yarnDelivery: 0 } },
+        ];
+    }
+    if (hasDelivery) return [{ party: deliveryParty, row }];
+    if (hasBack) return [{ party: backParty, row }];
+    return [{ party: cleanFactoryName(row.toFactory) || cleanFactoryName(row.fromFactory) || 'Unknown', row }];
 };
 // Same factory typed with different spacing/casing is treated as one factory
 const factoryKey = (name) => String(name || 'Unknown').replace(/\s+/g, ' ').trim().toLowerCase();
@@ -950,6 +998,7 @@ const Knitting = () => {
     };
 
     // ===== EXCEL EXPORT: one sheet per factory + Summary sheet =====
+    // Delivery -> To Factory, Return / Greige -> From Factory (factory-to-factory transfer rule: see EXPORT CONFIG)
     const handleExport = async () => {
         if (filteredRows.length === 0) { alert("No data to export."); return; }
         setIsExporting(true);
@@ -968,29 +1017,37 @@ const Knitting = () => {
                 ? sortedMonthKeys.map(formatMonthLabel).join('_').replace(/'/g, '-')
                 : 'AllMonths';
 
-            // Prepare rows (sorted by date, then challan)
-            const exportRows = filteredRows
-                .map((r) => ({
-                    ...r,
-                    monthLabel: formatMonthLabel(getMonthKey(r.challanDate)),
-                }))
-                .sort((a, b) => {
-                    const ja = String(a.jobNo ?? '');
-                    const jb = String(b.jobNo ?? '');
-                    if (ja !== jb) return ja.localeCompare(jb, undefined, { numeric: true });
-                    const da = normalizeDate(a.challanDate);
-                    const db = normalizeDate(b.challanDate);
-                    if (da !== db) return da < db ? -1 : 1;
-                    return String(a.challanNo).localeCompare(String(b.challanNo), undefined, { numeric: true });
+            // Split every row by party (delivery -> To Factory, return/received -> From Factory)
+            const returnIndex = buildReturnIndex(allRows);
+            const exportEntries = [];
+            filteredRows.forEach((r) => {
+                splitRowByParty(r, returnIndex).forEach((part) => {
+                    exportEntries.push({
+                        party: part.party,
+                        row: { ...part.row, monthLabel: formatMonthLabel(getMonthKey(part.row.challanDate)) },
+                    });
                 });
+            });
 
-            // Group by factory: delivery / return / received of the same factory => ONE sheet
+            // Sort (job no, date, challan no)
+            exportEntries.sort((x, y) => {
+                const a = x.row;
+                const b = y.row;
+                const ja = String(a.jobNo ?? '');
+                const jb = String(b.jobNo ?? '');
+                if (ja !== jb) return ja.localeCompare(jb, undefined, { numeric: true });
+                const da = normalizeDate(a.challanDate);
+                const db = normalizeDate(b.challanDate);
+                if (da !== db) return da < db ? -1 : 1;
+                return String(a.challanNo).localeCompare(String(b.challanNo), undefined, { numeric: true });
+            });
+
+            // Group by factory: one sheet per factory
             const groups = new Map(); // key -> { name, rows }
-            exportRows.forEach((r) => {
-                const name = getPartyFactory(r);
-                const key = factoryKey(name);
-                if (!groups.has(key)) groups.set(key, { name, rows: [] });
-                groups.get(key).rows.push(r);
+            exportEntries.forEach(({ party, row }) => {
+                const key = factoryKey(party);
+                if (!groups.has(key)) groups.set(key, { name: cleanFactoryName(party) || 'Unknown', rows: [] });
+                groups.get(key).rows.push(row);
             });
             const factories = [...groups.values()].sort((a, b) => a.name.localeCompare(b.name));
 

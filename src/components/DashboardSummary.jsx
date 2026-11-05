@@ -161,7 +161,6 @@ const TotalSummary = ({ height, bgColor, color }) => {
 
     return (
         <div className='bg-white p-2'>
-            777777777777777777777777777
             <div className='flex flex-wrap items-end gap-2 mb-2'>
                 <Input
                     name="orderType"

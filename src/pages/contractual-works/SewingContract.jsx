@@ -1091,7 +1091,7 @@ export default function SewingContract() {
     const timer = setTimeout(async () => {
       setIsSearching(true);
       try {
-        const { data } = await axiosPrivate.get("/api/get-contractual-job", { params: { jobNo: term } });
+        const { data } = await axiosPrivate.get("/api/get-contractual-job", { params: { jobNo: jobNo } });
         if (cancelled) return;
         setSearchResults(Array.isArray(data) ? data : data ? [data] : []);
       } catch (e) {

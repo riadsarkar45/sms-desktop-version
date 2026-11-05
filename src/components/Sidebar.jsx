@@ -1,5 +1,17 @@
-import { useEffect, useLayoutEffect, useState } from "react";
-import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
+import {
+    memo,
+    useEffect,
+    useLayoutEffect,
+    useRef,
+    useState,
+} from "react";
+import {
+    Link,
+    Outlet,
+    useLocation,
+    useNavigate,
+    useOutlet,
+} from "react-router-dom";
 
 import {
     LayoutDashboard,
@@ -33,8 +45,6 @@ import {
     PinOff,
     ChevronDown,
     ChevronRight,
-    Settings,
-    Search,
 } from "lucide-react";
 
 import UseUserRoles from "../hooks/all-users/UseUserRoles";
@@ -51,6 +61,65 @@ const DEFAULT_ZOOM = 67;
 const MIN_ZOOM = 40;
 const MAX_ZOOM = 200;
 const ZOOM_STEP = 5;
+
+const HOME_PATH = "/dashboard/home";
+
+// Maximum number of open tabs (the oldest closable tab is closed
+// automatically when this is exceeded, to protect memory).
+const MAX_TABS = 15;
+
+const PAGE_TITLES = {
+    "/dashboard/home": "Dashboard",
+
+    "/dashboard/yarn": "Yarn Purchase",
+    "/dashboard/spinning-yarn-movement": "Yarn Movement Spinning",
+    "/dashboard/yarn/movement": "Raw Yarn Movement",
+    "/dashboard/yarn/stock": "Raw Yarn Stock",
+    "/dashboard/yarndyed/movement": "Yarn Dyed Movement",
+    "/dashboard/yarndyed/stock": "Yarn Dyed Stock",
+
+    "/dashboard/knitting-order": "Knitting Orders",
+    "/dashboard/dyeing-order": "Dyeing Orders",
+    "/dashboard/yarn-dye-order": "Yarn Dyeing Orders",
+    "/dashboard/aop-order": "AOP Orders",
+
+    "/dashboard/style-requirement": "Styles",
+    "/dashboard/factory-balance-comparison": "Compare Stock",
+    "/dashboard/report-studio": "Report Studio",
+
+    "/dashboard/productionsummary": "Production Summary",
+    "/dashboard/daily-production/cutting": "Cutting Production",
+    "/dashboard/daily-production/sewing": "Sewing Production",
+    "/dashboard/daily-production/finishing": "Finishing Production",
+    "/dashboard/daily-production/export": "Export Production",
+
+    "/dashboard/asset-summary": "Asset Summary",
+    "/dashboard/asset-movement": "Asset Movement",
+
+    "/dashboard/contract-billing": "Contract Manu. Bill",
+    "/dashboard/sewing-contract": "Partial Process Control",
+
+    "/dashboard/new-user": "Add New User",
+    "/dashboard/user-list": "User List",
+
+    "/dashboard/high-loss-job": "Work Order Analysis",
+
+    "/dashboard/debit-note": "Create Debit Note",
+    "/dashboard/debit-note/list": "Debit Note Lists",
+    "/dashboard/debit-note/requested": "Requested Debit Notes",
+
+    "/dashboard/challan/aop": "AOP Movement",
+    "/dashboard/challan/dyeing": "Dyeing Movement",
+    "/dashboard/challan/knitting": "Knitting Movement",
+
+    "/dashboard/challan/others/compacting": "Compacting",
+    "/dashboard/challan/others/heat-set": "Heat Set",
+    "/dashboard/challan/others/trumble": "Trumble",
+    "/dashboard/challan/others/re-process": "Re-Process",
+
+    "/dashboard/party-wise-view": "All Parties",
+    "/dashboard/mis/glance": "At A Glance (Stock)",
+};
 
 // --------------------------------------------------
 // HELPERS
@@ -88,6 +157,38 @@ const savePin = (value) => {
     } catch {
         // Ignore localStorage errors.
     }
+};
+
+const prettify = (text) =>
+    text
+        .replace(/-/g, " ")
+        .replace(/\b\w/g, (char) => char.toUpperCase());
+
+const looksLikeId = (segment) =>
+    /^\d+$/.test(segment) ||
+    /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(segment) ||
+    /^[0-9a-f]{24}$/i.test(segment) ||
+    /^c[a-z0-9]{20,}$/i.test(segment);
+
+const getPageTitle = (pathname) => {
+    if (PAGE_TITLES[pathname]) return PAGE_TITLES[pathname];
+
+    const segments = pathname.split("/").filter(Boolean);
+    const last = segments[segments.length - 1];
+
+    if (!last) return "SM ERP";
+
+    // e.g. /dashboard/debit-note/123  ->  "Create Debit Note #123"
+    if (looksLikeId(last) && segments.length > 1) {
+        const parentPath = "/" + segments.slice(0, -1).join("/");
+        const parentTitle =
+            PAGE_TITLES[parentPath] ||
+            prettify(segments[segments.length - 2]);
+
+        return `${parentTitle} #${last.length > 8 ? last.slice(0, 8) : last}`;
+    }
+
+    return prettify(last);
 };
 
 // --------------------------------------------------
@@ -158,12 +259,34 @@ const RibbonItem = ({
 };
 
 // --------------------------------------------------
+// TAB PANE (keeps a page mounted while hidden)
+// --------------------------------------------------
+
+/*
+ * memo() compares the `element` prop by reference.
+ * Hidden tabs keep the SAME cached element, so React skips
+ * re-rendering them while they are in the background.
+ */
+
+const TabPane = memo(function TabPane({ element, active }) {
+    return (
+        <div
+            className="w-full min-w-0"
+            style={{ display: active ? "block" : "none" }}
+        >
+            {element}
+        </div>
+    );
+});
+
+// --------------------------------------------------
 // SIDEBAR / APP SHELL
 // --------------------------------------------------
 
 export default function Sidebar() {
     const location = useLocation();
     const navigate = useNavigate();
+    const outlet = useOutlet();
 
     const { user } = useAuth();
     const { sections = {} } = UseUserRoles() || {};
@@ -184,6 +307,131 @@ export default function Sidebar() {
     const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
     // ----------------------------------------------
+    // BROWSER-STYLE TABS
+    // ----------------------------------------------
+
+    /*
+     * tabs:      [{ key, path }]
+     *            key  = pathname (unique id of the tab)
+     *            path = pathname + search (where the tab was last)
+     *
+     * pageCache: { [key]: outletElement }
+     *            Keeps each tab's page element alive so its
+     *            state (filters, scroll, inputs, modals) is
+     *            not lost when the user switches tabs.
+     */
+
+    const [tabs, setTabs] = useState([
+        { key: HOME_PATH, path: HOME_PATH },
+    ]);
+
+    const pageCache = useRef({});
+
+    const currentKey = location.pathname;
+    const currentFullPath = location.pathname + location.search;
+
+    // Always store the latest element for the active tab.
+    if (outlet) {
+        pageCache.current[currentKey] = outlet;
+    }
+
+    // Open a new tab when a new page is visited,
+    // or update the stored path (query string) of an existing tab.
+    useLayoutEffect(() => {
+        setTabs((previous) => {
+            const existing = previous.find(
+                (tab) => tab.key === currentKey
+            );
+
+            if (existing) {
+                if (existing.path === currentFullPath) return previous;
+
+                return previous.map((tab) =>
+                    tab.key === currentKey
+                        ? { ...tab, path: currentFullPath }
+                        : tab
+                );
+            }
+
+            let next = [
+                ...previous,
+                { key: currentKey, path: currentFullPath },
+            ];
+
+            // Too many tabs: drop the oldest closable one
+            // (never the Dashboard tab, never the active tab).
+            while (next.length > MAX_TABS) {
+                const removeIndex = next.findIndex(
+                    (tab) =>
+                        tab.key !== HOME_PATH && tab.key !== currentKey
+                );
+
+                if (removeIndex === -1) break;
+
+                next = next.filter((_, index) => index !== removeIndex);
+            }
+
+            return next;
+        });
+    }, [currentKey, currentFullPath]);
+
+    // Remove cached pages of tabs that no longer exist
+    // (this unmounts them and frees memory).
+    useLayoutEffect(() => {
+        Object.keys(pageCache.current).forEach((key) => {
+            if (
+                key !== currentKey &&
+                !tabs.some((tab) => tab.key === key)
+            ) {
+                delete pageCache.current[key];
+            }
+        });
+    }, [tabs, currentKey]);
+
+    // The effect above adds the tab one render later, so for that
+    // single render we show the current page as an extra pane.
+    const renderedTabs = tabs.some((tab) => tab.key === currentKey)
+        ? tabs
+        : [...tabs, { key: currentKey, path: currentFullPath }];
+
+    const handleTabClick = (tab) => {
+        if (tab.key === currentKey) return;
+        navigate(tab.path);
+    };
+
+    const handleTabClose = (event, tabKey) => {
+        event.preventDefault();
+        event.stopPropagation();
+
+        if (tabKey === HOME_PATH) return;
+
+        const index = tabs.findIndex((tab) => tab.key === tabKey);
+        if (index === -1) return;
+
+        const remaining = tabs.filter((tab) => tab.key !== tabKey);
+
+        setTabs(remaining);
+
+        // Closing the active tab: go to its left neighbour
+        // (or the next one, or Dashboard).
+        if (tabKey === currentKey) {
+            const target =
+                remaining[index - 1] ||
+                remaining[index] ||
+                { path: HOME_PATH };
+
+            navigate(target.path);
+        }
+    };
+
+    const handleTabAuxClick = (event, tabKey) => {
+        // Middle mouse button closes the tab (like a browser).
+        if (event.button === 1) {
+            handleTabClose(event, tabKey);
+        }
+    };
+
+    // ----------------------------------------------
     // GLOBAL APP ZOOM
     // ----------------------------------------------
 
@@ -194,9 +442,9 @@ export default function Sidebar() {
      * Therefore:
      * - Header
      * - Top navigation
+     * - Tab bar
      * - Ribbon
-     * - Page title
-     * - Outlet
+     * - Page content (all tabs)
      *
      * All receive exactly the same zoom.
      *
@@ -294,8 +542,18 @@ export default function Sidebar() {
         );
     };
 
+    /*
+     * If the page is already open in a tab, navigate to that
+     * tab's last location (so its query string is kept too).
+     */
+    const goToPath = (path) => {
+        const existingTab = tabs.find((tab) => tab.key === path);
+
+        navigate(existingTab ? existingTab.path : path);
+    };
+
     const handleSubmoduleNavigate = (path) => {
-        navigate(path);
+        goToPath(path);
         setMobileMenuOpen(false);
 
         if (!isRibbonPinned) {
@@ -305,7 +563,7 @@ export default function Sidebar() {
 
     const handleGroupClick = (group) => {
         if (group.path) {
-            navigate(group.path);
+            goToPath(group.path);
             setSelectedGroup(group.id);
             setMobileMenuOpen(false);
 
@@ -557,7 +815,7 @@ export default function Sidebar() {
             id: "dashboard",
             label: "Dashboard",
             icon: LayoutDashboard,
-            path: "/dashboard/home",
+            path: HOME_PATH,
         },
         {
             id: "yarn",
@@ -705,73 +963,6 @@ export default function Sidebar() {
     );
 
     // ----------------------------------------------
-    // PAGE TITLES
-    // ----------------------------------------------
-
-    const pageTitles = {
-        "/dashboard/home": "Dashboard",
-
-        "/dashboard/yarn": "Yarn Purchase",
-        "/dashboard/spinning-yarn-movement": "Yarn Movement Spinning",
-        "/dashboard/yarn/movement": "Raw Yarn Movement",
-        "/dashboard/yarn/stock": "Raw Yarn Stock",
-        "/dashboard/yarndyed/movement": "Yarn Dyed Movement",
-        "/dashboard/yarndyed/stock": "Yarn Dyed Stock",
-
-        "/dashboard/knitting-order": "Knitting Orders",
-        "/dashboard/dyeing-order": "Dyeing Orders",
-        "/dashboard/yarn-dye-order": "Yarn Dyeing Orders",
-        "/dashboard/aop-order": "AOP Orders",
-
-        "/dashboard/style-requirement": "Styles",
-        "/dashboard/factory-balance-comparison": "Compare Stock",
-        "/dashboard/report-studio": "Report Studio",
-
-        "/dashboard/productionsummary": "Production Summary",
-        "/dashboard/daily-production/cutting": "Cutting Production",
-        "/dashboard/daily-production/sewing": "Sewing Production",
-        "/dashboard/daily-production/finishing": "Finishing Production",
-        "/dashboard/daily-production/export": "Export Production",
-
-        "/dashboard/asset-summary": "Asset Summary",
-        "/dashboard/asset-movement": "Asset Movement",
-
-        "/dashboard/contract-billing": "Contract Manu. Bill",
-        "/dashboard/sewing-contract": "Partial Process Control",
-
-        "/dashboard/new-user": "Add New User",
-        "/dashboard/user-list": "User List",
-
-        "/dashboard/high-loss-job": "Work Order Analysis",
-
-        "/dashboard/debit-note": "Create Debit Note",
-        "/dashboard/debit-note/list": "Debit Note Lists",
-        "/dashboard/debit-note/requested": "Requested Debit Notes",
-
-        "/dashboard/challan/aop": "AOP Movement",
-        "/dashboard/challan/dyeing": "Dyeing Movement",
-        "/dashboard/challan/knitting": "Knitting Movement",
-
-        "/dashboard/challan/others/compacting": "Compacting",
-        "/dashboard/challan/others/heat-set": "Heat Set",
-        "/dashboard/challan/others/trumble": "Trumble",
-        "/dashboard/challan/others/re-process": "Re-Process",
-
-        "/dashboard/party-wise-view": "All Parties",
-        "/dashboard/mis/glance": "At A Glance (Stock)",
-    };
-
-    const currentPageTitle =
-        pageTitles[location.pathname] ||
-        location.pathname
-            .split("/")
-            .filter(Boolean)
-            .pop()
-            ?.replace(/-/g, " ")
-            .replace(/\b\w/g, (char) => char.toUpperCase()) ||
-        "SM ERP";
-
-    // ----------------------------------------------
     // USER DISPLAY
     // ----------------------------------------------
 
@@ -792,8 +983,6 @@ export default function Sidebar() {
 
     return (
         /*
-         * THE IMPORTANT FIX:
-         *
          * This is the single zoom container.
          * Everything inside it scales together.
          *
@@ -832,7 +1021,7 @@ export default function Sidebar() {
                         </button>
 
                         <Link
-                            to="/dashboard/home"
+                            to={HOME_PATH}
                             className="flex items-center gap-2"
                         >
                             <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-950 text-white">
@@ -995,6 +1184,102 @@ export default function Sidebar() {
                         })}
                     </div>
                 </nav>
+
+                {/* ==================================
+                    BROWSER-STYLE TAB BAR
+                ================================== */}
+
+                <div className="border-t border-slate-200 bg-slate-100 px-2 pt-1.5">
+                    <div
+                        className="flex items-end gap-0.5 overflow-x-auto"
+                        role="tablist"
+                        aria-label="Open pages"
+                    >
+                        {tabs.map((tab) => {
+                            const isActive = tab.key === currentKey;
+                            const isHome = tab.key === HOME_PATH;
+
+                            return (
+                                <div
+                                    key={tab.key}
+                                    role="tab"
+                                    aria-selected={isActive}
+                                    tabIndex={0}
+                                    title={getPageTitle(tab.key)}
+                                    onClick={() => handleTabClick(tab)}
+                                    onAuxClick={(event) =>
+                                        handleTabAuxClick(event, tab.key)
+                                    }
+                                    onMouseDown={(event) => {
+                                        // Prevent the middle-click auto-scroll cursor.
+                                        if (event.button === 1) {
+                                            event.preventDefault();
+                                        }
+                                    }}
+                                    onKeyDown={(event) => {
+                                        if (
+                                            event.key === "Enter" ||
+                                            event.key === " "
+                                        ) {
+                                            event.preventDefault();
+                                            handleTabClick(tab);
+                                        }
+                                    }}
+                                    className={`
+                                        group relative flex shrink-0 cursor-pointer
+                                        select-none items-center gap-2
+                                        rounded-t-lg border border-b-0
+                                        px-3 py-1.5 text-xs font-semibold
+                                        transition-colors
+                                        ${
+                                            isActive
+                                                ? "border-slate-200 bg-[#f5f6f8] text-slate-950"
+                                                : "border-transparent text-slate-500 hover:bg-slate-200/70 hover:text-slate-900"
+                                        }
+                                    `}
+                                    style={{
+                                        minWidth: 110,
+                                        maxWidth: 200,
+                                    }}
+                                >
+                                    {isHome && (
+                                        <LayoutDashboard
+                                            size={13}
+                                            className="shrink-0"
+                                        />
+                                    )}
+
+                                    <span className="truncate">
+                                        {getPageTitle(tab.key)}
+                                    </span>
+
+                                    {!isHome && (
+                                        <button
+                                            type="button"
+                                            title="Close tab"
+                                            aria-label={`Close ${getPageTitle(tab.key)}`}
+                                            onClick={(event) =>
+                                                handleTabClose(event, tab.key)
+                                            }
+                                            className={`
+                                                ml-auto shrink-0 rounded p-0.5
+                                                text-slate-400 transition
+                                                hover:bg-slate-300 hover:text-slate-900
+                                                ${
+                                                    isActive
+                                                        ? "opacity-100"
+                                                        : "opacity-0 group-hover:opacity-100"
+                                                }
+                                            `}
+                                        >
+                                            <X size={12} />
+                                        </button>
+                                    )}
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
             </header>
 
             {/* ======================================
@@ -1154,18 +1439,18 @@ export default function Sidebar() {
             )}
 
             {/* ======================================
-                PAGE TITLE
+                PAGE CONTENT (ALL OPEN TABS)
             ====================================== */}
 
             <main className="min-h-[calc(100vh-110px)] w-full px-3 py-4 md:px-5">
-
-
-                {/* ==================================
-                    PAGE CONTENT / OUTLET
-                ================================== */}
-
                 <div className="w-full min-w-0">
-                    <Outlet />
+                    {renderedTabs.map((tab) => (
+                        <TabPane
+                            key={tab.key}
+                            active={tab.key === currentKey}
+                            element={pageCache.current[tab.key] ?? null}
+                        />
+                    ))}
                 </div>
             </main>
         </div>

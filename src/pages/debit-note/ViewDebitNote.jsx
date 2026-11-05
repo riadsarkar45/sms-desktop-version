@@ -24,7 +24,7 @@ import useAxiosPrivate from '../../hooks/UseAxiosPrivate';
 
 // ───────────────────────── CONFIG ─────────────────────────
 
-const LIST_PATH = '/debit-notes';
+const LIST_PATH = '/debit-note';
 
 const editPath = (id) => `/dashboard/edit-debit-notes/${id}`;
 

@@ -45,6 +45,7 @@ import {
     PinOff,
     ChevronDown,
     ChevronRight,
+    Building,
 } from "lucide-react";
 
 import UseUserRoles from "../hooks/all-users/UseUserRoles";
@@ -119,6 +120,7 @@ const PAGE_TITLES = {
 
     "/dashboard/party-wise-view": "All Parties",
     "/dashboard/mis/glance": "At A Glance (Stock)",
+    "/dashboard/mis/glance": "Party Stock",
 };
 
 // --------------------------------------------------
@@ -802,6 +804,11 @@ export default function Sidebar() {
                   label: "At A Glance (Stock)",
                   path: "/dashboard/mis/glance",
                   icon: ChartNoAxesCombined,
+              },
+              {
+                  label: "Party Stock",
+                  path: "/dashboard/mis/party-stock",
+                  icon: Building,
               },
           ]
         : [];

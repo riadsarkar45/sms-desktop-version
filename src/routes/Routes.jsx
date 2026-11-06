@@ -29,7 +29,7 @@ import ViewDebitNote from "../pages/debit-note/ViewDebitNote";
 import DebitNoteLists from "../pages/debit-note/DebitNoteList";
 import DebitNote from "../pages/debit-note/NewDebitNote";
 import PartyWiseView from "../pages/partyWiseView/PartyWiseView";
-import GlanceReport from "../pages/mis/GlanceReport";
+import PartyStockReport from "../pages/mis/GlanceReport";
 import ReProcess from "../pages/movement/others/ReProcess";
 import Compacting from "../pages/movement/others/Compacting";
 import Knitting from "../pages/movement/Knitting";
@@ -45,6 +45,7 @@ import PurchaseOrderStatus from "../pages/yarns/PurchaseOrderStatus";
 import MovementSpinning from "../pages/yarns/MovementSpinning";
 import NewOrder from "../pages/workOrders/NewOrder";
 import UploadFile from "../pages/upload/Upload";
+import PartyStockGlance from "../pages/mis/party.stock/GlanceReport";
 
 const routers = createBrowserRouter([
     {
@@ -207,7 +208,11 @@ const routers = createBrowserRouter([
 
                     {
                         path: "mis/glance",
-                        element: <GlanceReport />
+                        element: <PartyStockReport />
+                    },
+                    {
+                        path: "mis/party-stock",
+                        element: <PartyStockGlance />
                     },
                     {
                         path: "style/reconciliation",

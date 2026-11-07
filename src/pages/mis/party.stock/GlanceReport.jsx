@@ -42,6 +42,26 @@ const pickMetric = (dt, aliases) => {
     return 0;
 };
 
+/* API factory item -> { normalizedDeliveryType: qty }
+   supports:  deliveryTypeWiseTotal: [{ deliveryType, totalQty }]   (current API)
+              deliveryTotals: { "Yarn Delivery": 123 }              (old shape, fallback) */
+const buildTotals = (f) => {
+    const out = {};
+    if (Array.isArray(f?.deliveryTypeWiseTotal)) {
+        f.deliveryTypeWiseTotal.forEach((d) => {
+            const k = norm(d?.deliveryType ?? "");
+            if (!k) return;
+            out[k] = (out[k] || 0) + (Number(d?.totalQty) || 0);
+        });
+    } else if (f?.deliveryTotals && typeof f.deliveryTotals === "object") {
+        Object.entries(f.deliveryTotals).forEach(([key, val]) => {
+            const k = norm(key);
+            out[k] = (out[k] || 0) + (Number(val) || 0);
+        });
+    }
+    return out;
+};
+
 /* accepts: axios response, response body, or a plain array */
 const extractBody = (res) => {
     if (Array.isArray(res)) return { data: res };
@@ -71,6 +91,13 @@ const anchorOf = (el) => {
 /* ===================================================================
    STATIC ORDER TYPES  (knittingOrder, dyeingOrder, aopOrder)
    metrics: field -> accepted API key names (lowercase, letters/digits only)
+
+   IMPORTANT: aliases are STRICT per tab. The API returns every factory on
+   every tab, and knitting / dyeing factories use similar names:
+     Knitting  -> "Grey Fabric Received"
+     Dyeing    -> "Grey Received", "Finish Received"
+     AOP       -> "AOP Finish Fabric Rcvd"
+   Sharing aliases between tabs double counts quantities.
    =================================================================== */
 const ORDER_TYPES = [
     {
@@ -82,7 +109,7 @@ const ORDER_TYPES = [
         metrics: {
             yarnDelivery: ["yarndelivery"],
             yarnReturn: ["yarnreturn"],
-            greyReceived: ["greyfabricreceived", "greyreceived", "greyreceive"],
+            greyReceived: ["greyfabricreceived"],
         },
         derive: (m) => ({
             partyStock: round2(m.yarnDelivery - m.yarnReturn - m.greyReceived),
@@ -105,8 +132,8 @@ const ORDER_TYPES = [
         metrics: {
             greyDelivery: ["greydelivery"],
             greyReturn: ["greyreturn"],
-            greyReceived: ["greyreceived", "greyfabricreceived", "greyreceive"],
-            finishReceived: ["finishreceived", "finishfabricreceived", "finishreceive"],
+            greyReceived: ["greyreceived"],
+            finishReceived: ["finishreceived"],
         },
         derive: (m) => ({
             processLoss: m.greyReceived
@@ -135,12 +162,7 @@ const ORDER_TYPES = [
             sentForAop: ["sentforaop"],
             returnFromAop: ["returnfromaop"],
             receivedFromAop: ["receivedfromaop"],
-            finishReceived: [
-                "aopfinishfabricrcvd",
-                "finishreceivedfromaop",
-                "aopfinishreceived",
-                "finishreceived",
-            ],
+            finishReceived: ["aopfinishfabricrcvd", "finishreceivedfromaop", "aopfinishreceived"],
         },
         derive: (m) => ({
             partyStock: round2(m.sentForAop - m.returnFromAop - m.receivedFromAop),
@@ -521,7 +543,7 @@ const PartyStockGlance = () => {
             );
             const body = extractBody(res);
 
-            if (body.type && body.type !== "success") {
+            if (body.success === false || (body.type && body.type !== "success")) {
                 throw new Error(body.message || "API returned an error");
             }
 
@@ -548,24 +570,41 @@ const PartyStockGlance = () => {
         load();
     }, [load]);
 
-    /* ---------------- rows ---------------- */
-    const allRows = useMemo(
-        () =>
-            data.map((f, i) => {
-                const dt = f.deliveryTotals || {};
-                const m = {};
-                Object.entries(metrics).forEach(([k, aliases]) => {
-                    m[k] = round2(pickMetric(dt, aliases));
-                });
-                return {
-                    serial: i + 1,
-                    factoryName: String(f.factoryName ?? ""),
-                    ...m,
-                    ...derive(m),
-                };
-            }),
-        [data, metrics, derive]
-    );
+    /* ---------------- rows ----------------
+       1. merge factories whose names only differ by spaces / case
+       2. pick the metrics of the active tab (strict aliases)
+       3. drop factories with no activity on this tab
+       4. number the remaining rows */
+    const allRows = useMemo(() => {
+        const merged = new Map();
+        data.forEach((f) => {
+            const name = String(f?.factoryName ?? "").trim();
+            const key = name.toLowerCase();
+            const t = buildTotals(f);
+            if (!merged.has(key)) merged.set(key, { name, totals: {} });
+            const entry = merged.get(key);
+            Object.entries(t).forEach(([k, v]) => {
+                entry.totals[k] = (entry.totals[k] || 0) + v;
+            });
+        });
+
+        const rows = [];
+        merged.forEach(({ name, totals: dt }) => {
+            const m = {};
+            Object.entries(metrics).forEach(([k, aliases]) => {
+                m[k] = round2(pickMetric(dt, aliases));
+            });
+            const hasActivity = Object.values(m).some((v) => v !== 0);
+            if (!hasActivity) return;
+            rows.push({
+                factoryName: name,
+                ...m,
+                ...derive(m),
+            });
+        });
+
+        return rows.map((r, i) => ({ serial: i + 1, ...r }));
+    }, [data, metrics, derive]);
 
     const filteredRows = useMemo(() => {
         const rows = allRows.filter((r) => matches(r, columns, filters, null));

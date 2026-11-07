@@ -1,7 +1,6 @@
-
 import React, { useContext, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import logo from '../assets/react.svg';
+import logo from '../assets/image.png';
 import { AuthContext, useAuth } from '../auth/AuthContext';
 
 const Login = () => {
@@ -14,7 +13,6 @@ const Login = () => {
 
     const navigate = useNavigate();
     const { login, user, loading: authLoading } = useAuth();
-    // console.log(user);
 
     useEffect(() => {
         if (authLoading) return;
@@ -31,12 +29,10 @@ const Login = () => {
     const normalizePhone = (value) => {
         let digits = value.replace(/\D/g, '');
 
-        // Remove Bangladesh country code
         if (digits.startsWith('880')) {
             digits = digits.slice(3);
         }
 
-        // Remove leading zero if present
         if (digits.startsWith('0')) {
             digits = digits.slice(1);
         }
@@ -46,8 +42,6 @@ const Login = () => {
 
     const handlePhoneChange = (e) => {
         const value = e.target.value;
-
-        // Allow only digits, spaces, + and hyphens
         const cleaned = value.replace(/[^\d+\-\s]/g, '');
 
         setPhone(cleaned);
@@ -62,7 +56,6 @@ const Login = () => {
 
         const digits = normalizePhone(phone);
 
-        // Bangladesh mobile number validation
         if (!/^1[3-9]\d{8}$/.test(digits)) {
             setError('Please enter a valid Bangladesh mobile number.');
             return;
@@ -111,22 +104,13 @@ const Login = () => {
                     <div>
                         {/* Logo */}
                         <div className="flex items-center gap-3.5 mb-10">
-                            <div className="w-12 h-12 rounded-xl bg-white border border-slate-200 shadow-sm flex items-center justify-center p-2">
+                            {/* Increased size from w-12 h-12 to w-14 h-14 */}
+                            <div className="w-[10] h-[10rem] rounded-xl bg-white border border-slate-200 shadow-sm flex items-center justify-center p-2.5">
                                 <img
                                     src={logo}
                                     alt="SM Sourcing Logo"
                                     className="w-full h-full object-contain"
                                 />
-                            </div>
-
-                            <div>
-                                <h2 className="text-slate-800 text-base font-bold tracking-tight">
-                                    SM SOURCING
-                                </h2>
-
-                                <span className="text-[11px] font-semibold text-orange-600 tracking-wider uppercase block">
-                                    Audit & Compliance Suite
-                                </span>
                             </div>
                         </div>
 
@@ -161,6 +145,7 @@ const Login = () => {
                             <span className="text-[11px] font-mono text-slate-500 bg-white border border-slate-200/80 px-2 py-0.5 rounded shadow-sm">
                                 v2.4.12
                             </span>
+
                         </div>
 
                         <p className="text-[11px] text-slate-600 leading-normal">
@@ -337,7 +322,7 @@ const Login = () => {
                         <button
                             type="submit"
                             disabled={loading}
-                            className="w-full mt-2 py-3 px-4 rounded-lg bg-orange-600 hover:bg-orange-700 active:bg-orange-800 text-white font-semibold text-sm shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
+                            className="w-full mt-2 py-3 px-4 rounded-lg bg-orange-600 hover:bg-orange-700 active:bg-orange-800 text-white font-semibold text-sm shadow-md hover:shadow-lg transition-all flex items-center justify-content gap-2 disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
                         >
                             {loading && (
                                 <svg

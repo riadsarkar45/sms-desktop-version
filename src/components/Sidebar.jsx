@@ -50,6 +50,7 @@ import {
 
 import UseUserRoles from "../hooks/all-users/UseUserRoles";
 import { useAuth } from "../auth/AuthContext";
+import Logo from "../assets/image.png"
 
 // --------------------------------------------------
 // CONSTANTS
@@ -1031,8 +1032,8 @@ export default function Sidebar() {
                             to={HOME_PATH}
                             className="flex items-center gap-2"
                         >
-                            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-950 text-white">
-                                <ModernThreadIcon size={23} />
+                            <div className="flex h-9 w-[9rem] items-center justify-center rounded-xl text-white">
+                                <img className="h-[3rem] w-[8rem]" src={Logo} alt="" />
                             </div>
 
                             <div className="leading-tight">

@@ -1,3 +1,4 @@
+
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "SM Sourcing",
@@ -29,6 +30,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -36,5 +38,16 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduaW5nIHB1YmxpYyBrZXk6IDdDMUUzQkVDN0E3MDVCMkQKUldRdFczQjY3RHNlZkhNOFVzeCtWVGY4dWVqUG96am04VjNDaFhSZU4zeUg1eHpsY1BHcCtjTmEK",
+      "endpoints": [
+        "https://github.com/riadsarkar45/sms-desktop-version/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

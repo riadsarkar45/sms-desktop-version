@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from "react";
+import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import {
     Loader2,
     Save,
@@ -25,7 +25,29 @@ import Toast from "../../components/tost/Tost";
 import { useNavigate, useParams } from "react-router-dom";
 import useAxiosPrivate from "../../hooks/UseAxiosPrivate";
 
+// ---------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------
+const toNum = (value) => {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : 0;
+};
+
+// Keeps only digits and a single decimal point
+const sanitizeDecimal = (value) =>
+    String(value ?? "")
+        .replace(/[^\d.]/g, "")
+        .replace(/(\..*)\./g, "$1");
+
+// Fields in a composition row that must be numeric
+const NUMERIC_ROW_FIELDS = new Set(["unitPrice", "workOrderQty"]);
+// Fields in a yarn color row that must be numeric
+const NUMERIC_YARN_FIELDS = new Set(["qty", "price"]);
+
+// Stable ids so React keys stay correct when yarn colors are removed
+let yarnColorCounter = 0;
 const defaultYarnColor = () => ({
+    uid: ++yarnColorCounter,
     color: "",
     qty: "",
     price: "",
@@ -39,6 +61,22 @@ const getFactoryName = (factory) => {
         factory?.name ||
         factory?.factory ||
         ""
+    );
+};
+
+// Yarn requirement for one composition.
+// Uses the row's own process loss, falling back to the style's.
+const calcRequireQty = (row, fallbackLoss) => {
+    const hasOwnLoss =
+        row.processLoss !== "" &&
+        row.processLoss !== null &&
+        row.processLoss !== undefined;
+
+    const loss = hasOwnLoss ? toNum(row.processLoss) : toNum(fallbackLoss);
+
+    return (
+        toNum(row.finishRequiredQty) * (1 + loss / 100) +
+        toNum(row.additional)
     );
 };
 
@@ -165,7 +203,14 @@ const NewOrder = () => {
     // Inline validation error (shown in the footer next to the buttons)
     const [formError, setFormError] = useState("");
 
+    // True ONLY while the create-order request is in flight.
+    // Always reset in `finally`, so the button can never get stuck.
     const [isSubmitting, setIsSubmitting] = useState(false);
+
+    // True after a successful save while we wait to redirect.
+    // Keeps the form locked (no duplicate orders) but shows "Saved".
+    const [isSaved, setIsSaved] = useState(false);
+
     const [isLoading, setIsLoading] = useState(true);
 
     const [styleData, setStyleData] = useState(null);
@@ -189,6 +234,13 @@ const NewOrder = () => {
 
     const [autoRedirect, setAutoRedirect] = useState(true);
 
+    // Refs
+    const redirectTimerRef = useRef(null);
+    // Synchronous lock: state updates are async, so a fast double click
+    // could otherwise submit twice before `isSubmitting` becomes true.
+    const submitLockRef = useRef(false);
+    const searchBoxRef = useRef(null);
+
     const [formData, setFormData] = useState({
         workOrderPlaceDate: "",
         workOrderNo: "",
@@ -210,6 +262,36 @@ const NewOrder = () => {
     // Currently loaded Job No (loaded style first, URL as fallback)
     const activeJobNo = styleData?.jobNo || jobNumber || "";
 
+    // Form is read-only while saving / waiting to redirect
+    const isBusy = isSubmitting || isSaved;
+
+    // Clear any pending redirect timer when leaving the page
+    useEffect(() => {
+        return () => {
+            if (redirectTimerRef.current) {
+                clearTimeout(redirectTimerRef.current);
+            }
+        };
+    }, []);
+
+    // Close the job-search dropdown when clicking outside of it
+    useEffect(() => {
+        const handleClickOutside = (event) => {
+            if (
+                searchBoxRef.current &&
+                !searchBoxRef.current.contains(event.target)
+            ) {
+                setShowSearchResults(false);
+            }
+        };
+
+        document.addEventListener("mousedown", handleClickOutside);
+
+        return () => {
+            document.removeEventListener("mousedown", handleClickOutside);
+        };
+    }, []);
+
     const showNotification = useCallback((message, type = "success") => {
         setToastMessage(message);
         setToastType(type);
@@ -225,6 +307,7 @@ const NewOrder = () => {
 
         setStyleData(style);
         setFormError("");
+        setIsSaved(false);
 
         setFormData({
             workOrderPlaceDate: "",
@@ -385,7 +468,7 @@ const NewOrder = () => {
     // URL, the page and every dependent request stay in sync.
     // ---------------------------------------------------------
     const handleSelectSearchJob = (selectedJob) => {
-        if (!selectedJob?.jobNo) return;
+        if (!selectedJob?.jobNo || isBusy) return;
 
         setShowSearchResults(false);
         setSearchJobNo("");
@@ -444,22 +527,20 @@ const NewOrder = () => {
     // ---------------------------------------------------------
     const styleTotals = useMemo(() => {
         const sourceRows = styleData?.rows || [];
+        const styleLoss = Number(styleData?.processLoss) || 0;
 
         let totalOrderQty = 0;
-        let totalFinishRequiredQty = 0;
-        let totalAdditional = 0;
+        let totalRequireQty = 0;
 
         sourceRows.forEach((row) => {
             totalOrderQty += Number(row.orderQty) || 0;
-            totalFinishRequiredQty += Number(row.finishRequiredQty) || 0;
-            totalAdditional += Number(row.additional) || 0;
+            totalRequireQty += calcRequireQty(row, styleLoss);
         });
 
         return {
             totalOrderQty,
-            totalFinishRequiredQty,
-            processLoss: Number(styleData?.processLoss) || 0,
-            totalAdditional,
+            totalRequireQty,
+            processLoss: styleLoss,
         };
     }, [styleData]);
 
@@ -504,6 +585,17 @@ const NewOrder = () => {
             compositionsWithWorkOrder,
         };
     }, [rows, orderType]);
+
+    const compBreakdownObj = useMemo(
+        () =>
+            Object.fromEntries(
+                (styleData?.compBreakdown ?? []).map((item) => [
+                    item.styleRequirementRowId,
+                    item,
+                ])
+            ),
+        [styleData?.compBreakdown]
+    );
 
     // ---------------------------------------------------------
     // Fetch factory names based on selected order type
@@ -623,7 +715,9 @@ const NewOrder = () => {
                     prev.map((row) => ({
                         ...row,
                         yarnColors:
-                            row.yarnColors ?? [defaultYarnColor()],
+                            row.yarnColors?.length
+                                ? row.yarnColors
+                                : [defaultYarnColor()],
                     }))
                 );
             }
@@ -652,9 +746,13 @@ const NewOrder = () => {
     const handleRowChange = (index, field, value) => {
         setFormError("");
 
+        const nextValue = NUMERIC_ROW_FIELDS.has(field)
+            ? sanitizeDecimal(value)
+            : value;
+
         setRows((prev) =>
             prev.map((row, i) =>
-                i === index ? { ...row, [field]: value } : row
+                i === index ? { ...row, [field]: nextValue } : row
             )
         );
     };
@@ -707,6 +805,10 @@ const NewOrder = () => {
     ) => {
         setFormError("");
 
+        const nextValue = NUMERIC_YARN_FIELDS.has(field)
+            ? sanitizeDecimal(value)
+            : value;
+
         setRows((prev) =>
             prev.map((row, i) =>
                 i === rowIndex
@@ -716,7 +818,7 @@ const NewOrder = () => {
                             row.yarnColors ?? [defaultYarnColor()]
                         ).map((color, ci) =>
                             ci === colorIndex
-                                ? { ...color, [field]: value }
+                                ? { ...color, [field]: nextValue }
                                 : color
                         ),
                     }
@@ -727,16 +829,19 @@ const NewOrder = () => {
 
     const handleRemoveYarnColor = (rowIndex, colorIndex) => {
         setRows((prev) =>
-            prev.map((row, i) =>
-                i === rowIndex
-                    ? {
-                        ...row,
-                        yarnColors: (row.yarnColors ?? []).filter(
-                            (_, ci) => ci !== colorIndex
-                        ),
-                    }
-                    : row
-            )
+            prev.map((row, i) => {
+                if (i !== rowIndex) return row;
+
+                const current = row.yarnColors ?? [];
+
+                // Always keep at least one yarn color row
+                if (current.length <= 1) return row;
+
+                return {
+                    ...row,
+                    yarnColors: current.filter((_, ci) => ci !== colorIndex),
+                };
+            })
         );
     };
 
@@ -756,7 +861,7 @@ const NewOrder = () => {
             return fail("Work Order Place Date is required");
         }
 
-        if (!formData.workOrderNo) {
+        if (!formData.workOrderNo.trim()) {
             return fail("Work Order No is required");
         }
 
@@ -784,37 +889,37 @@ const NewOrder = () => {
             }
 
             if (orderType !== "yarnDyeingOrder") {
-                if (!row.unitPrice) {
+                if (!(toNum(row.unitPrice) > 0)) {
                     return fail(
-                        `Price Per Kg is required for Composition ${i + 1}`
+                        `Price Per Kg must be greater than 0 for Composition ${i + 1}`
                     );
                 }
 
-                if (!row.workOrderQty) {
+                if (!(toNum(row.workOrderQty) > 0)) {
                     return fail(
-                        `Work Order Qty is required for Composition ${i + 1}`
+                        `Work Order Qty must be greater than 0 for Composition ${i + 1}`
                     );
                 }
 
-                if (rules.yarnCount && !row.yarnCount) {
+                if (rules.yarnCount && !String(row.yarnCount).trim()) {
                     return fail(
                         `Yarn Count is required for Composition ${i + 1}`
                     );
                 }
 
-                if (rules.lotNo && !row.lotNo) {
+                if (rules.lotNo && !String(row.lotNo).trim()) {
                     return fail(
                         `Lot No is required for Composition ${i + 1}`
                     );
                 }
 
-                if (rules.machineDia && !row.machineDia) {
+                if (rules.machineDia && !String(row.machineDia).trim()) {
                     return fail(
                         `Machine Dia is required for Composition ${i + 1}`
                     );
                 }
 
-                if (rules.stichLength && !row.stichLength) {
+                if (rules.stichLength && !String(row.stichLength).trim()) {
                     return fail(
                         `Stich Length is required for Composition ${i + 1}`
                     );
@@ -829,21 +934,21 @@ const NewOrder = () => {
                 for (let j = 0; j < row.yarnColors.length; j++) {
                     const yarnColor = row.yarnColors[j];
 
-                    if (!yarnColor.color) {
+                    if (!String(yarnColor.color).trim()) {
                         return fail(
                             `Yarn color is required for Composition ${i + 1}, Color ${j + 1}`
                         );
                     }
 
-                    if (!yarnColor.qty) {
+                    if (!(toNum(yarnColor.qty) > 0)) {
                         return fail(
-                            `Qty is required for Composition ${i + 1}, Color ${j + 1}`
+                            `Qty must be greater than 0 for Composition ${i + 1}, Color ${j + 1}`
                         );
                     }
 
-                    if (!yarnColor.price) {
+                    if (!(toNum(yarnColor.price) > 0)) {
                         return fail(
-                            `Price is required for Composition ${i + 1}, Color ${j + 1}`
+                            `Price must be greater than 0 for Composition ${i + 1}, Color ${j + 1}`
                         );
                     }
                 }
@@ -856,9 +961,15 @@ const NewOrder = () => {
 
     // ---------------------------------------------------------
     // Submit work order
+    //
+    // `isSubmitting` is true ONLY while the request is in flight and
+    // is ALWAYS reset in `finally` — on success, on API error, on
+    // network error, or on timeout. After a successful save with
+    // auto-redirect, the button switches to "Saved" (isSaved).
     // ---------------------------------------------------------
     const handleSubmit = async () => {
-        if (isSubmitting) return;
+        // Ref lock blocks double clicks instantly (state is async)
+        if (submitLockRef.current || isSaved) return;
         if (!validateForm()) return;
 
         if (!styleData) {
@@ -867,12 +978,13 @@ const NewOrder = () => {
             return;
         }
 
+        submitLockRef.current = true;
         setIsSubmitting(true);
 
         try {
             const payload = {
                 workOrderPlaceDate: formData.workOrderPlaceDate,
-                workOrderNo: formData.workOrderNo,
+                workOrderNo: formData.workOrderNo.trim(),
                 month: formData.month,
                 jobNo: formData.jobNo,
                 factoryName: formData.factoryName.trim(),
@@ -891,14 +1003,25 @@ const NewOrder = () => {
                     lotNo: row.lotNo,
 
                     ...(orderType === "yarnDyeingOrder"
-                        ? { yarnColors: row.yarnColors }
+                        ? {
+                            // strip the UI-only `uid` before sending
+                            yarnColors: (row.yarnColors ?? []).map(
+                                ({ color, qty, price }) => ({
+                                    color: color.trim(),
+                                    qty,
+                                    price,
+                                })
+                            ),
+                        }
                         : {}),
                 })),
             };
 
+            // 30s timeout so a hanging server can never leave the UI stuck
             const response = await axiosPrivate.post(
                 "/api/create-job",
-                payload
+                payload,
+                { timeout: 30000 }
             );
 
             // Any 2xx response counts as success unless the backend
@@ -909,19 +1032,22 @@ const NewOrder = () => {
                 : true;
 
             if (isSuccess) {
+                setFormError("");
+
                 showNotification(
                     response.data?.message || "Order created successfully",
                     "success"
                 );
 
                 if (autoRedirect) {
-                    setTimeout(() => {
+                    setIsSaved(true);
+
+                    redirectTimerRef.current = setTimeout(() => {
                         navigate("/dashboard/style-requirement");
                     }, 1500);
                 } else {
-                    setIsSubmitting(false);
-                    // Reload the style so "Previous Work Order Qty"
-                    // reflects the order that was just created.
+                    // Stay on the page and reload the style so
+                    // "Previous Work Order Qty" reflects the new order.
                     setReloadKey((prev) => prev + 1);
                 }
             } else {
@@ -930,18 +1056,21 @@ const NewOrder = () => {
 
                 setFormError(message);
                 showNotification(message, "error");
-                setIsSubmitting(false);
             }
         } catch (error) {
             console.error("Submit error:", error);
 
             const message =
-                error?.response?.data?.message ||
-                "Failed to create order. Please try again.";
+                error?.code === "ECONNABORTED"
+                    ? "Request timed out. Please check the order list before trying again."
+                    : error?.response?.data?.message ||
+                      "Failed to create order. Please try again.";
 
             setFormError(message);
             showNotification(message, "error");
-
+        } finally {
+            // Always stop the "Saving..." state, whatever happened.
+            submitLockRef.current = false;
             setIsSubmitting(false);
         }
     };
@@ -958,27 +1087,7 @@ const NewOrder = () => {
     const currentRules = getRules(orderType);
     const isYarnDyeing = orderType === "yarnDyeingOrder";
 
-    const totalRequireQty = (
-        Number(styleTotals.totalFinishRequiredQty) *
-        (1 + Number(styleTotals.processLoss) / 100) +
-        Number(styleTotals.totalAdditional)
-    ).toFixed(2);
-
-    const toNum = (value) => {
-        const number = Number(value);
-        return Number.isFinite(number) ? number : 0;
-    };
-
-    const compBreakdownObj = useMemo(
-        () =>
-            Object.fromEntries(
-                (styleData?.compBreakdown ?? []).map((item) => [
-                    item.styleRequirementRowId,
-                    item,
-                ])
-            ),
-        [styleData?.compBreakdown]
-    );
+    const totalRequireQty = styleTotals.totalRequireQty.toFixed(2);
 
     const toastElement = showToast ? (
         <Toast
@@ -1074,8 +1183,9 @@ const NewOrder = () => {
                         <button
                             type="button"
                             onClick={handleRefreshRows}
+                            disabled={isBusy}
                             title="Restore original compositions"
-                            className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                            className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                             <RefreshCw size={13} />
                             Refresh Items
@@ -1084,7 +1194,8 @@ const NewOrder = () => {
                         <button
                             type="button"
                             onClick={() => setAutoRedirect((prev) => !prev)}
-                            className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium ${autoRedirect
+                            disabled={isBusy}
+                            className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-50 ${autoRedirect
                                 ? "border-primary-200 bg-primary-50 text-primary-700"
                                 : "border-slate-200 bg-white text-slate-500"
                                 }`}
@@ -1099,8 +1210,11 @@ const NewOrder = () => {
                 </div>
 
                 <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-[minmax(0,1fr)_390px]">
-                    {/* Main Content */}
-                    <div className="space-y-6">
+                    {/* Main Content (locked while saving) */}
+                    <div
+                        className={`space-y-6 ${isBusy ? "pointer-events-none opacity-70" : ""}`}
+                        aria-busy={isBusy}
+                    >
                         {/* Work Order Details */}
                         <SectionCard
                             icon={ClipboardList}
@@ -1201,10 +1315,9 @@ const NewOrder = () => {
                                     const aopQty =
                                         comp?.aopOrder_workOrderQty ?? 0;
 
-                                    const requireQty = (
-                                        toNum(styleRow.finishRequiredQty) *
-                                        (1 + toNum(styleRow.processLoss) / 100) +
-                                        toNum(styleRow.additional)
+                                    const requireQty = calcRequireQty(
+                                        styleRow,
+                                        styleTotals.processLoss
                                     ).toFixed(2);
 
                                     const renderRemaining = (qty) => {
@@ -1461,7 +1574,7 @@ const NewOrder = () => {
                                                             {(styleRow.yarnColors ?? [defaultYarnColor()]).map(
                                                                 (yarnItem, colorIndex) => (
                                                                     <div
-                                                                        key={colorIndex}
+                                                                        key={yarnItem.uid ?? colorIndex}
                                                                         className="grid grid-cols-1 items-end gap-3 rounded-lg border border-slate-200 bg-white p-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_auto]"
                                                                     >
                                                                         <Input
@@ -1562,7 +1675,10 @@ const NewOrder = () => {
                     {/* Sidebar */}
                     <aside className="xl:sticky xl:top-6">
                         {/* Job Search */}
-                        <div className="relative mb-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                        <div
+                            ref={searchBoxRef}
+                            className="relative mb-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
+                        >
                             <div className="mb-3 flex items-center gap-2">
                                 <Search size={16} className="text-slate-500" />
                                 <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-700">
@@ -1574,6 +1690,7 @@ const NewOrder = () => {
                                 <input
                                     type="text"
                                     value={searchJobNo}
+                                    disabled={isBusy}
                                     onChange={(e) => {
                                         setSearchJobNo(e.target.value);
                                         setShowSearchResults(true);
@@ -1590,7 +1707,7 @@ const NewOrder = () => {
                                     }}
                                     placeholder="Type Job No..."
                                     autoComplete="off"
-                                    className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 pr-10 text-sm text-slate-800 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+                                    className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 pr-10 text-sm text-slate-800 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
                                 />
 
                                 <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400">
@@ -1862,9 +1979,10 @@ const NewOrder = () => {
                                         <button
                                             key={`${factoryName}-${index}`}
                                             type="button"
+                                            disabled={isBusy}
                                             onClick={() => handleSelectFactory(factoryName)}
                                             title={`Use ${factoryName}`}
-                                            className="flex w-full items-center gap-2 px-5 py-3 text-left hover:bg-slate-50"
+                                            className="flex w-full items-center gap-2 px-5 py-3 text-left hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
                                         >
                                             <Building size={14} className="shrink-0 text-slate-400" />
                                             <span className="truncate text-xs text-slate-600">
@@ -1895,7 +2013,7 @@ const NewOrder = () => {
                 leaves room on the right so nothing sits under the bubble. */}
             <div className="fixed bottom-0 left-0 right-0 z-30 border-t border-slate-200 bg-white/95 px-4 py-2.5 pr-24 shadow-[0_-4px_12px_rgba(15,23,42,0.05)] backdrop-blur">
                 <div className="flex items-center justify-between gap-4">
-                    {/* Info / validation error */}
+                    {/* Info / validation error / saved message */}
                     <div className="min-w-0 flex-1">
                         {formError ? (
                             <p
@@ -1904,6 +2022,13 @@ const NewOrder = () => {
                             >
                                 <AlertCircle size={14} className="shrink-0" />
                                 <span className="truncate">{formError}</span>
+                            </p>
+                        ) : isSaved ? (
+                            <p className="flex items-center gap-1.5 text-xs font-medium text-green-600">
+                                <CheckCircle2 size={14} className="shrink-0" />
+                                <span className="truncate">
+                                    Order saved successfully. Redirecting...
+                                </span>
                             </p>
                         ) : (
                             <p className="truncate text-xs text-slate-500">
@@ -1929,16 +2054,26 @@ const NewOrder = () => {
                         <button
                             type="button"
                             onClick={handleSubmit}
-                            disabled={isSubmitting || isLoading}
-                            className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-slate-900 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-70"
+                            disabled={isSubmitting || isSaved || isLoading}
+                            aria-busy={isSubmitting}
+                            className={`inline-flex h-9 items-center justify-center gap-1.5 rounded-md px-5 text-sm font-semibold text-white shadow-sm transition active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-70 ${isSaved
+                                ? "bg-green-600 hover:bg-green-600"
+                                : "bg-slate-900 hover:bg-slate-800"
+                                }`}
                         >
                             {isSubmitting ? (
                                 <Loader2 size={15} className="animate-spin" />
+                            ) : isSaved ? (
+                                <CheckCircle2 size={15} />
                             ) : (
                                 <Save size={15} />
                             )}
 
-                            {isSubmitting ? "Saving..." : "Create Order"}
+                            {isSubmitting
+                                ? "Saving..."
+                                : isSaved
+                                    ? "Saved"
+                                    : "Create Order"}
                         </button>
                     </div>
                 </div>

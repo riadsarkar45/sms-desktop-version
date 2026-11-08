@@ -46,219 +46,229 @@ import MovementSpinning from "../pages/yarns/MovementSpinning";
 import NewOrder from "../pages/workOrders/NewOrder";
 import UploadFile from "../pages/upload/Upload";
 import PartyStockGlance from "../pages/mis/party.stock/GlanceReport";
+import QuarterlyBalance from "../pages/mis/QuaterlyBalanceRep";
+import PrivateRoutes from "../components/private.routes/PrivateRoute";
 
 const routers = createBrowserRouter([
-    {
-        path: "/",
-        element: <Root />,
+  {
+    path: "/",
+    element: <Root />,
+    children: [
+      {
+        index: true,
+        element: <Navigate to="/login" replace />,
+      },
+      {
+        path: "login",
+        element: <Login />,
+      },
+      {
+        path: "dashboard",
+        element: <PrivateRoutes />, // authentication
         children: [
-            {
-                index: true,
-                element: <Navigate to="/login" replace />,
-            },
-            {
-                path: "login",
-                element: <Login />,
-            },
-            {
-                path: "dashboard",
-                element: <Sidebar />,
-                children: [
-                    {
-                        path: "home",
-                        element: <Home />
-                    },
-                    {
-                        path: "knitting-order",
-                        element: <KnittingOrders />
-                    },
-                    {
-                        path: "dyeing-order",
-                        element: <DyeingOrders />
-                    },
-                    {
-                        path: "aop-order",
-                        element: <AopOrders />
-                    },
-                    {
-                        path: "yarn-dye-order",
-                        element: <YarnDyeingOrders />
-                    },
-                    {
-                        path: "style-requirement",
-                        element: <Summary />
-                    },
-                    {
-                        path: "factory-balance-comparison",
-                        element: <FactoryComparison />
-                    },
-                    {
-                        path: "report-studio",
-                        element: <ReportStudio />
-                    },
+          {
+            element: <Sidebar />, // layout
+            children: [
+              {
+                path: "home",
+                element: <Home />,
+              },
+              {
+                path: "knitting-order",
+                element: <KnittingOrders />,
+              },
+              {
+                path: "dyeing-order",
+                element: <DyeingOrders />,
+              },
+              {
+                path: "aop-order",
+                element: <AopOrders />,
+              },
 
-                    {
-                        path: "productionsummary",
-                        element: <ProductionSummary />
-                    },
+              {
+                path: "yarn-dye-order",
+                element: <YarnDyeingOrders />,
+              },
+              {
+                path: "style-requirement",
+                element: <Summary />,
+              },
+              {
+                path: "factory-balance-comparison",
+                element: <FactoryComparison />,
+              },
+              {
+                path: "report-studio",
+                element: <ReportStudio />,
+              },
 
-                    {
-                        path: "daily-production/cutting",
-                        element: <DailyCutting />
-                    },
-                    {
-                        path: "daily-production/sewing",
-                        element: <DailySewing />
-                    },
-                    {
-                        path: "daily-production/finishing",
-                        element: <DailyFinishing />
-                    },
-                    {
-                        path: "daily-production/export",
-                        element: <DailyExport />
-                    },
-                    {
-                        path: "asset-summary",
-                        element: <AssetSummary />
-                    },
-                    {
-                        path: "asset-movement",
-                        element: <AssetMovement />
-                    },
-                    {
-                        path: "sewing-contract",
-                        element: <SewingContract />
-                    },
-                    {
-                        path: "contract-billing",
-                        element: <ContractBilling />
-                    },
-                    {
-                        // ADJUST allowed roles if AUDITOR (or another role) should also manage users
-                        path: "new-user",
-                        element: <AddNewUser />
+              {
+                path: "productionsummary",
+                element: <ProductionSummary />,
+              },
 
-                    },
-                    {
-                        path: "user-permission/:userId/:userName",
-                        element: <UserPermission />
-                    },
-                    {
-                        path: "user-list",
-                        element: <UserList />
-                    },
-                    {
-                        path: "debit-note",
-                        element: <DebitNote />
-                    },
-                    {
-                        path: "debit-note/list",
-                        element: <DebitNoteLists />
-                    },
-                    {
-                        path: "debit-notes/:id",
-                        element: <ViewDebitNote />
-                    },
-                    {
-                        path: "edit-debit-notes/:id",
-                        element: <EditDebitNote />
-                    },
-                    {
-                        path: "debit-note/requested",
-                        element: <ApprovalRequestReceived />
-                    },
-                    {
-                        // ADJUST allowed roles if AUDITOR (or another role) should also manage users
-                        path: "party-wise-view",
-                        element: <PartyWiseView />
+              {
+                path: "daily-production/cutting",
+                element: <DailyCutting />,
+              },
+              {
+                path: "daily-production/sewing",
+                element: <DailySewing />,
+              },
+              {
+                path: "daily-production/finishing",
+                element: <DailyFinishing />,
+              },
+              {
+                path: "daily-production/export",
+                element: <DailyExport />,
+              },
+              {
+                path: "asset-summary",
+                element: <AssetSummary />,
+              },
+              {
+                path: "asset-movement",
+                element: <AssetMovement />,
+              },
+              {
+                path: "sewing-contract",
+                element: <SewingContract />,
+              },
+              {
+                path: "contract-billing",
+                element: <ContractBilling />,
+              },
+              {
+                // ADJUST allowed roles if AUDITOR (or another role) should also manage users
+                path: "new-user",
+                element: <AddNewUser />,
+              },
+              {
+                path: "user-permission/:userId/:userName",
+                element: <UserPermission />,
+              },
+              {
+                path: "user-list",
+                element: <UserList />,
+              },
+              {
+                path: "debit-note",
+                element: <DebitNote />,
+              },
+              {
+                path: "debit-note/list",
+                element: <DebitNoteLists />,
+              },
+              {
+                path: "debit-notes/:id",
+                element: <ViewDebitNote />,
+              },
+              {
+                path: "edit-debit-notes/:id",
+                element: <EditDebitNote />,
+              },
+              {
+                path: "debit-note/requested",
+                element: <ApprovalRequestReceived />,
+              },
+              {
+                // ADJUST allowed roles if AUDITOR (or another role) should also manage users
+                path: "party-wise-view",
+                element: <PartyWiseView />,
+              },
+              {
+                // ADJUST allowed roles if AUDITOR (or another role) should also manage users
+                path: "new-user",
+                element: <AddNewUser />,
+              },
+              {
+                // ADJUST allowed roles if AUDITOR (or another role) should also manage users
+                path: "party-wise-view",
+                element: <PartyWiseView />,
+              },
+              {
+                path: "challan/aop",
+                element: <Aop />,
+              },
+              {
+                path: "challan/dyeing",
+                element: <Dyeing />,
+              },
+              {
+                path: "challan/knitting",
+                element: <Knitting />,
+              },
+              {
+                path: "challan/others/compacting",
+                element: <Compacting />,
+              },
+              {
+                path: "challan/others/re-process",
+                element: <ReProcess />,
+              },
 
-                    },
-                    {
-                        // ADJUST allowed roles if AUDITOR (or another role) should also manage users
-                        path: "new-user",
-                        element: <AddNewUser />
-                    },
-                    {
-                        // ADJUST allowed roles if AUDITOR (or another role) should also manage users
-                        path: "party-wise-view",
-                        element: <PartyWiseView />
+              {
+                path: "mis/glance",
+                element: <PartyStockReport />,
+              },
+              {
+                path: "mis/party-stock",
+                element: <PartyStockGlance />,
+              },
+              {
+                path: "style/reconciliation",
+                element: <Reconciliation />,
+              },
+              {
+                path: "balance-sheet",
+                element: <BalanceSheet />,
+              },
+              {
+                path: "yarn",
+                element: <PurchaseOrderStatus />,
+              },
+              {
+                path: "yarn/movement",
+                element: <YarnMovementReport />,
+              },
+              {
+                path: "yarn/stock",
+                element: <StockStatus />,
+              },
+              {
+                path: "yarndyed/movement",
+                element: <YarnDyedMovement />,
+              },
+              {
+                path: "yarndyed/stock",
+                element: <YarnDyedStock />,
+              },
 
-                    },
-                    {
-                        path: "challan/aop",
-                        element: <Aop />
-                    },
-                    {
-                        path: "challan/dyeing",
-                        element: <Dyeing />
-                    },
-                    {
-                        path: "challan/knitting",
-                        element: <Knitting />
-                    },
-                    {
-                        path: "challan/others/compacting",
-                        element: <Compacting />
-                    },
-                    {
-                        path: "challan/others/re-process",
-                        element: <ReProcess />
-                    },
+              {
+                path: "spinning-yarn-movement",
+                element: <MovementSpinning />,
+              },
+              {
+                path: "new-order/:jobNumber",
+                element: <NewOrder />,
+              },
+              {
+                path: "upload",
+                element: <UploadFile />,
+              },
+              {
+                path: "quarterly-balance",
+                element: <QuarterlyBalance />,
+              },
 
-                    {
-                        path: "mis/glance",
-                        element: <PartyStockReport />
-                    },
-                    {
-                        path: "mis/party-stock",
-                        element: <PartyStockGlance />
-                    },
-                    {
-                        path: "style/reconciliation",
-                        element: <Reconciliation />
-                    },
-                    {
-                        path: "balance-sheet",
-                        element: <BalanceSheet />
-                    },
-                    {
-                        path: "yarn",
-                        element: <PurchaseOrderStatus />
-                    },
-                    {
-                        path: "yarn/movement",
-                        element: <YarnMovementReport />
-                    },
-                    {
-                        path: "yarn/stock",
-                        element: <StockStatus />
-                    },
-                    {
-                        path: "yarndyed/movement",
-                        element: <YarnDyedMovement />
-                    },
-                    {
-                        path: "yarndyed/stock",
-                        element: <YarnDyedStock />
-                    },
-
-                     {
-                        path: "spinning-yarn-movement",
-                        element: <MovementSpinning />
-                    },
-                    {
-                        path: "new-order/:jobNumber",
-                        element: <NewOrder />
-                    },
-                    {
-                        path: "upload",
-                        element: <UploadFile />
-                    },
-                ]
-            },
+            ],
+          },
         ],
-    },
+      },
+    ],
+  },
 ]);
 
 export default routers;

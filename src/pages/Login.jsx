@@ -12,18 +12,9 @@ const Login = () => {
     const [rememberMe, setRememberMe] = useState(true);
 
     const navigate = useNavigate();
-    const { login, user, loading: authLoading } = useAuth();
+    const { login } = useAuth();
 
-    useEffect(() => {
-        if (authLoading) return;
-
-        if (user) {
-            setLoading(true)
-            navigate('/dashboard/home', {
-                replace: true,
-            });
-        }
-    }, [user, authLoading, navigate]);
+   
 
     // Normalize Bangladesh mobile numbers
     const normalizePhone = (value) => {
@@ -239,15 +230,7 @@ const Login = () => {
                                     Password
                                 </label>
 
-                                <button
-                                    type="button"
-                                    onClick={() =>
-                                        alert('Please contact IT Desk or your System Administrator to reset access.')
-                                    }
-                                    className="text-xs text-orange-600 hover:text-orange-700 font-medium hover:underline transition-colors"
-                                >
-                                    Forgot?
-                                </button>
+                               
                             </div>
 
                             <div className="relative rounded-lg border border-slate-300 focus-within:border-orange-500 focus-within:ring-3 focus-within:ring-orange-100 transition-all bg-slate-50/50 shadow-sm">
@@ -300,23 +283,7 @@ const Login = () => {
                             </div>
                         </div>
 
-                        {/* Remember Me */}
-                        <div className="flex items-center gap-2.5 pt-1">
-                            <input
-                                id="remember"
-                                type="checkbox"
-                                checked={rememberMe}
-                                onChange={(e) => setRememberMe(e.target.checked)}
-                                className="w-4 h-4 text-orange-600 bg-slate-50 border-slate-300 rounded focus:ring-orange-500 focus:ring-offset-0 cursor-pointer accent-orange-600"
-                            />
-
-                            <label
-                                htmlFor="remember"
-                                className="text-xs text-slate-600 font-medium cursor-pointer"
-                            >
-                                Keep me signed in on this station
-                            </label>
-                        </div>
+                       
 
                         {/* Submit */}
                         <button

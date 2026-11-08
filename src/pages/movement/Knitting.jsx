@@ -750,10 +750,7 @@ const Knitting = () => {
 
         fetchData(url)
             .then((res) => {
-                if (!res) {
-                    setFetchError("Permission denied");
-                    return;
-                }
+                console.log(res.data)
                 let payload = [];
                 if (Array.isArray(res)) payload = res;
                 else if (Array.isArray(res?.data)) payload = res.data;

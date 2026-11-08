@@ -29,35 +29,66 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install WiX Toolset 3.14.1
+      - name: Locate or install WiX Toolset
         shell: pwsh
         run: |
-          choco install wixtoolset --version=3.14.1 --yes --no-progress
+          $ErrorActionPreference = "Stop"
 
-          $wixBin = "C:\Program Files (x86)\WiX Toolset v3.14\bin"
+          # GitHub's Windows runner may already contain WiX. Reuse it instead
+          # of asking Chocolatey to downgrade/reinstall an existing version.
+          $wixBin = $null
+          $knownPaths = @(
+            "C:\Program Files (x86)\WiX Toolset v3.14\bin",
+            "C:\Program Files (x86)\WiX Toolset v3.11\bin",
+            "C:\Program Files\WiX Toolset v3.14\bin",
+            "C:\Program Files\WiX Toolset v3.11\bin"
+          )
 
-          if (-not (Test-Path (Join-Path $wixBin "candle.exe"))) {
-            $candidate = Get-ChildItem "C:\Program Files (x86)" -Directory -Filter "WiX Toolset*" |
-              ForEach-Object { Join-Path $_.FullName "bin" } |
-              Where-Object { Test-Path (Join-Path $_ "candle.exe") } |
-              Select-Object -First 1
-
-            if (-not $candidate) {
-              throw "WiX Toolset installation completed, but candle.exe was not found."
+          foreach ($candidate in $knownPaths) {
+            if ((Test-Path (Join-Path $candidate "candle.exe")) -and
+                (Test-Path (Join-Path $candidate "light.exe"))) {
+              $wixBin = $candidate
+              break
             }
-
-            $wixBin = $candidate
           }
 
-          if (-not (Test-Path (Join-Path $wixBin "light.exe"))) {
-            throw "WiX light.exe was not found in $wixBin"
+          if (-not $wixBin) {
+            Write-Host "WiX was not found; installing WiX Toolset 3.14.1."
+            choco install wixtoolset --version=3.14.1 --yes --no-progress
+
+            foreach ($candidate in $knownPaths) {
+              if ((Test-Path (Join-Path $candidate "candle.exe")) -and
+                  (Test-Path (Join-Path $candidate "light.exe"))) {
+                $wixBin = $candidate
+                break
+              }
+            }
+          }
+
+          if (-not $wixBin) {
+            $found = Get-ChildItem "C:\Program Files (x86)" -Directory -Filter "WiX Toolset*" -ErrorAction SilentlyContinue |
+              ForEach-Object { Join-Path $_.FullName "bin" } |
+              Where-Object {
+                (Test-Path (Join-Path $_ "candle.exe")) -and
+                (Test-Path (Join-Path $_ "light.exe"))
+              } |
+              Select-Object -First 1
+
+            if ($found) {
+              $wixBin = $found
+            }
+          }
+
+          if (-not $wixBin) {
+            throw "WiX Toolset was not found. candle.exe and light.exe are required."
           }
 
           "$wixBin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           "WIX=$wixBin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-          Write-Host "WiX installed at: $wixBin"
-          & (Join-Path $wixBin "candle.exe") -? | Select-Object -First 2
+          Write-Host "Using WiX Toolset from: $wixBin"
+          Write-Host "candle.exe: $(Test-Path (Join-Path $wixBin 'candle.exe'))"
+          Write-Host "light.exe: $(Test-Path (Join-Path $wixBin 'light.exe'))"
 
       - name: Install frontend dependencies
         run: npm ci

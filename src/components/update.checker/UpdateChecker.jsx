@@ -91,7 +91,7 @@ const UpdateChecker = () => {
   }, []);
 
   // Automatically check for new versions.
-  const checkForUpdates = useCallback(async () => {
+  const checkForUpdates = useCallback(async ({ manual = false } = {}) => {
     if (!isTauri()) return;
 
     if (checkingRef.current || installingRef.current) return;
@@ -121,7 +121,9 @@ const UpdateChecker = () => {
         if (!mountedRef.current) return;
 
         setUpdate(null);
-        setVisible(false);
+        setStatus(manual ? "You are using the latest version of SM Sourcing." : "");
+        setError("");
+        setVisible(manual);
         return;
       }
 
@@ -148,8 +150,12 @@ const UpdateChecker = () => {
       setStatus(`Version ${result.version} is available.`);
       setVisible(true);
     } catch (err) {
-      // Silent background check failure.
-      console.error("Background update check failed:", err);
+      console.error("Update check failed:", err);
+      if (manual && mountedRef.current) {
+        setError(getErrorMessage(err));
+        setStatus("");
+        setVisible(true);
+      }
     } finally {
       checkingRef.current = false;
 
@@ -268,8 +274,12 @@ const UpdateChecker = () => {
   // Retry update installation.
   const retryUpdate = useCallback(() => {
     setError("");
+    if (!updateRef.current) {
+      checkForUpdates({ manual: true });
+      return;
+    }
     installUpdate();
-  }, [installUpdate]);
+  }, [installUpdate, checkForUpdates]);
 
   // Automatic update checking.
   useEffect(() => {
@@ -306,8 +316,26 @@ const UpdateChecker = () => {
     };
   }, [checkForUpdates]);
 
-  if (!isTauri() || !visible) {
-    return null;
+  if (!isTauri()) return null;
+
+  if (!visible) {
+    return (
+      <div className="fixed bottom-6 right-6 z-[99999]">
+        <button
+          type="button"
+          onClick={() => checkForUpdates({ manual: true })}
+          disabled={checking || installing}
+          className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold text-gray-700 shadow-lg transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {checking ? (
+            <Loader2 size={17} className="animate-spin" />
+          ) : (
+            <RefreshCw size={17} />
+          )}
+          {checking ? "Checking for updates..." : "Check for updates"}
+        </button>
+      </div>
+    );
   }
 
   return (

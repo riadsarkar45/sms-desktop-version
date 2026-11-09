@@ -4,8 +4,6 @@ import { Loader, Search, Download, Filter, X, Calendar, ChevronDown } from 'luci
 import UseDeliveryMonths from './delivery-months/UseDeliveryMonths';
 import ChallanEditModal from '../../components/modals/ChallanEditModal';
 import useAxiosPrivate from '../../hooks/UseAxiosPrivate';
-import { useFetchData } from '../../hooks/fetch';
-import { useTableFilters } from './UserFilter';
 
 // --- Modern Design System & Styles ---
 const theme = {
@@ -28,6 +26,54 @@ const FONT_STACK = "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Robo
 
 // Rows per page (only used after a search)
 const SEARCH_PAGE_SIZE = 30;
+
+// ===== MEMORY-SAFE LOADING CONFIG =====
+const LIST_URL = "/api/challan-movement/knittingOrder";
+const OPTIONS_URL = "/api/challan-filter-options/knittingOrder";
+
+// Compositions per request while scrolling (~10 table rows each, so a few hundred rows per request)
+const PAGE_LIMIT = 25;
+// HARD LIMIT of table rows kept in the browser. When reached, loading stops and the user is asked
+// to narrow the data with filters / month / search. This is what keeps RAM bounded.
+const MAX_LOADED_ROWS = 5000;
+// Excel export pulls the filtered data in bigger chunks (not kept in React state) up to this many rows
+const EXPORT_PAGE_LIMIT = 100;
+const EXPORT_MAX_ROWS = 60000;
+
+// Fixed row height so only the visible rows are in the DOM. Long text is clamped to 2 lines (full text on hover).
+const ROW_HEIGHT = 60;
+const OVERSCAN = 8;
+const NEAR_BOTTOM_PX = ROW_HEIGHT * 20; // start loading the next page this far before the end
+
+const clampStyle = {
+    display: '-webkit-box',
+    WebkitLineClamp: 2,
+    WebkitBoxOrient: 'vertical',
+    overflow: 'hidden',
+    wordBreak: 'break-word',
+    lineHeight: 1.2,
+};
+
+// Accepts either the axios response, or the response body, and returns { items, nextCursor, hasMore }
+const unwrapPage = (res) => {
+    if (Array.isArray(res)) return { items: res, nextCursor: null, hasMore: false };
+    if (Array.isArray(res?.data)) {
+        return { items: res.data, nextCursor: res.nextCursor ?? null, hasMore: !!res.hasMore };
+    }
+    if (Array.isArray(res?.data?.data)) {
+        return { items: res.data.data, nextCursor: res.data.nextCursor ?? null, hasMore: !!res.data.hasMore };
+    }
+    return { items: [], nextCursor: null, hasMore: false };
+};
+
+const buildListParams = (cursor, filtersKey, monthsKey, limit = PAGE_LIMIT) => {
+    const params = { limit };
+    if (cursor !== null && cursor !== undefined) params.cursor = cursor;
+    if (filtersKey && filtersKey !== '{}') params.filters = filtersKey;
+    if (monthsKey) params.challanMonths = monthsKey;
+    return params;
+};
+// ===== END CONFIG =====
 
 const cellStyle = {
     padding: "12px 16px",
@@ -78,20 +124,23 @@ const pageButtonStyle = (active) => ({
     transition: "all 0.2s ease", boxShadow: active ? theme.shadows.sm : "none",
 });
 
+// noFilter: true  => no header filter button.
+// Filters run on the SERVER, so only plain stored columns can be filtered
+// (date has its own Month'Year filter; quantities / price / billing are calculated values).
 const tableHeader = [
     { header: "", width: "50px", key: "select", noFilter: true },
-    { header: "Date", width: "110px", key: "challanDate" },
+    { header: "Date", width: "110px", key: "challanDate", noFilter: true },
     { header: "Challan No", width: "120px", key: "challanNo" },
     { header: "Job No", width: "140px", key: "jobNo" },
     { header: "Composition", width: "270px", key: "composition" },
     { header: "Color", width: "200px", key: "color" },
     { header: "From Factory", width: "160px", key: "fromFactory" },
     { header: "To Factory", width: "160px", key: "toFactory" },
-    { header: "Yarn Del", width: "110px", key: "yarnDelivery" },
-    { header: "Yarn Ret", width: "110px", key: "yarnReturn" },
-    { header: "Greige Rec", width: "120px", key: "greyFabricReceived" },
-    { header: "Price/KG", width: "100px", key: "unitePrice" },
-    { header: "Billing", width: "120px", key: "billingAmount" },
+    { header: "Yarn Del", width: "110px", key: "yarnDelivery", noFilter: true },
+    { header: "Yarn Ret", width: "110px", key: "yarnReturn", noFilter: true },
+    { header: "Greige Rec", width: "120px", key: "greyFabricReceived", noFilter: true },
+    { header: "Price/KG", width: "100px", key: "unitePrice", noFilter: true },
+    { header: "Billing", width: "120px", key: "billingAmount", noFilter: true },
 ];
 
 // ===== FROZEN COLUMNS =====
@@ -173,17 +222,16 @@ const formatMonthLabel = (key) => {
     return `${MONTH_SHORT[Number(m) - 1]}'${y.slice(-2)}`;
 };
 
-const getFilterDisplay = (key, val) => {
-    if (key !== 'challanDate' || !val) return val;
-    const str = String(val);
-    if (/^\d{4}-\d{2}$/.test(str)) return formatMonthLabel(str);
-    if (ISO_DATE_RE.test(str)) {
-        ISO_DATE_RE.lastIndex = 0;
-        return formatShortDate(str);
+// Month'Year choices for the challan-date filter: current month + the previous 35 (newest first)
+const RECENT_MONTH_KEYS = (() => {
+    const now = new Date();
+    const keys = [];
+    for (let i = 0; i < 36; i++) {
+        const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+        keys.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`);
     }
-    ISO_DATE_RE.lastIndex = 0;
-    return val;
-};
+    return keys;
+})();
 // ===== END DATE HELPERS =====
 
 // ===== DELIVERY MONTH PARSING =====
@@ -213,6 +261,223 @@ const parseDeliveryMonth = (raw) => {
     };
 };
 // ===== END DELIVERY MONTH PARSING =====
+
+// ===== ROW BUILDING (raw composition/delivery records -> table rows) =====
+const buildRows = (movements) => {
+    if (!movements || !Array.isArray(movements)) return [];
+    const rows = [];
+    const extractJobNo = (item) => item?.workOrder?.jobNo || (typeof item?.workOrder === 'string' ? item.workOrder : null);
+
+    const makeRow = (challanNo, jobNo, comp, color, source, mvId, deliveryId) => {
+        const stableId = deliveryId ?? mvId ?? source?.id ?? null;
+        const rowKey = `${challanNo}|${jobNo}|${comp}|${color}|${stableId ?? ''}`;
+        return {
+            rowKey,
+            mvId: mvId ?? challanNo,
+            deliveryId: deliveryId ?? source?.id ?? null,
+            chId: source?.id || challanNo,
+            challanNo,
+            jobNo,
+            composition: comp || "-",
+            color: color || "-",
+            challanDate: normalizeDate(source?.deliveryDate || source?.challanDate),
+            toFactory: source?.toFactory || "",
+            fromFactory: source?.fromFactory || "",
+            yarnDelivery: 0, yarnReturn: 0, greyFabricReceived: 0, deliveryQty: 0,
+            unitePrice: Number(source?.unitePrice) || 0,
+            paidBillingAmount: Number(source?.paidBillingAmount) || 0,
+        };
+    };
+
+    const applyDelivery = (row, dv, source) => {
+        const qty = Number(dv?.deliveryQty ?? dv?.totalQty) || 0;
+        row.deliveryQty += qty;
+        const type = String(dv?.deliveryType || "").toLowerCase().replace(/[\s_-]+/g, "");
+        if (type.includes("yarndelivery")) row.yarnDelivery += qty;
+        else if (type.includes("yarnreturn")) row.yarnReturn += qty;
+        else if (type.includes("greyfabric") || type.includes("greigereceived") || type.includes("yarnreceived") || type.includes("greyreceived")) row.greyFabricReceived += qty;
+
+        const price = Number(dv?.unitePrice || source?.unitePrice) || 0;
+        if (price && !row.unitePrice) row.unitePrice = price;
+        if (!row.toFactory && dv?.toFactory) row.toFactory = dv.toFactory;
+        if (!row.fromFactory && dv?.fromFactory) row.fromFactory = dv.fromFactory;
+        if (dv?.deliveryDate && !row.challanDate) row.challanDate = normalizeDate(dv.deliveryDate);
+    };
+
+    const getFacets = (item) => {
+        const facets = [];
+        if (Array.isArray(item?.compositions) && item.compositions.length > 0) {
+            item.compositions.forEach((c) => {
+                if (!c) return;
+                const qtyRaw = c?.qty ?? c?.quantity ?? c?.deliveryQty ?? c?.totalQty ?? c?.weight ?? c?.kg ?? null;
+                const qtyNum = (qtyRaw !== null && qtyRaw !== "" && !isNaN(Number(qtyRaw))) ? Number(qtyRaw) : null;
+                facets.push({
+                    comp: c?.composition || item?.composition || "-",
+                    color: c?.color || item?.color || "-",
+                    qty: qtyNum,
+                });
+            });
+        } else if (typeof item?.color === "string" && item.color.includes(", ")) {
+            item.color.split(", ").map((s) => s.trim()).filter(Boolean).forEach((colorPart) => {
+                facets.push({ comp: item?.composition || "-", color: colorPart, qty: null });
+            });
+        }
+        if (facets.length === 0) {
+            facets.push({ comp: item?.composition || "-", color: item?.color || "-", qty: null });
+        }
+        return facets;
+    };
+
+    movements.forEach((item) => {
+        if (!item) return;
+        const jobNo = extractJobNo(item) || "-";
+
+        if (Array.isArray(item.deliveries) && item.deliveries.length > 0) {
+            item.deliveries.forEach((dv) => {
+                const challanNo = dv?.challanNo;
+                if (challanNo === undefined || challanNo === null) return;
+                const comp = dv?.composition || item?.composition || "-";
+                const color = dv?.color || item?.color || "-";
+                const row = makeRow(challanNo, jobNo, comp, color, dv, item.id, dv.id);
+                if (item.unitePrice && !row.unitePrice) row.unitePrice = Number(item.unitePrice);
+                applyDelivery(row, dv, item);
+                rows.push(row);
+            });
+        } else if (item.challanNo !== undefined && item.challanNo !== null) {
+            const facets = getFacets(item);
+            const hasFacetQty = facets.some((f) => f.qty !== null);
+
+            facets.forEach((f) => {
+                const row = makeRow(item.challanNo, jobNo, f.comp, f.color, item, item.id, item.id);
+                if (hasFacetQty) {
+                    if (f.qty !== null) applyDelivery(row, { ...item, deliveryQty: f.qty }, item);
+                } else if (facets.length === 1) {
+                    applyDelivery(row, item, item);
+                }
+                rows.push(row);
+            });
+        }
+    });
+
+    return rows.map((row) => ({
+        ...row,
+        billingAmount: row.greyFabricReceived * row.unitePrice,
+    }));
+};
+// ===== END ROW BUILDING =====
+
+// ===== SERVER-SIDE COLUMN FILTERS =====
+// Same shape the old client-side filter hook had, but the filter values and the filtering itself
+// live on the server: nothing has to be loaded in the browser to build a dropdown or apply a filter.
+const useServerFilters = (axiosRef) => {
+    const [filters, setFilters] = useState({});
+    const [openFilterKey, setOpenFilterKey] = useState(null);
+    const [draftSelected, setDraftSelected] = useState(new Set());
+    const [filterSearch, setFilterSearchState] = useState("");
+    const [filterOptions, setFilterOptions] = useState([]);
+    const [optionsLoading, setOptionsLoading] = useState(false);
+
+    const dropdownRef = useRef(null);
+    const reqRef = useRef(0);
+    const timerRef = useRef(null);
+    const openKeyRef = useRef(null);
+    openKeyRef.current = openFilterKey;
+
+    const fetchOptions = useCallback(async (key, q) => {
+        const id = ++reqRef.current;
+        setOptionsLoading(true);
+        try {
+            const res = await axiosRef.current.get(OPTIONS_URL, { params: { field: key, q } });
+            if (id !== reqRef.current) return;
+            const list = Array.isArray(res?.data?.data) ? res.data.data : [];
+            setFilterOptions(list.map(String));
+        } catch (err) {
+            if (id === reqRef.current) setFilterOptions([]);
+            console.error("Failed to load filter options:", err);
+        } finally {
+            if (id === reqRef.current) setOptionsLoading(false);
+        }
+    }, [axiosRef]);
+
+    const closeFilter = useCallback(() => {
+        reqRef.current += 1;
+        if (timerRef.current) clearTimeout(timerRef.current);
+        setOpenFilterKey(null);
+        setFilterSearchState("");
+        setFilterOptions([]);
+        setOptionsLoading(false);
+    }, []);
+
+    const openFilter = useCallback((key) => {
+        if (openKeyRef.current === key) { closeFilter(); return; }
+        setOpenFilterKey(key);
+        setDraftSelected(new Set(filters[key] || []));
+        setFilterSearchState("");
+        setFilterOptions([]);
+        fetchOptions(key, "");
+    }, [filters, fetchOptions, closeFilter]);
+
+    const setFilterSearch = useCallback((q) => {
+        setFilterSearchState(q);
+        if (timerRef.current) clearTimeout(timerRef.current);
+        timerRef.current = setTimeout(() => {
+            if (openKeyRef.current) fetchOptions(openKeyRef.current, q.trim());
+        }, 250);
+    }, [fetchOptions]);
+
+    const toggleDraftValue = useCallback((val) => {
+        setDraftSelected((prev) => {
+            const next = new Set(prev);
+            if (next.has(val)) next.delete(val);
+            else next.add(val);
+            return next;
+        });
+    }, []);
+
+    const applyFilter = useCallback((key) => {
+        setFilters((prev) => {
+            const next = { ...prev };
+            if (draftSelected.size > 0) next[key] = [...draftSelected];
+            else delete next[key];
+            return next;
+        });
+        closeFilter();
+    }, [draftSelected, closeFilter]);
+
+    const clearFilter = useCallback((key) => {
+        setFilters((prev) => {
+            if (!(key in prev)) return prev;
+            const next = { ...prev };
+            delete next[key];
+            return next;
+        });
+        if (openKeyRef.current === key) closeFilter();
+    }, [closeFilter]);
+
+    const clearAllFilters = useCallback(() => {
+        setFilters({});
+        closeFilter();
+    }, [closeFilter]);
+
+    // close when clicking outside the dropdown
+    useEffect(() => {
+        if (!openFilterKey) return;
+        const handleClick = (e) => {
+            if (dropdownRef.current && !dropdownRef.current.contains(e.target)) closeFilter();
+        };
+        document.addEventListener("mousedown", handleClick);
+        return () => document.removeEventListener("mousedown", handleClick);
+    }, [openFilterKey, closeFilter]);
+
+    useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
+
+    return {
+        filters, openFilterKey, draftSelected, filterSearch, dropdownRef,
+        filterOptions, optionsLoading, setFilterSearch, openFilter,
+        toggleDraftValue, applyFilter, clearFilter, clearAllFilters,
+    };
+};
+// ===== END SERVER-SIDE COLUMN FILTERS =====
 
 // ===== EXCEL EXPORT CONFIG =====
 // Which factory sheet each quantity goes to (strict, no borrowing from the other factory):
@@ -381,7 +646,6 @@ const Knitting = () => {
     const [fetchError, setFetchError] = useState(null);
     const [selectedRows, setSelectedRows] = useState(new Set());
 
-    const [fetchAll, setFetchAll] = useState(false);
     const [search, setSearch] = useState("");
     const [searchLoading, setSearchLoading] = useState(false);
     const [searchError, setSearchError] = useState(null);
@@ -392,14 +656,32 @@ const Knitting = () => {
     const [searchPage, setSearchPage] = useState(1);
     const tableScrollRef = useRef(null);
 
+    // ===== PAGED LOADING STATE =====
+    const [initialLoading, setInitialLoading] = useState(true);   // first page of the current filters not received yet
+    const [loadingMore, setLoadingMore] = useState(false);
+    const [hasMore, setHasMore] = useState(false);
+    const [loadError, setLoadError] = useState(null);             // a later page failed (Retry resumes)
+    const genRef = useRef(0);          // bumped to cancel in-flight requests
+    const abortRef = useRef(null);
+    const cursorRef = useRef(null);
+    const loadingRef = useRef(false);
+    const hasMoreRef = useRef(false);
+    const capRef = useRef(false);
+    const searchActiveRef = useRef(false);
+    const loadErrorRef = useRef(null);
+    const queryRef = useRef({ filtersKey: '{}', monthsKey: '' });
+    // ===============================
+
+    // ===== WINDOWED RENDERING STATE =====
+    const [viewport, setViewport] = useState({ top: 0, height: 800 });
+    const rafRef = useRef(0);
+    // ====================================
+
     // Search tracking (Found vs Not Found for BOTH Challan No and Job No)
     const [foundSearchItems, setFoundSearchItems] = useState([]);
     const [notFoundSearchItems, setNotFoundSearchItems] = useState([]);
 
-    const [isFetchingAll, setIsFetchingAll] = useState(false);
-    const [pendingFilterKey, setPendingFilterKey] = useState(null);
-
-    // Challan-date month filter (client-side) - labels shown as Month'Year (e.g. Sep'26)
+    // Challan-date month filter (server-side) - labels shown as Month'Year (e.g. Sep'26)
     const [selectedMonths, setSelectedMonths] = useState(new Set());
     const [monthDropdownOpen, setMonthDropdownOpen] = useState(false);
     const [monthDraftSelected, setMonthDraftSelected] = useState(new Set());
@@ -416,6 +698,7 @@ const Knitting = () => {
     const [hoveredRow, setHoveredRow] = useState(null);
     const [isBillGenerating, setIsBillGenerating] = useState(false);
     const [isExporting, setIsExporting] = useState(false);
+    const [exportProgress, setExportProgress] = useState(0);
 
     // Portal refs & state for the column filter dropdown
     const filterButtonRefs = useRef({});
@@ -425,119 +708,35 @@ const Knitting = () => {
     const [challanToEditData, setChallanToEditData] = useState({});
     const [isChallanDataLoading, setIsChallanDataLoading] = useState(false);
 
-    const { fetchData, loading } = useFetchData();
     const { deliveryMonths, isMonthLoading: deliveryMonthLoading } = UseDeliveryMonths();
     const axiosPrivate = useAxiosPrivate();
-
-    const appliedMonthsKey = appliedMonthNames.join(',');
-
-    const allRows = useMemo(() => {
-        if (!movements || !Array.isArray(movements)) return [];
-        const rows = [];
-        const extractJobNo = (item) => item?.workOrder?.jobNo || (typeof item?.workOrder === 'string' ? item.workOrder : null);
-
-        const makeRow = (challanNo, jobNo, comp, color, source, mvId, deliveryId) => {
-            const stableId = deliveryId ?? mvId ?? source?.id ?? null;
-            const rowKey = `${challanNo}|${jobNo}|${comp}|${color}|${stableId ?? ''}`;
-            return {
-                rowKey,
-                mvId: mvId ?? challanNo,
-                deliveryId: deliveryId ?? source?.id ?? null,
-                chId: source?.id || challanNo,
-                challanNo,
-                jobNo,
-                composition: comp || "-",
-                color: color || "-",
-                challanDate: normalizeDate(source?.deliveryDate || source?.challanDate),
-                toFactory: source?.toFactory || "",
-                fromFactory: source?.fromFactory || "",
-                yarnDelivery: 0, yarnReturn: 0, greyFabricReceived: 0, deliveryQty: 0,
-                unitePrice: Number(source?.unitePrice) || 0,
-                paidBillingAmount: Number(source?.paidBillingAmount) || 0,
-            };
-        };
-
-        const applyDelivery = (row, dv, source) => {
-            const qty = Number(dv?.deliveryQty ?? dv?.totalQty) || 0;
-            row.deliveryQty += qty;
-            const type = String(dv?.deliveryType || "").toLowerCase().replace(/[\s_-]+/g, "");
-            if (type.includes("yarndelivery")) row.yarnDelivery += qty;
-            else if (type.includes("yarnreturn")) row.yarnReturn += qty;
-            else if (type.includes("greyfabric") || type.includes("greigereceived") || type.includes("yarnreceived") || type.includes("greyreceived")) row.greyFabricReceived += qty;
-
-            const price = Number(dv?.unitePrice || source?.unitePrice) || 0;
-            if (price && !row.unitePrice) row.unitePrice = price;
-            if (!row.toFactory && dv?.toFactory) row.toFactory = dv.toFactory;
-            if (!row.fromFactory && dv?.fromFactory) row.fromFactory = dv.fromFactory;
-            if (dv?.deliveryDate && !row.challanDate) row.challanDate = normalizeDate(dv.deliveryDate);
-        };
-
-        const getFacets = (item) => {
-            const facets = [];
-            if (Array.isArray(item?.compositions) && item.compositions.length > 0) {
-                item.compositions.forEach((c) => {
-                    if (!c) return;
-                    const qtyRaw = c?.qty ?? c?.quantity ?? c?.deliveryQty ?? c?.totalQty ?? c?.weight ?? c?.kg ?? null;
-                    const qtyNum = (qtyRaw !== null && qtyRaw !== "" && !isNaN(Number(qtyRaw))) ? Number(qtyRaw) : null;
-                    facets.push({
-                        comp: c?.composition || item?.composition || "-",
-                        color: c?.color || item?.color || "-",
-                        qty: qtyNum,
-                    });
-                });
-            } else if (typeof item?.color === "string" && item.color.includes(", ")) {
-                item.color.split(", ").map((s) => s.trim()).filter(Boolean).forEach((colorPart) => {
-                    facets.push({ comp: item?.composition || "-", color: colorPart, qty: null });
-                });
-            }
-            if (facets.length === 0) {
-                facets.push({ comp: item?.composition || "-", color: item?.color || "-", qty: null });
-            }
-            return facets;
-        };
-
-        movements.forEach((item) => {
-            if (!item) return;
-            const jobNo = extractJobNo(item) || "-";
-
-            if (Array.isArray(item.deliveries) && item.deliveries.length > 0) {
-                item.deliveries.forEach((dv) => {
-                    const challanNo = dv?.challanNo;
-                    if (challanNo === undefined || challanNo === null) return;
-                    const comp = dv?.composition || item?.composition || "-";
-                    const color = dv?.color || item?.color || "-";
-                    const row = makeRow(challanNo, jobNo, comp, color, dv, item.id, dv.id);
-                    if (item.unitePrice && !row.unitePrice) row.unitePrice = Number(item.unitePrice);
-                    applyDelivery(row, dv, item);
-                    rows.push(row);
-                });
-            } else if (item.challanNo !== undefined && item.challanNo !== null) {
-                const facets = getFacets(item);
-                const hasFacetQty = facets.some((f) => f.qty !== null);
-
-                facets.forEach((f) => {
-                    const row = makeRow(item.challanNo, jobNo, f.comp, f.color, item, item.id, item.id);
-                    if (hasFacetQty) {
-                        if (f.qty !== null) applyDelivery(row, { ...item, deliveryQty: f.qty }, item);
-                    } else if (facets.length === 1) {
-                        applyDelivery(row, item, item);
-                    }
-                    rows.push(row);
-                });
-            }
-        });
-
-        return rows.map((row) => ({
-            ...row,
-            billingAmount: row.greyFabricReceived * row.unitePrice,
-        }));
-    }, [movements]);
+    // keep the latest axios instance in a ref so loaders never re-run because of a new instance
+    const axiosRef = useRef(axiosPrivate);
+    axiosRef.current = axiosPrivate;
 
     const {
         filters, openFilterKey, draftSelected, filterSearch, dropdownRef,
-        filterOptions, filteredRows: hookFilteredRows, setFilterSearch, openFilter,
-        toggleDraftValue, toggleSelectAllDraft, applyFilter, clearFilter,
-    } = useTableFilters(allRows, tableHeader);
+        filterOptions, optionsLoading, setFilterSearch, openFilter,
+        toggleDraftValue, applyFilter, clearFilter, clearAllFilters,
+    } = useServerFilters(axiosRef);
+
+    const appliedMonthsKey = appliedMonthNames.join(',');
+    // normal list mode = no challan/job text and no delivery-month search applied
+    const listMode = !search && !appliedMonthsKey;
+
+    const filtersKey = JSON.stringify(filters || {});
+    const selectedMonthsKey = [...selectedMonths].sort().join(',');
+    queryRef.current = { filtersKey, monthsKey: selectedMonthsKey };
+
+    // Rows built from the loaded records (bounded by MAX_LOADED_ROWS)
+    const allRows = useMemo(() => buildRows(movements), [movements]);
+    const filteredRows = allRows; // filtering happens on the server now
+
+    const capReached = hasMore && allRows.length >= MAX_LOADED_ROWS;
+    hasMoreRef.current = hasMore;
+    capRef.current = capReached;
+    searchActiveRef.current = searchActive;
+    loadErrorRef.current = loadError;
 
     const updateDropdownPosition = useCallback(() => {
         if (!openFilterKey) return;
@@ -568,25 +767,8 @@ const Knitting = () => {
         };
     }, [openFilterKey, updateDropdownPosition]);
 
-    // Month options for challan-date filter (newest first). Key = "YYYY-MM", label = Month'Year
-    const monthOptions = useMemo(() => {
-        const set = new Set();
-        allRows.forEach((row) => {
-            const key = getMonthKey(row.challanDate);
-            if (key) set.add(key);
-        });
-        return Array.from(set).sort((a, b) => b.localeCompare(a));
-    }, [allRows]);
-
-    useEffect(() => {
-        if (selectedMonths.size > 0) {
-            const validMonths = new Set(monthOptions);
-            const filtered = new Set([...selectedMonths].filter(m => validMonths.has(m)));
-            if (filtered.size !== selectedMonths.size) {
-                setSelectedMonths(filtered);
-            }
-        }
-    }, [monthOptions, selectedMonths]);
+    // Month'Year options for the challan-date filter (the server applies it)
+    const monthOptions = RECENT_MONTH_KEYS;
 
     const deliveryMonthOptions = useMemo(() => {
         if (!Array.isArray(deliveryMonths)) return [];
@@ -616,25 +798,7 @@ const Knitting = () => {
         setSelectedDeliveryMonths(allDeliveryMonthsSelected ? [] : deliveryMonthOptions.map((o) => o.value));
     };
 
-    const filteredRows = useMemo(() => {
-        let rows = hookFilteredRows;
-        if (selectedMonths.size > 0) {
-            rows = rows.filter((row) => {
-                const rowMonth = getMonthKey(row.challanDate);
-                return rowMonth && selectedMonths.has(rowMonth);
-            });
-        }
-        return rows;
-    }, [hookFilteredRows, selectedMonths]);
-
-    const filtersString = JSON.stringify(filters || {});
-    const selectedMonthsKey = [...selectedMonths].sort().join(',');
-
     const totalSearchPages = Math.max(1, Math.ceil(filteredRows.length / SEARCH_PAGE_SIZE));
-
-    useEffect(() => {
-        setSearchPage(1);
-    }, [filtersString, selectedMonthsKey]);
 
     useEffect(() => {
         if (searchPage > totalSearchPages) setSearchPage(totalSearchPages);
@@ -645,6 +809,135 @@ const Knitting = () => {
         const start = (searchPage - 1) * SEARCH_PAGE_SIZE;
         return filteredRows.slice(start, start + SEARCH_PAGE_SIZE);
     }, [filteredRows, searchActive, searchPage]);
+
+    // ===== PAGED LOADING =====
+    const cancelLoad = useCallback(() => {
+        genRef.current += 1;
+        if (abortRef.current) abortRef.current.abort();
+        loadingRef.current = false;
+        setLoadingMore(false);
+    }, []);
+
+    // Loads ONE page. replace=true starts a new list (first page of the current filters).
+    const fetchPage = useCallback(async (gen, cursor, replace) => {
+        if (loadingRef.current && !replace) return;
+        loadingRef.current = true;
+        setLoadingMore(true);
+        const controller = new AbortController();
+        abortRef.current = controller;
+
+        try {
+            const { filtersKey: fk, monthsKey: mk } = queryRef.current;
+            const res = await axiosRef.current.get(LIST_URL, {
+                params: buildListParams(cursor, fk, mk),
+                signal: controller.signal,
+            });
+            if (gen !== genRef.current) return; // cancelled / replaced by a newer load
+
+            const page = unwrapPage(res);
+            setMovements((prev) => (replace ? page.items : prev.concat(page.items)));
+            if (replace) {
+                setInitialLoading(false);
+                if (tableScrollRef.current) tableScrollRef.current.scrollTop = 0;
+                setViewport((v) => ({ ...v, top: 0 }));
+            }
+            cursorRef.current = page.nextCursor;
+            setHasMore(!!page.hasMore && page.nextCursor !== null && page.nextCursor !== undefined);
+        } catch (err) {
+            if (gen !== genRef.current) return; // aborted on purpose
+            console.error("Failed to load Knitting deliveries:", err);
+            const message = err?.response?.status === 403
+                ? "Permission denied"
+                : (err?.response?.data?.message || err?.response?.data?.msg || err?.message || "Failed to load Knitting deliveries");
+            setInitialLoading(false);
+            setHasMore(false);
+            if (replace) setFetchError(message);
+            else setLoadError(message);
+        } finally {
+            if (gen === genRef.current) {
+                loadingRef.current = false;
+                setLoadingMore(false);
+            }
+        }
+    }, []);
+
+    // Load the next page when the user scrolls near the end (and the memory cap is not reached)
+    const maybeLoadMore = useCallback(() => {
+        const el = tableScrollRef.current;
+        if (!el || searchActiveRef.current) return;
+        if (!hasMoreRef.current || loadingRef.current || capRef.current || loadErrorRef.current) return;
+        if (el.scrollHeight - el.scrollTop - el.clientHeight > NEAR_BOTTOM_PX) return;
+        fetchPage(genRef.current, cursorRef.current, false);
+    }, [fetchPage]);
+
+    // (Re)start the list whenever the server-side query changes
+    useEffect(() => {
+        if (!listMode) return; // a challan/job/month search owns the table right now
+        cancelLoad();
+        const gen = genRef.current;
+        cursorRef.current = null;
+        setHasMore(false);
+        setSearchActive(false);
+        setFetchError(null);
+        setLoadError(null);
+        setInitialLoading(true);
+        fetchPage(gen, null, true);
+    }, [listMode, refreshKey, filtersKey, selectedMonthsKey, cancelLoad, fetchPage]);
+
+    // stop everything when the page is left
+    useEffect(() => () => cancelLoad(), [cancelLoad]);
+
+    // content shorter than the box (or after a page arrives): keep loading until it is filled / capped
+    useEffect(() => {
+        maybeLoadMore();
+    }, [allRows.length, hasMore, loadingMore, loadError, maybeLoadMore]);
+
+    const retryLoad = () => {
+        setLoadError(null);
+        loadErrorRef.current = null;
+        fetchPage(genRef.current, cursorRef.current, false);
+    };
+    // ==========================
+
+    // ===== WINDOWED RENDERING: only the rows near the viewport are rendered =====
+    const totalVisible = visibleRows.length;
+
+    const { winStart, winEnd } = useMemo(() => {
+        const first = Math.floor(viewport.top / ROW_HEIGHT) - OVERSCAN;
+        const last = Math.ceil((viewport.top + viewport.height) / ROW_HEIGHT) + OVERSCAN;
+        const s = Math.max(0, Math.min(first, Math.max(0, totalVisible - 1)));
+        const e = Math.min(totalVisible, Math.max(last, s + 1));
+        return { winStart: s, winEnd: e };
+    }, [viewport.top, viewport.height, totalVisible]);
+
+    const windowRows = useMemo(() => visibleRows.slice(winStart, winEnd), [visibleRows, winStart, winEnd]);
+
+    const handleTableScroll = useCallback((e) => {
+        const el = e.currentTarget;
+        if (rafRef.current) return;
+        rafRef.current = requestAnimationFrame(() => {
+            rafRef.current = 0;
+            const top = el.scrollTop;
+            const height = el.clientHeight;
+            setViewport((v) => (Math.abs(v.top - top) < ROW_HEIGHT / 2 && v.height === height ? v : { top, height }));
+            maybeLoadMore();
+        });
+    }, [maybeLoadMore]);
+
+    // keep the viewport height in sync (first render, data change, window resize)
+    useLayoutEffect(() => {
+        const sync = () => {
+            const el = tableScrollRef.current;
+            if (!el) return;
+            setViewport((v) => (v.height === el.clientHeight && v.top === el.scrollTop ? v : { top: el.scrollTop, height: el.clientHeight }));
+        };
+        sync();
+        window.addEventListener('resize', sync);
+        return () => window.removeEventListener('resize', sync);
+    }, [totalVisible > 0, initialLoading]);
+
+    useEffect(() => () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); }, []);
+    // =============================================================================
 
     const searchPageNumbers = useMemo(() => {
         const nums = [];
@@ -664,6 +957,7 @@ const Knitting = () => {
     const rangeStart = filteredRows.length === 0 ? 0 : (searchPage - 1) * SEARCH_PAGE_SIZE + 1;
     const rangeEnd = Math.min(searchPage * SEARCH_PAGE_SIZE, filteredRows.length);
 
+    // Totals of the rows currently loaded in the table
     const totals = useMemo(() => {
         const t = { yarnDelivery: 0, yarnReturn: 0, greyFabricReceived: 0, billingAmount: 0 };
         filteredRows.forEach((row) => {
@@ -674,6 +968,11 @@ const Knitting = () => {
         });
         return t;
     }, [filteredRows]);
+
+    const allVisibleSelected = useMemo(
+        () => visibleRows.length > 0 && visibleRows.every((r) => selectedRows.has(r.rowKey)),
+        [visibleRows, selectedRows]
+    );
 
     const toggleRow = (rowKey) => {
         setSelectedRows((prev) => {
@@ -728,55 +1027,6 @@ const Knitting = () => {
     };
 
     useEffect(() => {
-        if (search || appliedMonthsKey) return;
-        setSearchActive(false);
-        setFetchError(null);
-        const queryParams = new URLSearchParams();
-        if (fetchAll) {
-            queryParams.append("fetchAll", "true");
-            setIsFetchingAll(true);
-        }
-        if (filters) {
-            Object.entries(filters).forEach(([key, value]) => {
-                if (value && Array.isArray(value) && value.length > 0) {
-                    queryParams.append(key, value.join(","));
-                } else if (value && typeof value === "string" && value.length > 0) {
-                    queryParams.append(key, value);
-                }
-            });
-        }
-        const queryString = queryParams.toString();
-        const url = `/api/challan-movement/knittingOrder${queryString ? "?" + queryString : ""}`;
-
-        fetchData(url)
-            .then((res) => {
-                console.log(res.data)
-                let payload = [];
-                if (Array.isArray(res)) payload = res;
-                else if (Array.isArray(res?.data)) payload = res.data;
-                else if (Array.isArray(res?.data?.data)) payload = res.data.data;
-                setMovements(payload);
-            })
-            .catch((err) => {
-                console.error("Failed to load Knitting deliveries:", err);
-                if (err?.response?.status === 403) {
-                    setFetchError("Permission denied");
-                } else {
-                    setFetchError(err?.response?.data?.message || err?.response?.data?.msg || err?.message || err?.msg || "Failed to load Knitting deliveries");
-                }
-                setPendingFilterKey(null);
-            })
-            .finally(() => {
-                if (fetchAll) setIsFetchingAll(false);
-            });
-    }, [fetchData, filtersString, fetchAll, refreshKey, search, appliedMonthsKey]);
-
-    useEffect(() => {
-        if (fetchError && pendingFilterKey) { setPendingFilterKey(null); return; }
-        if (pendingFilterKey && fetchAll && !isFetchingAll && !fetchError) { openFilter(pendingFilterKey); setPendingFilterKey(null); }
-    }, [pendingFilterKey, fetchAll, isFetchingAll, fetchError, openFilter]);
-
-    useEffect(() => {
         if (!monthDropdownOpen) return;
         const handleClick = (e) => {
             if (monthDropdownRef.current && !monthDropdownRef.current.contains(e.target)) {
@@ -799,12 +1049,14 @@ const Knitting = () => {
         return () => document.removeEventListener("mousedown", handleClick);
     }, [isDeliveryMonthDropdownOpen]);
 
+    // Column / month filters work on the full list, not on challan/job search results
     const handleOpenFilter = (key) => {
-        if (!fetchAll) { if (!pendingFilterKey) setPendingFilterKey(key); setFetchAll(true); return; }
+        if (searchActive) return;
         openFilter(key);
     };
 
     const openMonthFilter = () => {
+        if (searchActive) return;
         if (monthDropdownOpen) {
             setMonthDropdownOpen(false);
             setMonthSearch("");
@@ -853,6 +1105,13 @@ const Knitting = () => {
     // ===== CHALLAN / JOB SEARCH WITH FOUND/NOT FOUND TRACKING =====
     const handleChallanSearch = async () => {
         if (!search.trim()) { alert("Please enter at least one challan number or job number."); return; }
+
+        // search results replace the list -> stop paged loading
+        cancelLoad();
+        setInitialLoading(false);
+        setLoadError(null);
+        setHasMore(false);
+
         setSearchLoading(true);
         setSearchError(null);
         setSearchActive(true);
@@ -928,6 +1187,12 @@ const Knitting = () => {
             if (name && !monthNames.includes(name)) monthNames.push(name);
         });
 
+        // search results replace the list -> stop paged loading
+        cancelLoad();
+        setInitialLoading(false);
+        setLoadError(null);
+        setHasMore(false);
+
         setSearch("");
         setSearchActive(true);
         setSearchPage(1);
@@ -965,8 +1230,7 @@ const Knitting = () => {
     const handleClearAllFilters = () => {
         const hadSearchMode = !!search || appliedMonthNames.length > 0 || searchActive;
 
-        Object.keys(filters || {}).forEach((key) => clearFilter(key));
-        setFilterSearch("");
+        clearAllFilters();
 
         setSelectedMonths(new Set());
         setMonthDraftSelected(new Set());
@@ -991,15 +1255,45 @@ const Knitting = () => {
     const getCellBaseStyle = (row, idx) => {
         const isHovered = hoveredRow === row.rowKey;
         let bg = isHovered ? theme.colors.bgHover : (idx % 2 === 0 ? theme.colors.white : '#fafbfc');
-        return { ...cellStyle, backgroundColor: bg };
+        // fixed row height is what makes windowed rendering possible
+        return { ...cellStyle, backgroundColor: bg, height: ROW_HEIGHT, padding: '6px 12px', boxSizing: 'border-box', overflow: 'hidden' };
     };
 
     // ===== EXCEL EXPORT: one sheet per factory + Summary sheet =====
     // Delivery -> To Factory, Return / Greige -> From Factory (factory-to-factory transfer rule: see EXPORT CONFIG)
+    // The export fetches the FILTERED data from the server in chunks (not stored in React state),
+    // so it is not limited to the rows currently loaded in the table.
     const handleExport = async () => {
-        if (filteredRows.length === 0) { alert("No data to export."); return; }
         setIsExporting(true);
+        setExportProgress(0);
         try {
+            let exportMovements = movements;
+            if (!searchActive) {
+                exportMovements = [];
+                let cursor = null;
+                let rowCount = 0;
+                while (true) {
+                    const res = await axiosPrivate.get(LIST_URL, {
+                        params: buildListParams(cursor, filtersKey, selectedMonthsKey, EXPORT_PAGE_LIMIT),
+                    });
+                    const page = unwrapPage(res);
+                    page.items.forEach((it) => {
+                        exportMovements.push(it);
+                        rowCount += Array.isArray(it?.deliveries) ? it.deliveries.length : 1;
+                    });
+                    setExportProgress(rowCount);
+                    if (rowCount > EXPORT_MAX_ROWS) {
+                        alert(`Too many rows to export at once (more than ${EXPORT_MAX_ROWS}). Please narrow the data with filters or Month'Year and try again.`);
+                        return;
+                    }
+                    if (!page.hasMore || page.nextCursor === null || page.nextCursor === undefined) break;
+                    cursor = page.nextCursor;
+                }
+            }
+
+            const exportRows = buildRows(exportMovements);
+            if (exportRows.length === 0) { alert("No data to export."); return; }
+
             const mod = await import('exceljs');
             const ExcelJS = mod.default || mod;
 
@@ -1015,9 +1309,9 @@ const Knitting = () => {
                 : 'AllMonths';
 
             // Split every row by party (delivery -> To Factory, return/received -> From Factory)
-            const returnIndex = buildReturnIndex(allRows);
+            const returnIndex = buildReturnIndex(exportRows);
             const exportEntries = [];
-            filteredRows.forEach((r) => {
+            exportRows.forEach((r) => {
                 splitRowByParty(r, returnIndex).forEach((part) => {
                     exportEntries.push({
                         party: part.party,
@@ -1146,6 +1440,7 @@ const Knitting = () => {
             alert('Failed to export Excel file. Please try again.');
         } finally {
             setIsExporting(false);
+            setExportProgress(0);
         }
     };
 
@@ -1154,13 +1449,9 @@ const Knitting = () => {
         const th = tableHeader.find(h => h.key === openFilterKey);
         if (!th) return null;
 
-        const options = filterOptions[openFilterKey] || [];
-        const visibleOptions = options.filter((val) => {
-            const displayVal = getFilterDisplay(openFilterKey, val);
-            return String(displayVal).toLowerCase().includes(filterSearch.toLowerCase());
-        });
+        // selected values stay on top even when they are not in the current search results
+        const options = Array.from(new Set([...draftSelected, ...filterOptions]));
 
-        const allSelected = draftSelected.size === options.length && options.length > 0;
         const availableHeight = Math.max(220, Math.min(380, window.innerHeight - dropdownPos.top - 16));
 
         return createPortal(
@@ -1183,39 +1474,40 @@ const Knitting = () => {
                     </button>
                 </div>
                 <div style={{ padding: "10px 12px", borderBottom: `1px solid #e2e8f0` }}>
-                    <input type="text" value={filterSearch} onChange={(e) => setFilterSearch(e.target.value)} placeholder="Filter values..." autoFocus style={{ width: "100%", padding: "8px 10px", border: `1px solid ${theme.colors.borderDark}`, borderRadius: '6px', fontSize: '0.8rem', outline: 'none', boxSizing: 'border-box', fontFamily: FONT_STACK, color: theme.colors.textMain }} />
+                    <input type="text" value={filterSearch} onChange={(e) => setFilterSearch(e.target.value)} placeholder="Type to search values..." autoFocus style={{ width: "100%", padding: "8px 10px", border: `1px solid ${theme.colors.borderDark}`, borderRadius: '6px', fontSize: '0.8rem', outline: 'none', boxSizing: 'border-box', fontFamily: FONT_STACK, color: theme.colors.textMain }} />
                 </div>
                 <div style={{ flex: 1, overflowY: "auto", padding: "8px 12px", minHeight: 0 }}>
-                    <label style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 600, marginBottom: 8, fontSize: '0.8rem', color: theme.colors.textMain, cursor: 'pointer' }}>
-                        <input type="checkbox" checked={allSelected} onChange={() => toggleSelectAllDraft(options)} style={{ accentColor: theme.colors.primary, width: 15, height: 15 }} />
-                        Select All ({options.length})
-                    </label>
-                    <div style={{ borderTop: `1px solid #e2e8f0`, paddingTop: 6 }}>
-                        {visibleOptions.length === 0 && (
-                            <div style={{ padding: '12px 0', fontSize: '0.8rem', color: theme.colors.textMain, textAlign: 'center', opacity: 0.6 }}>No values found</div>
-                        )}
-                        {visibleOptions.map((val) => {
-                            const displayVal = getFilterDisplay(openFilterKey, val);
-                            const isChecked = draftSelected.has(val);
-                            return (
-                                <label key={val} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.8rem", padding: "5px 0", cursor: 'pointer', borderRadius: '4px' }}>
-                                    <input type="checkbox" checked={isChecked} onChange={() => toggleDraftValue(val)} style={{ accentColor: theme.colors.primary, width: 15, height: 15, flexShrink: 0 }} />
-                                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayVal === "" ? "(blank)" : displayVal}</span>
-                                </label>
-                            );
-                        })}
-                    </div>
+                    {optionsLoading && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 0', fontSize: '0.8rem', color: theme.colors.primary }}>
+                            <Loader size={14} className="animate-spin" /> Loading values...
+                        </div>
+                    )}
+                    {!optionsLoading && options.length === 0 && (
+                        <div style={{ padding: '12px 0', fontSize: '0.8rem', color: theme.colors.textMain, textAlign: 'center', opacity: 0.6 }}>No values found</div>
+                    )}
+                    {options.map((val) => {
+                        const isChecked = draftSelected.has(val);
+                        return (
+                            <label key={val} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.8rem", padding: "5px 0", cursor: 'pointer', borderRadius: '4px' }}>
+                                <input type="checkbox" checked={isChecked} onChange={() => toggleDraftValue(val)} style={{ accentColor: theme.colors.primary, width: 15, height: 15, flexShrink: 0 }} />
+                                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={val}>{val === "" ? "(blank)" : val}</span>
+                            </label>
+                        );
+                    })}
+                    {!optionsLoading && filterOptions.length >= 50 && (
+                        <div style={{ padding: '8px 0 2px', fontSize: '0.72rem', opacity: 0.6 }}>Showing the first 50 values. Type to narrow the list.</div>
+                    )}
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "10px 12px", borderTop: `1px solid #e2e8f0`, background: theme.colors.bgHeader }}>
                     <button onClick={() => clearFilter(openFilterKey)} style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4, background: theme.colors.white, color: theme.colors.textMain, border: `1px solid ${theme.colors.borderDark}`, borderRadius: '6px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 500, padding: '7px 0', fontFamily: FONT_STACK }}>Clear</button>
-                    <button onClick={() => applyFilter(openFilterKey, options)} style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4, background: theme.colors.primary, color: theme.colors.white, border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600, padding: '7px 0', fontFamily: FONT_STACK }}>Apply</button>
+                    <button onClick={() => applyFilter(openFilterKey)} style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4, background: theme.colors.primary, color: theme.colors.white, border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600, padding: '7px 0', fontFamily: FONT_STACK }}>Apply</button>
                 </div>
             </div>,
             document.body
         );
     };
 
-    if (loading && movements.length === 0 && !searchLoading) {
+    if (initialLoading && movements.length === 0 && !searchLoading) {
         return (
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 60, color: theme.colors.textMuted, fontFamily: FONT_STACK }}>
                 <Loader size={24} className="animate-spin" style={{ marginRight: 10 }} /> Loading data...
@@ -1225,13 +1517,25 @@ const Knitting = () => {
 
     if (fetchError && !search && !searchActive) {
         return (
-            <div style={{ padding: "12px 16px", color: "#991b1b", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: theme.radius, margin: 20, fontFamily: FONT_STACK }}>
-                {fetchError}
+            <div style={{ padding: "12px 16px", color: "#991b1b", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: theme.radius, margin: 20, fontFamily: FONT_STACK, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                <span>{fetchError}</span>
+                <button
+                    onClick={() => setRefreshKey((k) => k + 1)}
+                    style={{ background: theme.colors.primary, color: theme.colors.white, border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600, padding: '6px 14px', fontFamily: 'inherit' }}
+                >
+                    Retry
+                </button>
+                {hasActiveFilters && (
+                    <button
+                        onClick={handleClearAllFilters}
+                        style={{ background: theme.colors.white, color: '#b91c1c', border: '1px solid #fecaca', borderRadius: '6px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600, padding: '6px 14px', fontFamily: 'inherit' }}
+                    >
+                        Clear all filters
+                    </button>
+                )}
             </div>
         );
     }
-
-    const allVisibleSelected = visibleRows.length > 0 && visibleRows.every(r => selectedRows.has(r.rowKey));
 
     const handlePrepareChallanEdit = async (challanNo, jobNo) => {
         if (!challanNo) return;
@@ -1252,6 +1556,12 @@ const Knitting = () => {
         formatMonthLabel(key).toLowerCase().includes(monthSearch.toLowerCase())
     );
     const allMonthsDraftSelected = monthOptions.length > 0 && monthDraftSelected.size === monthOptions.length;
+
+    const topSpacerHeight = winStart * ROW_HEIGHT;
+    const bottomSpacerHeight = Math.max(0, totalVisible - winEnd) * ROW_HEIGHT;
+    const spacerCellStyle = { padding: 0, border: 'none', height: 'auto' };
+
+    const showTableOverlay = searchLoading || (initialLoading && movements.length > 0);
 
     return (
         <div style={{ width: "100%", padding: "24px", fontFamily: FONT_STACK, color: theme.colors.textMain }}>
@@ -1303,16 +1613,18 @@ const Knitting = () => {
                     </button>
                 )}
 
-                {/* ===== CHALLAN DATE MONTH FILTER (Month'Year) ===== */}
+                {/* ===== CHALLAN DATE MONTH FILTER (Month'Year) - applied on the server ===== */}
                 <div ref={monthDropdownRef} style={{ position: 'relative' }}>
                     <button
                         onClick={openMonthFilter}
+                        title={searchActive ? "Clear the search to use this filter" : undefined}
                         style={{
                             display: 'inline-flex', alignItems: 'center', gap: 6,
                             background: monthDropdownOpen || selectedMonths.size > 0 ? theme.colors.primary : theme.colors.white,
                             color: monthDropdownOpen || selectedMonths.size > 0 ? theme.colors.white : theme.colors.textMain,
                             padding: "10px 16px", borderRadius: theme.radius,
-                            border: `1px solid ${theme.colors.border}`, cursor: "pointer",
+                            border: `1px solid ${theme.colors.border}`, cursor: searchActive ? "not-allowed" : "pointer",
+                            opacity: searchActive ? 0.5 : 1,
                             fontSize: '0.875rem', fontWeight: 500, fontFamily: 'inherit', transition: 'all 0.2s ease'
                         }}
                     >
@@ -1450,10 +1762,10 @@ const Knitting = () => {
                     style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: theme.colors.white, color: theme.colors.textMain, padding: "10px 20px", borderRadius: theme.radius, border: `1px solid ${theme.colors.border}`, cursor: isExporting ? "not-allowed" : "pointer", opacity: isExporting ? 0.7 : 1, fontSize: '0.875rem', fontWeight: 500, fontFamily: 'inherit' }}
                     onClick={handleExport}
                     disabled={isExporting}
-                    title="Export factory-wise Excel (one sheet per factory)"
+                    title="Export the filtered data as factory-wise Excel (one sheet per factory)"
                 >
                     {isExporting ? <Loader size={16} className="animate-spin" /> : <Download size={16} />}
-                    {isExporting ? "Exporting..." : "Export Excel"}
+                    {isExporting ? (exportProgress > 0 ? `Exporting... ${exportProgress} rows` : "Exporting...") : "Export Excel"}
                 </button>
             </div>
 
@@ -1520,9 +1832,6 @@ const Knitting = () => {
                     fontSize: '0.875rem', color: '#065f46'
                 }}>
                     <strong>{filteredRows.length} record{filteredRows.length === 1 ? '' : 's'} found</strong>
-                    {allRows.length !== filteredRows.length && (
-                        <span>(of {allRows.length} before filters)</span>
-                    )}
                     {filteredRows.length > 0 && (
                         <span>
                             Showing {rangeStart}–{rangeEnd}
@@ -1559,26 +1868,17 @@ const Knitting = () => {
                 </div>
             )}
 
-            {/* Fetch-all loading overlay */}
-            {isFetchingAll && pendingFilterKey && (
-                <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(255, 255, 255, 0.70)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999 }}>
-                    <div style={{ background: theme.colors.white, border: `1px solid ${theme.colors.primary}`, borderRadius: theme.radius, padding: "16px 24px", color: theme.colors.primary, fontWeight: 700, boxShadow: theme.shadows.lg, fontFamily: 'inherit' }}>
-                        Loading all challans for filtering...
-                    </div>
-                </div>
-            )}
-
             {/* Table wrapper */}
             <div style={{ position: 'relative' }}>
-                {searchLoading && (
+                {showTableOverlay && (
                     <div style={{ position: 'absolute', inset: 0, zIndex: 50, background: 'rgba(255, 255, 255, 0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: theme.radius }}>
                         <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10, background: theme.colors.white, border: `1px solid ${theme.colors.primary}`, borderRadius: theme.radius, padding: '14px 22px', color: theme.colors.primary, fontWeight: 600, boxShadow: theme.shadows.lg, fontFamily: 'inherit' }}>
-                            <Loader size={20} className="animate-spin" /> Searching...
+                            <Loader size={20} className="animate-spin" /> {searchLoading ? "Searching..." : "Loading..."}
                         </div>
                     </div>
                 )}
 
-                <div ref={tableScrollRef} style={{ width: "100%", maxHeight: "calc(100vh - 220px)", overflow: "auto", border: `1px solid ${theme.colors.border}`, borderRadius: theme.radius, boxShadow: theme.shadows.md, background: theme.colors.white, position: 'relative', minHeight: searchLoading ? 160 : undefined }}>
+                <div ref={tableScrollRef} onScroll={handleTableScroll} style={{ width: "100%", maxHeight: "30rem", overflow: "auto", border: `1px solid ${theme.colors.border}`, borderRadius: theme.radius, boxShadow: theme.shadows.md, background: theme.colors.white, position: 'relative', minHeight: showTableOverlay ? 160 : undefined }}>
                     <table style={{ width: "100%", minWidth: "1600px", borderCollapse: "separate", borderSpacing: 0, tableLayout: "fixed" }}>
                         <thead>
                             <tr>
@@ -1599,7 +1899,13 @@ const Knitting = () => {
                                         <th key={th.key} style={{ ...thStickyStyle, width: th.width, ...frozen }}>
                                             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
                                                 <span style={{ whiteSpace: "normal", wordBreak: "break-word", textAlign: "center", flex: 1 }}>{th.header}</span>
-                                                <button ref={(el) => { filterButtonRefs.current[th.key] = el; }} onMouseDown={(e) => e.stopPropagation()} onClick={() => handleOpenFilter(th.key)} style={{ border: "none", background: (isActive || isOpen) ? theme.colors.primary : "transparent", color: theme.colors.white, cursor: "pointer", padding: "2px 4px", borderRadius: '4px', display: 'flex', alignItems: 'center', transition: 'all 0.15s', flexShrink: 0 }}>
+                                                <button
+                                                    ref={(el) => { filterButtonRefs.current[th.key] = el; }}
+                                                    onMouseDown={(e) => e.stopPropagation()}
+                                                    onClick={() => handleOpenFilter(th.key)}
+                                                    title={searchActive ? "Clear the search to use column filters" : undefined}
+                                                    style={{ border: "none", background: (isActive || isOpen) ? theme.colors.primary : "transparent", color: theme.colors.white, cursor: searchActive ? "not-allowed" : "pointer", opacity: searchActive ? 0.4 : 1, padding: "2px 4px", borderRadius: '4px', display: 'flex', alignItems: 'center', transition: 'all 0.15s', flexShrink: 0 }}
+                                                >
                                                     <Filter size={12} />
                                                 </button>
                                             </div>
@@ -1609,71 +1915,97 @@ const Knitting = () => {
                             </tr>
                         </thead>
                         <tbody>
-                            {visibleRows.map((row, idx) => (
-                                <tr key={row.rowKey} onMouseEnter={() => setHoveredRow(row.rowKey)} onMouseLeave={() => setHoveredRow(null)}>
-                                    {tableHeader.map((th) => {
-                                        const frozen = getFrozenStyle(th.key, 'body');
-                                        const baseStyle = { ...getCellBaseStyle(row, idx), ...frozen };
-
-                                        if (th.key === 'select') {
-                                            return (
-                                                <td key={th.key} style={baseStyle}>
-                                                    <input type="checkbox" checked={selectedRows.has(row.rowKey)} onChange={() => toggleRow(row.rowKey)} style={{ accentColor: theme.colors.primary, cursor: 'pointer', width: 16, height: 16 }} />
-                                                </td>
-                                            );
-                                        }
-
-                                        if (th.key === 'challanDate') {
-                                            return (
-                                                <td key={th.key} style={baseStyle}>
-                                                    <span style={{ fontVariantNumeric: 'tabular-nums', fontSize: '0.8rem', whiteSpace: 'normal', wordBreak: 'break-word' }}>{formatShortDate(row.challanDate)}</span>
-                                                </td>
-                                            );
-                                        }
-
-                                        if (th.key === 'color') {
-                                            return (
-                                                <td key={th.key} style={baseStyle}>
-                                                    {row.color && row.color !== "-" ? (
-                                                        <span style={{ display: 'inline-block', padding: '2px 10px', borderRadius: '12px', background: '#f1f5f9', fontSize: '0.8rem', fontWeight: 500, whiteSpace: 'normal', wordBreak: 'break-word' }}>{row.color}</span>
-                                                    ) : "-"}
-                                                </td>
-                                            );
-                                        }
-
-                                        if (th.key === 'unitePrice' || th.key === 'billingAmount') {
-                                            return (
-                                                <td key={th.key} style={{ ...baseStyle, fontVariantNumeric: 'tabular-nums', fontWeight: th.key === 'billingAmount' ? 600 : 400 }}>
-                                                    {row[th.key] > 0 ? Number(row[th.key]).toFixed(2) : "-"}
-                                                </td>
-                                            );
-                                        }
-
-                                        if (th.key === 'jobNo' || th.key === 'composition') {
-                                            return (
-                                                <td key={th.key} style={baseStyle}>
-                                                    <span onClick={th.key === 'jobNo' ? () => handlePrepareChallanEdit(row.challanNo, row[th.key]) : undefined} style={{ fontWeight: th.key === 'jobNo' ? 500 : 400, cursor: th.key === 'jobNo' ? 'pointer' : 'default', whiteSpace: 'normal', wordBreak: 'break-word' }}>{row[th.key]}</span>
-                                                </td>
-                                            );
-                                        }
-
-                                        const isNumber = ['yarnDelivery', 'yarnReturn', 'greyFabricReceived'].includes(th.key);
-                                        const currentValue = row[th.key];
-
-                                        return (
-                                            <td key={th.key} style={{ ...baseStyle, fontVariantNumeric: isNumber ? 'tabular-nums' : 'normal' }}>
-                                                <div style={{ minHeight: '20px', textAlign: 'center', opacity: currentValue ? 1 : 0.5, whiteSpace: 'normal', wordBreak: 'break-word' }}>
-                                                    {isNumber ? (Number(currentValue) > 0 ? Number(currentValue).toFixed(2) : "-") : (currentValue || "-")}
-                                                </div>
-                                            </td>
-                                        );
-                                    })}
+                            {/* spacer = all the rows above the rendered window */}
+                            {topSpacerHeight > 0 && (
+                                <tr aria-hidden="true" style={{ height: topSpacerHeight }}>
+                                    <td colSpan={tableHeader.length} style={spacerCellStyle} />
                                 </tr>
-                            ))}
+                            )}
+
+                            {windowRows.map((row, i) => {
+                                const idx = winStart + i;
+                                return (
+                                    <tr key={row.rowKey} onMouseEnter={() => setHoveredRow(row.rowKey)} onMouseLeave={() => setHoveredRow(null)}>
+                                        {tableHeader.map((th) => {
+                                            const frozen = getFrozenStyle(th.key, 'body');
+                                            const baseStyle = { ...getCellBaseStyle(row, idx), ...frozen };
+
+                                            if (th.key === 'select') {
+                                                return (
+                                                    <td key={th.key} style={baseStyle}>
+                                                        <input type="checkbox" checked={selectedRows.has(row.rowKey)} onChange={() => toggleRow(row.rowKey)} style={{ accentColor: theme.colors.primary, cursor: 'pointer', width: 16, height: 16 }} />
+                                                    </td>
+                                                );
+                                            }
+
+                                            if (th.key === 'challanDate') {
+                                                return (
+                                                    <td key={th.key} style={baseStyle}>
+                                                        <span style={{ fontVariantNumeric: 'tabular-nums', fontSize: '0.8rem', whiteSpace: 'normal', wordBreak: 'break-word' }}>{formatShortDate(row.challanDate)}</span>
+                                                    </td>
+                                                );
+                                            }
+
+                                            if (th.key === 'color') {
+                                                return (
+                                                    <td key={th.key} style={baseStyle}>
+                                                        {row.color && row.color !== "-" ? (
+                                                            <div style={clampStyle} title={row.color}>
+                                                                <span style={{ display: 'inline-block', padding: '2px 10px', borderRadius: '12px', background: '#f1f5f9', fontSize: '0.8rem', fontWeight: 500, wordBreak: 'break-word' }}>{row.color}</span>
+                                                            </div>
+                                                        ) : "-"}
+                                                    </td>
+                                                );
+                                            }
+
+                                            if (th.key === 'unitePrice' || th.key === 'billingAmount') {
+                                                return (
+                                                    <td key={th.key} style={{ ...baseStyle, fontVariantNumeric: 'tabular-nums', fontWeight: th.key === 'billingAmount' ? 600 : 400 }}>
+                                                        {row[th.key] > 0 ? Number(row[th.key]).toFixed(2) : "-"}
+                                                    </td>
+                                                );
+                                            }
+
+                                            if (th.key === 'jobNo' || th.key === 'composition') {
+                                                return (
+                                                    <td key={th.key} style={baseStyle}>
+                                                        <div style={clampStyle} title={String(row[th.key])}>
+                                                            <span onClick={th.key === 'jobNo' ? () => handlePrepareChallanEdit(row.challanNo, row[th.key]) : undefined} style={{ fontWeight: th.key === 'jobNo' ? 500 : 400, cursor: th.key === 'jobNo' ? 'pointer' : 'default' }}>{row[th.key]}</span>
+                                                        </div>
+                                                    </td>
+                                                );
+                                            }
+
+                                            const isNumber = ['yarnDelivery', 'yarnReturn', 'greyFabricReceived'].includes(th.key);
+                                            const currentValue = row[th.key];
+
+                                            return (
+                                                <td key={th.key} style={{ ...baseStyle, fontVariantNumeric: isNumber ? 'tabular-nums' : 'normal' }}>
+                                                    <div title={isNumber ? undefined : String(currentValue || "")} style={{ ...clampStyle, textAlign: 'center', opacity: currentValue ? 1 : 0.5 }}>
+                                                        {isNumber ? (Number(currentValue) > 0 ? Number(currentValue).toFixed(2) : "-") : (currentValue || "-")}
+                                                    </div>
+                                                </td>
+                                            );
+                                        })}
+                                    </tr>
+                                );
+                            })}
+
+                            {/* spacer = all the rows below the rendered window */}
+                            {bottomSpacerHeight > 0 && (
+                                <tr aria-hidden="true" style={{ height: bottomSpacerHeight }}>
+                                    <td colSpan={tableHeader.length} style={spacerCellStyle} />
+                                </tr>
+                            )}
+
                             {visibleRows.length === 0 && (
                                 <tr>
                                     <td style={{ ...cellStyle, padding: 40, color: theme.colors.textMuted, whiteSpace: 'normal' }} colSpan={tableHeader.length}>
-                                        {searchLoading ? "Searching..." : movements.length === 0 && !loading ? "No records found." : "No rows match the current filters."}
+                                        {searchLoading
+                                            ? "Searching..."
+                                            : (initialLoading || loadingMore)
+                                                ? "Loading..."
+                                                : "No records found."}
                                     </td>
                                 </tr>
                             )}
@@ -1684,7 +2016,7 @@ const Knitting = () => {
                                     {tableHeader.map((th) => {
                                         const frozen = getFrozenStyle(th.key, 'footer');
                                         if (th.key === 'composition') {
-                                            return <td key={th.key} style={{ ...tfootCellStyle, fontWeight: 700, textTransform: 'uppercase', fontSize: '0.75rem', letterSpacing: '0.05em', ...frozen }}>Total</td>;
+                                            return <td key={th.key} style={{ ...tfootCellStyle, fontWeight: 700, textTransform: 'uppercase', fontSize: '0.75rem', letterSpacing: '0.05em', ...frozen }}>{searchActive || !hasMore ? 'Total' : 'Total (loaded)'}</td>;
                                         }
                                         if (['yarnDelivery', 'yarnReturn', 'greyFabricReceived', 'billingAmount'].includes(th.key)) {
                                             return (
@@ -1701,6 +2033,39 @@ const Knitting = () => {
                     </table>
                 </div>
             </div>
+
+            {/* Paged loading status (normal list mode) */}
+            {!searchActive && !initialLoading && (
+                <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 10, marginTop: 12, minHeight: 24, fontSize: '0.8rem', color: theme.colors.textMuted, fontFamily: 'inherit', textAlign: 'center', flexWrap: 'wrap' }}>
+                    {loadingMore && (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, color: theme.colors.primary, fontWeight: 600 }}>
+                            <Loader size={16} className="animate-spin" /> Loading more...
+                        </span>
+                    )}
+                    {!loadingMore && loadError && (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10, color: '#b91c1c' }}>
+                            {loadError}
+                            <button
+                                onClick={retryLoad}
+                                style={{ background: theme.colors.primary, color: theme.colors.white, border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600, padding: '5px 12px', fontFamily: 'inherit' }}
+                            >
+                                Retry
+                            </button>
+                        </span>
+                    )}
+                    {!loadingMore && !loadError && capReached && (
+                        <span style={{ color: '#b45309', fontWeight: 600 }}>
+                            Showing the first {allRows.length} rows. More data exists: use the column filters, Month'Year or search to narrow it down.
+                        </span>
+                    )}
+                    {!loadingMore && !loadError && !capReached && hasMore && (
+                        <span style={{ opacity: 0.7 }}>{allRows.length} rows loaded. Scroll down to load more.</span>
+                    )}
+                    {!loadingMore && !loadError && !hasMore && (
+                        <span style={{ opacity: 0.7 }}>All {allRows.length} rows loaded</span>
+                    )}
+                </div>
+            )}
 
             {/* Pagination */}
             {searchActive && !searchLoading && totalSearchPages > 1 && (

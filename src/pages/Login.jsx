@@ -1,6 +1,6 @@
 import React, { useContext, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import logo from '../assets/image.png';
+import Logo from '../assets/image.png';
 import { AuthContext, useAuth } from '../auth/AuthContext';
 
 const Login = () => {
@@ -14,7 +14,7 @@ const Login = () => {
     const navigate = useNavigate();
     const { login } = useAuth();
 
-   
+
 
     // Normalize Bangladesh mobile numbers
     const normalizePhone = (value) => {
@@ -95,10 +95,9 @@ const Login = () => {
                     <div>
                         {/* Logo */}
                         <div className="flex items-center gap-3.5 mb-10">
-                            {/* Increased size from w-12 h-12 to w-14 h-14 */}
                             <div className="w-[10] h-[10rem] rounded-xl bg-white border border-slate-200 shadow-sm flex items-center justify-center p-2.5">
                                 <img
-                                    src={logo}
+                                    src={Logo}
                                     alt="SM Sourcing Logo"
                                     className="w-full h-full object-contain"
                                 />
@@ -230,7 +229,7 @@ const Login = () => {
                                     Password
                                 </label>
 
-                               
+
                             </div>
 
                             <div className="relative rounded-lg border border-slate-300 focus-within:border-orange-500 focus-within:ring-3 focus-within:ring-orange-100 transition-all bg-slate-50/50 shadow-sm">
@@ -283,7 +282,7 @@ const Login = () => {
                             </div>
                         </div>
 
-                       
+
 
                         {/* Submit */}
                         <button

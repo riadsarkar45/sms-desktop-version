@@ -48,6 +48,7 @@ import UploadFile from "../pages/upload/Upload";
 import PartyStockGlance from "../pages/mis/party.stock/GlanceReport";
 import QuarterlyBalance from "../pages/mis/QuaterlyBalanceRep";
 import PrivateRoutes from "../components/private.routes/PrivateRoute";
+import DailyTransaction from "../pages/mis/party.stock/DailyTransaction";
 
 const routers = createBrowserRouter([
   {
@@ -261,6 +262,10 @@ const routers = createBrowserRouter([
               {
                 path: "quarterly-balance",
                 element: <QuarterlyBalance />,
+              },
+              {
+                path: "mis/daily-transaction",
+                element: <DailyTransaction/>,
               },
 
             ],

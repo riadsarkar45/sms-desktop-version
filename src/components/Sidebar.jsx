@@ -41,6 +41,8 @@ import {
   ChevronRight,
   Building,
   LogOut,
+  Move,
+  Move3D,
 } from "lucide-react";
 
 import UseUserRoles from "../hooks/all-users/UseUserRoles";
@@ -776,6 +778,11 @@ export default function Sidebar() {
           path: "/dashboard/mis/party-stock",
           icon: Building,
         },
+        {
+          label: "Daily Transaction",
+          path: "/dashboard/mis/daily-transaction",
+          icon: Move3D,
+        },
       ]
     : [];
 
@@ -937,6 +944,7 @@ export default function Sidebar() {
     "/dashboard/yarn/stock": "Raw Yarn Stock",
     "/dashboard/yarndyed/movement": "Yarn Dyed Movement",
     "/dashboard/yarndyed/stock": "Yarn Dyed Stock",
+    "dashboard/daily-transaction": "Daily Transaction",
 
     "/dashboard/knitting-order": "Knitting Orders",
     "/dashboard/dyeing-order": "Dyeing Orders",

@@ -12,7 +12,7 @@ const ORDER_CONFIG = {
     ret: "Yarn Return",
     received: "Greige Received",
     finish: null,
-    filePrefix: "Knitting_Quarterly_Balance",
+    filePrefix: "Knitting_Daily_Transaction",
   },
   dyeingOrder: {
     title: "Dyeing",
@@ -20,7 +20,7 @@ const ORDER_CONFIG = {
     ret: "Grey Return",
     received: "Grey Received",
     finish: "Finish Received",
-    filePrefix: "Dyeing_Quarterly_Balance",
+    filePrefix: "Dyeing_Daily_Transaction",
   },
   aopOrder: {
     title: "AOP",
@@ -28,25 +28,26 @@ const ORDER_CONFIG = {
     ret: "AOP Return",
     received: "Received From AOP",
     finish: "AOP Finish Fabric Rcvd",
-    filePrefix: "AOP_Quarterly_Balance",
+    filePrefix: "AOP_Daily_Transaction",
   },
 };
 
 const getDetailColumns = (cfg) => [
   { header: "Date", key: "challanDate", width: 110 },
   { header: "Challan No", key: "challanNo", width: 120 },
+  { header: "Party / Factory", key: "party", width: 220 },
   { header: "Job No", key: "jobNo", width: 140 },
-  { header: "Composition", key: "composition", width: 270 },
-  { header: "Color", key: "color", width: 180 },
+  { header: "Composition", key: "composition", width: 260 },
+  { header: "Color", key: "color", width: 170 },
   { header: cfg.delivery, key: "yarnDelivery", width: 120 },
   { header: cfg.ret, key: "yarnReturn", width: 120 },
   { header: cfg.received, key: "greyFabricReceived", width: 130 },
   ...(cfg.finish ? [{ header: cfg.finish, key: "finishReceived", width: 140 }] : []),
-  { header: "Balance", key: "balance", width: 130 },
+  { header: "Net Movement", key: "net", width: 130 },
 ];
 
 const getXlDetailWidths = (cfg) => [
-  13, 14, 18, 34, 22, 15, 15, 17, ...(cfg.finish ? [20] : []), 16,
+  13, 14, 30, 18, 34, 22, 15, 15, 17, ...(cfg.finish ? [20] : []), 16,
 ];
 
 // ===================== THEME =====================
@@ -132,6 +133,7 @@ const getDayKey = (val) => {
   if (isNaN(d.getTime())) return "";
   return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
 };
+const localDayKey = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 
 const pickChallanDate = (source, parent) => {
   const primary = source?.deliveryDate || source?.challanDate || parent?.deliveryDate || parent?.challanDate;
@@ -139,30 +141,6 @@ const pickChallanDate = (source, parent) => {
   const last = source?.date || parent?.date || source?.challanDate || parent?.challanDate;
   if (last) return { date: normalizeDate(last), fallback: true };
   return { date: "", fallback: false };
-};
-
-const buildQuarter = (startYear, startMonth, fyStartMonth) => {
-  const qNo = Math.floor(((startMonth - fyStartMonth + 12) % 12) / 3) + 1;
-  let endMonth = startMonth + 2;
-  let endYear = startYear;
-  if (endMonth > 12) { endMonth -= 12; endYear += 1; }
-  let nextMonth = startMonth + 3;
-  let nextYear = startYear;
-  if (nextMonth > 12) { nextMonth -= 12; nextYear += 1; }
-  const fyStartYear = fyStartMonth === 1 ? startYear : startMonth >= fyStartMonth ? startYear : startYear - 1;
-  const label = fyStartMonth === 1 ? `Q${qNo} ${startYear}` : `Q${qNo} FY ${fyStartYear}-${pad2((fyStartYear + 1) % 100)}`;
-  const range = `${MONTH_SHORT[startMonth - 1]}'${String(startYear).slice(-2)} - ${MONTH_SHORT[endMonth - 1]}'${String(endYear).slice(-2)}`;
-  const start = `${startYear}-${pad2(startMonth)}-01`;
-  return { key: start, start, next: `${nextYear}-${pad2(nextMonth)}-01`, label, range, title: `${label} (${range})` };
-};
-
-const getQuarterOf = (dayKey, fyStartMonth) => {
-  const y = Number(dayKey.slice(0, 4));
-  const m = Number(dayKey.slice(5, 7));
-  const qIdx = Math.floor(((m - fyStartMonth + 12) % 12) / 3);
-  const startMonth = ((fyStartMonth - 1 + qIdx * 3) % 12) + 1;
-  const startYear = startMonth > m ? y - 1 : y;
-  return buildQuarter(startYear, startMonth, fyStartMonth);
 };
 
 const cleanFactoryName = (name) => String(name || "").replace(/\s+/g, " ").trim();
@@ -208,24 +186,25 @@ const splitRowByParty = (row, returnIndex) => {
   return [{ party: cleanFactoryName(row.toFactory) || cleanFactoryName(row.fromFactory) || "Unknown", row, usedFallback: true }];
 };
 
+const sumRows = (rows) => {
+  const t = { yarnDelivery: 0, yarnReturn: 0, greyFabricReceived: 0, finishReceived: 0, net: 0 };
+  rows.forEach((r) => {
+    t.yarnDelivery += Number(r.yarnDelivery) || 0;
+    t.yarnReturn += Number(r.yarnReturn) || 0;
+    t.greyFabricReceived += Number(r.greyFabricReceived) || 0;
+    t.finishReceived += Number(r.finishReceived) || 0;
+    t.net += balanceOf(r);
+  });
+  Object.keys(t).forEach((k) => { t[k] = round2(t[k]); });
+  return t;
+};
+
 // ===================== EXCEL HELPERS =====================
 const XL = { title: "FF1E293B", header: "FF657582", zebra: "FFF8FAFC", total: "FFF5D8C9", opening: "FFFEF9C3", closing: "FFD1FAE5", line: "FFCBD5E1", white: "FFFFFFFF", text: "FF0F172A" };
 const XL_NUM_FMT = '#,##0.00;[Red]-#,##0.00;"-"';
 const xlThin = { style: "thin", color: { argb: XL.line } };
 const xlBorder = { top: xlThin, left: xlThin, bottom: xlThin, right: xlThin };
 const xlFill = (argb) => ({ type: "pattern", pattern: "solid", fgColor: { argb } });
-
-const makeSheetName = (name, used) => {
-  const base = String(name || "Unknown").replace(/[\\/?*[\]:]/g, "-").replace(/^'+|'+$/g, "").trim().slice(0, 31) || "Unknown";
-  let finalName = base;
-  let i = 2;
-  while (used.has(finalName.toLowerCase())) {
-    const suffix = ` (${i++})`;
-    finalName = base.slice(0, 31 - suffix.length) + suffix;
-  }
-  used.add(finalName.toLowerCase());
-  return finalName;
-};
 
 const addTitleRow = (ws, text, colCount) => {
   ws.mergeCells(1, 1, 1, colCount);
@@ -275,21 +254,22 @@ const styleSpecialRow = (row, numericIdx, fillArgb, topMedium = false) => {
 };
 
 // ===================== COMPONENT =====================
-const QuarterlyBalance = () => {
+const DailyTransaction = () => {
   const [movements, setMovements] = useState([]);
   const [fetchError, setFetchError] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
-  
-  const [fyStartMonth, setFyStartMonth] = useState(1);
-  const [selectedQuarterKey, setSelectedQuarterKey] = useState("");
+
+  // Empty string = "auto" (latest date that has data)
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [selectedParty, setSelectedParty] = useState("ALL");
   const [view, setView] = useState("summary");
   const [isExporting, setIsExporting] = useState(false);
   const [fetchAll, setFetchAll] = useState(false);
-  
+
   // DEFAULT TO KNITTING ORDER
   const [selectOrderType, setSelectOrderType] = useState("knittingOrder");
-  
+
   const { fetchData, loading } = useFetchData();
 
   const cfg = ORDER_CONFIG[selectOrderType] || ORDER_CONFIG.knittingOrder;
@@ -297,24 +277,18 @@ const QuarterlyBalance = () => {
   const DETAIL_COLUMNS = useMemo(() => getDetailColumns(cfg), [cfg]);
 
   // ===================== SINGLE FETCH EFFECT =====================
-  // This runs on Mount (because selectOrderType is initialized) AND when dependencies change
   useEffect(() => {
     setFetchError(null);
-    setMovements([]); // Clear previous data immediately
-    
+    setMovements([]);
+
     const queryParams = new URLSearchParams();
     if (fetchAll) queryParams.append("fetchAll", "true");
     const queryString = queryParams.toString();
-    
+
     const url = `/api/challan-movement/${selectOrderType}${queryString ? "?" + queryString : ""}`;
-    
-    console.log(`Fetching data for: ${selectOrderType} from ${url}`);
 
     fetchData(url)
       .then((res) => {
-        console.log("API Response:", res);
-        
-        // Robust extraction
         let payload = [];
         if (Array.isArray(res)) payload = res;
         else if (res?.data && Array.isArray(res.data)) payload = res.data;
@@ -322,12 +296,7 @@ const QuarterlyBalance = () => {
         else if (Array.isArray(res?.rows)) payload = res.rows;
         else if (Array.isArray(res?.items)) payload = res.items;
         else if (res?.data?.rows && Array.isArray(res.data.rows)) payload = res.data.rows;
-        
-        console.log(`Loaded ${payload.length} records.`);
-        if (payload.length > 0) {
-           console.log("Sample Record:", payload[0]);
-        }
-        
+
         setMovements(payload);
       })
       .catch((err) => {
@@ -335,9 +304,7 @@ const QuarterlyBalance = () => {
         if (err?.response?.status === 403) setFetchError("Permission denied");
         else setFetchError(err?.response?.data?.message || err?.message || "Failed to load data");
       });
-      
-  }, [fetchData, selectOrderType, fetchAll, refreshKey]); 
-  // ^ Dependencies ensure it fires on mount (selectOrderType exists) and on changes
+  }, [fetchData, selectOrderType, fetchAll, refreshKey]);
 
   // ===================== DATA PROCESSING =====================
   const extractQty = (dv) => {
@@ -345,7 +312,7 @@ const QuarterlyBalance = () => {
       const num = Number(dv.deliveryQty);
       if (!isNaN(num)) return num;
     }
-    const fallbacks = ['totalQty', 'qty', 'quantity', 'weight', 'kg', 'amount'];
+    const fallbacks = ["totalQty", "qty", "quantity", "weight", "kg", "amount"];
     for (const f of fallbacks) {
       if (dv[f] !== undefined && dv[f] !== null) {
         const num = Number(dv[f]);
@@ -367,7 +334,6 @@ const QuarterlyBalance = () => {
     } else if (type === "greyfabricreceived" || type === "greigereceived" || type === "greyreceived" || type === "receivedfromaop" || type.includes("received") || type.includes("rcvd")) {
       row.greyFabricReceived += qty;
     } else {
-      // Default fallback
       row.greyFabricReceived += qty;
     }
 
@@ -410,12 +376,9 @@ const QuarterlyBalance = () => {
           rows.push(row);
         });
       } else if (item.challanNo !== undefined && item.challanNo !== null) {
-         // Handle items without nested deliveries array if necessary
-         // Assuming standard structure based on previous prompts, this block might be less used 
-         // but kept for safety
-         const row = makeRow(item.challanNo, jobNo, item.composition, item.color, item, null, item.id, item.id, factoryName);
-         applyDelivery(row, item);
-         rows.push(row);
+        const row = makeRow(item.challanNo, jobNo, item.composition, item.color, item, null, item.id, item.id, factoryName);
+        applyDelivery(row, item);
+        rows.push(row);
       }
     });
     return rows;
@@ -437,68 +400,80 @@ const QuarterlyBalance = () => {
     return { entries: list, undatedCount: undated, fallbackDateCount: fallbackDates, noFactoryNameCount: noFactoryName };
   }, [allRows]);
 
-  const quarterOptions = useMemo(() => {
+  // ---------- Date range (auto = latest date that has data) ----------
+  const latestDay = useMemo(() => entries.reduce((m, e) => (e.day > m ? e.day : m), ""), [entries]);
+
+  const { rangeFrom, rangeTo } = useMemo(() => {
+    let f = dateFrom || dateTo || latestDay;
+    let t = dateTo || dateFrom || latestDay;
+    if (f && t && f > t) [f, t] = [t, f];
+    return { rangeFrom: f, rangeTo: t };
+  }, [dateFrom, dateTo, latestDay]);
+
+  const periodText = !rangeFrom
+    ? "-"
+    : rangeFrom === rangeTo
+      ? formatShortDate(rangeFrom)
+      : `${formatShortDate(rangeFrom)} to ${formatShortDate(rangeTo)}`;
+
+  const rangeEntries = useMemo(() => {
+    if (!rangeFrom) return [];
+    return entries.filter((e) => e.day >= rangeFrom && e.day <= rangeTo);
+  }, [entries, rangeFrom, rangeTo]);
+
+  const partyOptions = useMemo(() => {
     const map = new Map();
-    entries.forEach((e) => {
-      const q = getQuarterOf(e.day, fyStartMonth);
-      if (!map.has(q.key)) map.set(q.key, q);
-    });
-    return [...map.values()].sort((a, b) => b.key.localeCompare(a.key));
-  }, [entries, fyStartMonth]);
+    rangeEntries.forEach((e) => { if (!map.has(e.partyKey)) map.set(e.partyKey, cleanFactoryName(e.party) || "Unknown"); });
+    return [...map.entries()].map(([key, name]) => ({ key, name })).sort((a, b) => a.name.localeCompare(b.name));
+  }, [rangeEntries]);
 
-  const activeQuarter = useMemo(() => quarterOptions.find((q) => q.key === selectedQuarterKey) || quarterOptions[0] || null, [quarterOptions, selectedQuarterKey]);
+  const activePartyValid = selectedParty === "ALL" || partyOptions.some((p) => p.key === selectedParty);
+  const visibleEntries = useMemo(
+    () => (selectedParty === "ALL" || !activePartyValid ? rangeEntries : rangeEntries.filter((e) => e.partyKey === selectedParty)),
+    [rangeEntries, selectedParty, activePartyValid]
+  );
 
-  const parties = useMemo(() => {
-    if (!activeQuarter) return [];
+  // ---------- Summary (party wise) ----------
+  const visibleParties = useMemo(() => {
     const groups = new Map();
-    entries.forEach((e) => {
-      if (e.day >= activeQuarter.next) return;
-      if (!groups.has(e.partyKey)) groups.set(e.partyKey, { key: e.partyKey, name: e.party, opening: 0, rows: [] });
-      const g = groups.get(e.partyKey);
-      if (e.day < activeQuarter.start) g.opening += balanceOf(e.row);
-      else g.rows.push({ ...e.row, dayKey: e.day });
+    visibleEntries.forEach((e) => {
+      if (!groups.has(e.partyKey)) groups.set(e.partyKey, { key: e.partyKey, name: cleanFactoryName(e.party) || "Unknown", rows: [] });
+      groups.get(e.partyKey).rows.push(e.row);
     });
-
     const result = [];
     groups.forEach((g) => {
-      const opening = round2(g.opening);
-      if (g.rows.length === 0 && isZero(opening)) return;
-      g.rows.sort((a, b) => {
-        if (a.dayKey !== b.dayKey) return a.dayKey < b.dayKey ? -1 : 1;
-        return String(a.challanNo).localeCompare(String(b.challanNo), undefined, { numeric: true });
-      });
-      let running = opening;
-      const tot = { yarnDelivery: 0, yarnReturn: 0, greyFabricReceived: 0, finishReceived: 0 };
-      const rows = g.rows.map((r) => {
-        running = round2(running + balanceOf(r));
-        tot.yarnDelivery += Number(r.yarnDelivery) || 0;
-        tot.yarnReturn += Number(r.yarnReturn) || 0;
-        tot.greyFabricReceived += Number(r.greyFabricReceived) || 0;
-        tot.finishReceived += Number(r.finishReceived) || 0;
-        return { ...r, balance: running };
-      });
-      result.push({
-        key: g.key, name: cleanFactoryName(g.name) || "Unknown", opening, rows,
-        yarnDelivery: round2(tot.yarnDelivery), yarnReturn: round2(tot.yarnReturn),
-        greyFabricReceived: round2(tot.greyFabricReceived), finishReceived: round2(tot.finishReceived),
-        closing: running, challans: new Set(rows.map((r) => String(r.challanNo))).size,
-      });
+      const t = sumRows(g.rows);
+      result.push({ ...g, ...t, challans: new Set(g.rows.map((r) => String(r.challanNo))).size });
     });
     return result.sort((a, b) => a.name.localeCompare(b.name));
-  }, [entries, activeQuarter]);
+  }, [visibleEntries]);
 
-  const visibleParties = useMemo(() => selectedParty === "ALL" ? parties : parties.filter((p) => p.key === selectedParty), [parties, selectedParty]);
-  const activePartyValid = selectedParty === "ALL" || parties.some((p) => p.key === selectedParty);
+  // ---------- Details (date wise) ----------
+  const dayGroups = useMemo(() => {
+    const map = new Map();
+    visibleEntries.forEach((e) => {
+      if (!map.has(e.day)) map.set(e.day, []);
+      map.get(e.day).push({ ...e.row, party: cleanFactoryName(e.party) || "Unknown", dayKey: e.day });
+    });
+    return [...map.keys()].sort().map((day) => {
+      const rows = map.get(day).sort((a, b) => {
+        const pc = a.party.localeCompare(b.party);
+        if (pc !== 0) return pc;
+        return String(a.challanNo).localeCompare(String(b.challanNo), undefined, { numeric: true });
+      }).map((r) => ({ ...r, net: round2(balanceOf(r)) }));
+      return { day, rows, ...sumRows(rows), challans: new Set(rows.map((r) => String(r.challanNo))).size };
+    });
+  }, [visibleEntries]);
 
   const grand = useMemo(() => {
-    const t = { opening: 0, yarnDelivery: 0, yarnReturn: 0, greyFabricReceived: 0, finishReceived: 0, closing: 0, challans: 0 };
-    visibleParties.forEach((p) => Object.keys(t).forEach((k) => { t[k] += Number(p[k]) || 0; }));
-    Object.keys(t).forEach((k) => { t[k] = round2(t[k]); });
-    return t;
-  }, [visibleParties]);
+    const t = sumRows(visibleEntries.map((e) => e.row));
+    const challans = new Set(visibleEntries.map((e) => `${e.day}|${e.row.challanNo}`)).size;
+    return { ...t, challans };
+  }, [visibleEntries]);
 
+  // ===================== EXPORT =====================
   const handleExport = async () => {
-    if (!activeQuarter || visibleParties.length === 0) { alert("No data to export."); return; }
+    if (!rangeFrom || visibleParties.length === 0) { alert("No data to export."); return; }
     setIsExporting(true);
     try {
       const mod = await import("exceljs");
@@ -506,86 +481,78 @@ const QuarterlyBalance = () => {
       const wb = new ExcelJS.Workbook();
       wb.creator = "Garments ERP";
       wb.created = new Date();
-      const periodText = `${activeQuarter.label}  (${activeQuarter.range})`;
+
+      // ---------- Summary Sheet ----------
       const summaryWs = wb.addWorksheet("Summary", { views: [{ state: "frozen", ySplit: 3, showGridLines: false }] });
-      const usedNames = new Set(["summary"]);
-      const colCount = DETAIL_COLUMNS.length;
-      const balanceIdx = colCount - 1;
-      const numericIdx = new Set(Array.from({ length: colCount - 5 }, (_, i) => i + 5));
-      const blankRow = () => Array(colCount).fill("");
+      const sumHeaders = ["Party / Factory", "Challans", cfg.delivery, cfg.ret, cfg.received, ...(hasFinish ? [cfg.finish] : []), "Net Movement"];
+      const sumNumeric = new Set(Array.from({ length: sumHeaders.length - 1 }, (_, i) => i + 1));
 
-      visibleParties.forEach((p) => {
-        const ws = wb.addWorksheet(makeSheetName(p.name, usedNames), { views: [{ state: "frozen", ySplit: 3, showGridLines: false }] });
-        addTitleRow(ws, `${p.name}  |  ${cfg.title} Quarterly Balance Confirmation  |  ${periodText}`, colCount);
-        addHeaderRow(ws, DETAIL_COLUMNS.map((c) => c.header), numericIdx);
-        const openVals = blankRow();
-        openVals[3] = "OPENING BALANCE (b/f from previous quarter)";
-        openVals[balanceIdx] = p.opening;
-        styleSpecialRow(ws.addRow(openVals), numericIdx, XL.opening);
-        p.rows.forEach((r, idx) => {
-          const row = ws.addRow([formatShortDate(r.challanDate), r.challanNo ?? "", r.jobNo === "-" ? "" : r.jobNo, r.composition === "-" ? "" : r.composition, r.color === "-" ? "" : r.color, Number(r.yarnDelivery) || 0, Number(r.yarnReturn) || 0, Number(r.greyFabricReceived) || 0, ...(hasFinish ? [Number(r.finishReceived) || 0] : []), r.balance]);
-          styleBodyRow(row, idx, numericIdx);
-        });
-        const totVals = blankRow();
-        totVals[3] = "QUARTER TOTAL";
-        totVals[5] = p.yarnDelivery; totVals[6] = p.yarnReturn; totVals[7] = p.greyFabricReceived;
-        if (hasFinish) totVals[8] = p.finishReceived;
-        styleSpecialRow(ws.addRow(totVals), numericIdx, XL.total, true);
-        const closeVals = blankRow();
-        closeVals[3] = "CLOSING BALANCE (next quarter opening)";
-        closeVals[balanceIdx] = p.closing;
-        styleSpecialRow(ws.addRow(closeVals), numericIdx, XL.closing);
-        
-        // Signatures
-        ws.addRow([]); ws.addRow([]);
-        const confRow1 = ws.addRow(["Balance as per our record (kg):", "", "", "", p.closing]);
-        const confRow2 = ws.addRow(["Balance confirmed by factory (kg):", "", "", "", ""]);
-        const confRow3 = ws.addRow(["Difference (kg):", "", "", "", { formula: `IF(E${confRow2.number}="","",E${confRow2.number}-E${confRow1.number})` }]);
-        [confRow1, confRow2, confRow3].forEach((r) => {
-            r.getCell(1).font = { bold: true, size: 10, name: "Calibri" };
-            r.getCell(5).numFmt = XL_NUM_FMT; r.getCell(5).border = xlBorder; r.getCell(5).alignment = { horizontal: "right" };
-        });
-        ws.addRow([]); ws.addRow([]);
-        const signRow = ws.addRow(["Prepared by: ____________", "", "", "Factory Representative (Name / Sign / Seal): ____________________", "", "", "", "Date: ____________"]);
-        signRow.font = { size: 10, name: "Calibri" };
-        
-        getXlDetailWidths(cfg).forEach((w, i) => { ws.getColumn(i + 1).width = w; });
-        ws.autoFilter = { from: { row: 3, column: 1 }, to: { row: 3, column: colCount } };
-        ws.pageSetup = { orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0 };
-      });
-
-      // Summary Sheet
-      const sumHeaders = ["Party / Factory", "Challans", "Opening Balance", cfg.delivery, cfg.ret, cfg.received, ...(hasFinish ? [cfg.finish] : []), "Closing Balance", "Confirmed by Factory", "Difference", "Remarks"];
-      const closingIdx = sumHeaders.indexOf("Closing Balance");
-      const confirmedIdx = closingIdx + 1;
-      const diffIdx = closingIdx + 2;
-      const sumNumeric = new Set(Array.from({ length: diffIdx }, (_, i) => i + 1));
-      const confL = summaryWs.getColumn(confirmedIdx + 1).letter;
-      const closL = summaryWs.getColumn(closingIdx + 1).letter;
-      
-      addTitleRow(summaryWs, `${cfg.title} Party Wise Quarterly Balance Summary  |  ${periodText}`, sumHeaders.length);
+      addTitleRow(summaryWs, `${cfg.title} Daily Transaction Summary  |  ${periodText}`, sumHeaders.length);
       addHeaderRow(summaryWs, sumHeaders, sumNumeric);
-      
+
       visibleParties.forEach((p, idx) => {
-        const row = summaryWs.addRow([p.name, p.challans, p.opening, p.yarnDelivery, p.yarnReturn, p.greyFabricReceived, ...(hasFinish ? [p.finishReceived] : []), p.closing, "", "", ""]);
-        const rn = row.number;
-        row.getCell(diffIdx + 1).value = { formula: `IF(${confL}${rn}="","",${confL}${rn}-${closL}${rn})` };
+        const row = summaryWs.addRow([p.name, p.challans, p.yarnDelivery, p.yarnReturn, p.greyFabricReceived, ...(hasFinish ? [p.finishReceived] : []), p.net]);
         styleBodyRow(row, idx, sumNumeric);
         row.getCell(2).numFmt = "#,##0";
       });
-      
-      const gRow = summaryWs.addRow(["GRAND TOTAL", grand.challans, grand.opening, grand.yarnDelivery, grand.yarnReturn, grand.greyFabricReceived, ...(hasFinish ? [grand.finishReceived] : []), grand.closing, "", "", ""]);
+
+      const gRow = summaryWs.addRow(["GRAND TOTAL", grand.challans, grand.yarnDelivery, grand.yarnReturn, grand.greyFabricReceived, ...(hasFinish ? [grand.finishReceived] : []), grand.net]);
       styleSpecialRow(gRow, sumNumeric, XL.total, true);
       gRow.getCell(2).numFmt = "#,##0";
-      [34, 11, 17, 16, 16, 18, ...(hasFinish ? [22] : []), 17, 20, 14, 30].forEach((w, i) => { summaryWs.getColumn(i + 1).width = w; });
+      [34, 11, 16, 16, 18, ...(hasFinish ? [22] : []), 17].forEach((w, i) => { summaryWs.getColumn(i + 1).width = w; });
       summaryWs.pageSetup = { orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0 };
+
+      // ---------- Daily Details Sheet ----------
+      const ws = wb.addWorksheet("Daily Details", { views: [{ state: "frozen", ySplit: 3, showGridLines: false }] });
+      const colCount = DETAIL_COLUMNS.length;
+      const netIdx = colCount - 1;
+      const numericIdx = new Set(Array.from({ length: colCount - 6 }, (_, i) => i + 6));
+      const blankRow = () => Array(colCount).fill("");
+
+      addTitleRow(ws, `${cfg.title} Daily Transaction Details  |  ${periodText}`, colCount);
+      addHeaderRow(ws, DETAIL_COLUMNS.map((c) => c.header), numericIdx);
+
+      dayGroups.forEach((d) => {
+        const dayVals = blankRow();
+        dayVals[0] = `${formatShortDate(d.day)}   (${d.challans} challan${d.challans === 1 ? "" : "s"})`;
+        styleSpecialRow(ws.addRow(dayVals), numericIdx, XL.opening);
+
+        d.rows.forEach((r, idx) => {
+          const row = ws.addRow([
+            formatShortDate(r.challanDate), r.challanNo ?? "", r.party,
+            r.jobNo === "-" ? "" : r.jobNo, r.composition === "-" ? "" : r.composition, r.color === "-" ? "" : r.color,
+            Number(r.yarnDelivery) || 0, Number(r.yarnReturn) || 0, Number(r.greyFabricReceived) || 0,
+            ...(hasFinish ? [Number(r.finishReceived) || 0] : []), r.net,
+          ]);
+          styleBodyRow(row, idx, numericIdx);
+        });
+
+        const totVals = blankRow();
+        totVals[4] = "DAY TOTAL";
+        totVals[6] = d.yarnDelivery; totVals[7] = d.yarnReturn; totVals[8] = d.greyFabricReceived;
+        if (hasFinish) totVals[9] = d.finishReceived;
+        totVals[netIdx] = d.net;
+        styleSpecialRow(ws.addRow(totVals), numericIdx, XL.total, true);
+        ws.addRow([]);
+      });
+
+      const grandVals = blankRow();
+      grandVals[4] = "GRAND TOTAL";
+      grandVals[6] = grand.yarnDelivery; grandVals[7] = grand.yarnReturn; grandVals[8] = grand.greyFabricReceived;
+      if (hasFinish) grandVals[9] = grand.finishReceived;
+      grandVals[netIdx] = grand.net;
+      styleSpecialRow(ws.addRow(grandVals), numericIdx, XL.closing, true);
+
+      getXlDetailWidths(cfg).forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+      ws.pageSetup = { orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0 };
 
       const buffer = await wb.xlsx.writeBuffer();
       const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.setAttribute("download", `${cfg.filePrefix}_${activeQuarter.label.replace(/[^A-Za-z0-9]+/g, "_")}_${new Date().toISOString().split("T")[0]}.xlsx`);
+      const dateTag = rangeFrom === rangeTo ? rangeFrom : `${rangeFrom}_to_${rangeTo}`;
+      link.setAttribute("download", `${cfg.filePrefix}_${dateTag}.xlsx`);
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -600,13 +567,18 @@ const QuarterlyBalance = () => {
 
   const handleSelectOrderType = (type) => {
     setSelectOrderType(type);
-    // Reset view specific states if needed, but fetching is handled by useEffect
+    setSelectedParty("ALL");
   };
+
+  const setQuickDate = (d) => { setDateFrom(d); setDateTo(d); setSelectedParty("ALL"); };
+  const goToday = () => setQuickDate(localDayKey(new Date()));
+  const goYesterday = () => { const d = new Date(); d.setDate(d.getDate() - 1); setQuickDate(localDayKey(d)); };
+  const goLatest = () => { setDateFrom(""); setDateTo(""); setSelectedParty("ALL"); };
 
   if (loading && movements.length === 0) {
     return (
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 60, color: theme.colors.textMuted, fontFamily: FONT_STACK }}>
-        <Loader size={24} className="animate-spin" style={{ marginRight: 10 }} /> Loading Knitting Data...
+        <Loader size={24} className="animate-spin" style={{ marginRight: 10 }} /> Loading {cfg.title} Data...
       </div>
     );
   }
@@ -620,7 +592,8 @@ const QuarterlyBalance = () => {
 
   const orderTypes = ["knittingOrder", "dyeingOrder", "aopOrder"];
   const negColor = (n) => (Number(n) < -0.005 ? { color: "#b91c1c" } : {});
-  const summaryHeaders = ["Party / Factory", "Challans", "Opening Balance", cfg.delivery, cfg.ret, cfg.received, ...(hasFinish ? [cfg.finish] : []), "Closing Balance"];
+  const summaryHeaders = ["Party / Factory", "Challans", cfg.delivery, cfg.ret, cfg.received, ...(hasFinish ? [cfg.finish] : []), "Net Movement"];
+  const labelSpan = 6; // Date, Challan, Party, Job, Composition, Color
 
   return (
     <div style={{ width: "100%", padding: 24, fontFamily: FONT_STACK, color: theme.colors.textMain }}>
@@ -634,20 +607,19 @@ const QuarterlyBalance = () => {
 
       <div style={{ display: "flex", gap: 10, marginBottom: 16, alignItems: "center", flexWrap: "wrap" }}>
         <Calendar size={18} color={theme.colors.textMain} />
-        <select value={fyStartMonth} onChange={(e) => setFyStartMonth(Number(e.target.value))} style={selectStyle} title="Quarter type">
-          <option value={1}>Calendar Quarter (Jan-Dec)</option>
-          <option value={7}>Fiscal Quarter (Jul-Jun)</option>
-        </select>
-        <select value={activeQuarter?.key || ""} onChange={(e) => setSelectedQuarterKey(e.target.value)} style={{ ...selectStyle, minWidth: 230 }} title="Quarter">
-          {quarterOptions.length === 0 && <option value="">No quarters</option>}
-          {quarterOptions.map((q) => (<option key={q.key} value={q.key}>{q.title}</option>))}
-        </select>
+        <label style={{ fontSize: "0.8rem", fontWeight: 600 }}>From</label>
+        <input type="date" value={rangeFrom || ""} onChange={(e) => { setDateFrom(e.target.value); setSelectedParty("ALL"); }} style={selectStyle} title="From challan date" />
+        <label style={{ fontSize: "0.8rem", fontWeight: 600 }}>To</label>
+        <input type="date" value={rangeTo || ""} onChange={(e) => { setDateTo(e.target.value); setSelectedParty("ALL"); }} style={selectStyle} title="To challan date" />
+        <button style={toolbarBtn(false)} onClick={goToday} title="Show today's challans">Today</button>
+        <button style={toolbarBtn(false)} onClick={goYesterday} title="Show yesterday's challans">Yesterday</button>
+        <button style={toolbarBtn(false)} onClick={goLatest} title="Jump to the latest date that has data">Latest</button>
         <select value={activePartyValid ? selectedParty : "ALL"} onChange={(e) => setSelectedParty(e.target.value)} style={{ ...selectStyle, minWidth: 200 }} title="Party">
-          <option value="ALL">All Parties ({parties.length})</option>
-          {parties.map((p) => (<option key={p.key} value={p.key}>{p.name}</option>))}
+          <option value="ALL">All Parties ({partyOptions.length})</option>
+          {partyOptions.map((p) => (<option key={p.key} value={p.key}>{p.name}</option>))}
         </select>
-        <button style={toolbarBtn(view === "summary")} onClick={() => setView("summary")}>Party Summary</button>
-        <button style={toolbarBtn(view === "detail")} onClick={() => setView("detail")}>Challan Detail</button>
+        <button style={toolbarBtn(view === "summary")} onClick={() => setView("summary")}>Summary</button>
+        <button style={toolbarBtn(view === "detail")} onClick={() => setView("detail")}>Details</button>
         <div style={{ flex: 1 }} />
         <button style={toolbarBtn(false, loading)} onClick={() => setRefreshKey((k) => k + 1)} disabled={loading} title="Reload data">
           {loading ? <Loader size={16} className="animate-spin" /> : <RefreshCw size={16} />} Refresh
@@ -657,12 +629,12 @@ const QuarterlyBalance = () => {
         </button>
       </div>
 
-      {activeQuarter && (
+      {rangeFrom && (
         <div style={{ marginBottom: 12, padding: "10px 16px", background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: theme.radius, display: "flex", flexWrap: "wrap", gap: 16, fontSize: "0.875rem", color: "#065f46" }}>
-          <strong>{activeQuarter.title}</strong>
+          <strong>{cfg.title} Daily Transaction: {periodText}</strong>
           <span>{visibleParties.length} part{visibleParties.length === 1 ? "y" : "ies"}</span>
-          <span>Opening = auto carried from all previous quarters</span>
-          <span>Balance = {cfg.delivery} - {cfg.ret} - {cfg.received}</span>
+          <span>{dayGroups.length} day{dayGroups.length === 1 ? "" : "s"} with challans</span>
+          <span>Net Movement = {cfg.delivery} - {cfg.ret} - {cfg.received}</span>
           {hasFinish && !FINISH_IN_BALANCE && <span>{cfg.finish} is shown for information</span>}
         </div>
       )}
@@ -678,36 +650,34 @@ const QuarterlyBalance = () => {
 
       {view === "summary" && (
         <div style={{ width: "100%", maxHeight: "calc(100vh - 300px)", overflow: "auto", border: `1px solid ${theme.colors.border}`, borderRadius: theme.radius, boxShadow: theme.shadows.md, background: theme.colors.white }}>
-          <table style={{ width: "100%", minWidth: 1000, borderCollapse: "separate", borderSpacing: 0, tableLayout: "fixed" }}>
+          <table style={{ width: "100%", minWidth: 900, borderCollapse: "separate", borderSpacing: 0, tableLayout: "fixed" }}>
             <thead>
               <tr>{summaryHeaders.map((h, i) => (<th key={`${h}-${i}`} style={{ ...thStickyStyle, width: i === 0 ? 260 : 130 }}>{h}</th>))}</tr>
             </thead>
             <tbody>
               {visibleParties.map((p, idx) => (
-                <tr key={p.key} style={{ cursor: "pointer" }} onClick={() => { setSelectedParty(p.key); setView("detail"); }} title="Click to see challan detail">
+                <tr key={p.key} style={{ cursor: "pointer" }} onClick={() => { setSelectedParty(p.key); setView("detail"); }} title="Click to see details">
                   <td style={{ ...cellStyle, textAlign: "left", fontWeight: 600, background: idx % 2 === 0 ? "#fff" : "#fafbfc" }}>{p.name}</td>
                   <td style={{ ...cellStyle, background: idx % 2 === 0 ? "#fff" : "#fafbfc" }}>{p.challans}</td>
-                  <td style={{ ...cellStyle, fontVariantNumeric: "tabular-nums", background: "#fef9c3", ...negColor(p.opening) }}>{fmt(p.opening)}</td>
                   <td style={{ ...cellStyle, fontVariantNumeric: "tabular-nums", background: idx % 2 === 0 ? "#fff" : "#fafbfc" }}>{fmt(p.yarnDelivery)}</td>
                   <td style={{ ...cellStyle, fontVariantNumeric: "tabular-nums", background: idx % 2 === 0 ? "#fff" : "#fafbfc" }}>{fmt(p.yarnReturn)}</td>
                   <td style={{ ...cellStyle, fontVariantNumeric: "tabular-nums", background: idx % 2 === 0 ? "#fff" : "#fafbfc" }}>{fmt(p.greyFabricReceived)}</td>
                   {hasFinish && <td style={{ ...cellStyle, fontVariantNumeric: "tabular-nums", background: idx % 2 === 0 ? "#fff" : "#fafbfc" }}>{fmt(p.finishReceived)}</td>}
-                  <td style={{ ...cellStyle, fontVariantNumeric: "tabular-nums", fontWeight: 700, background: "#d1fae5", ...negColor(p.closing) }}>{fmt(p.closing)}</td>
+                  <td style={{ ...cellStyle, fontVariantNumeric: "tabular-nums", fontWeight: 700, background: "#d1fae5", ...negColor(p.net) }}>{fmt(p.net)}</td>
                 </tr>
               ))}
-              {visibleParties.length === 0 && <tr><td colSpan={summaryHeaders.length} style={{ ...cellStyle, padding: 40 }}>No data for this quarter.</td></tr>}
+              {visibleParties.length === 0 && <tr><td colSpan={summaryHeaders.length} style={{ ...cellStyle, padding: 40 }}>No transaction for this date.</td></tr>}
             </tbody>
             {visibleParties.length > 0 && (
               <tfoot>
                 <tr>
                   <td style={{ ...tfootCellStyle, textAlign: "left", textTransform: "uppercase", fontSize: "0.75rem", letterSpacing: "0.05em" }}>Grand Total</td>
                   <td style={tfootCellStyle}>{grand.challans}</td>
-                  <td style={tfootCellStyle}>{fmt(grand.opening)}</td>
                   <td style={tfootCellStyle}>{fmt(grand.yarnDelivery)}</td>
                   <td style={tfootCellStyle}>{fmt(grand.yarnReturn)}</td>
                   <td style={tfootCellStyle}>{fmt(grand.greyFabricReceived)}</td>
                   {hasFinish && <td style={tfootCellStyle}>{fmt(grand.finishReceived)}</td>}
-                  <td style={tfootCellStyle}>{fmt(grand.closing)}</td>
+                  <td style={tfootCellStyle}>{fmt(grand.net)}</td>
                 </tr>
               </tfoot>
             )}
@@ -717,29 +687,26 @@ const QuarterlyBalance = () => {
 
       {view === "detail" && (
         <div style={{ width: "100%", maxHeight: "calc(100vh - 300px)", overflow: "auto", border: `1px solid ${theme.colors.border}`, borderRadius: theme.radius, boxShadow: theme.shadows.md, background: theme.colors.white }}>
-          <table style={{ width: "100%", minWidth: 1400, borderCollapse: "separate", borderSpacing: 0, tableLayout: "fixed" }}>
+          <table style={{ width: "100%", minWidth: 1500, borderCollapse: "separate", borderSpacing: 0, tableLayout: "fixed" }}>
             <thead>
               <tr>{DETAIL_COLUMNS.map((c) => (<th key={c.key} style={{ ...thStickyStyle, width: c.width }}>{c.header}</th>))}</tr>
             </thead>
             <tbody>
-              {visibleParties.map((p) => (
-                <React.Fragment key={p.key}>
+              {dayGroups.map((d) => (
+                <React.Fragment key={d.day}>
                   <tr>
                     <td colSpan={DETAIL_COLUMNS.length} style={{ ...cellStyle, textAlign: "left", background: theme.colors.bgHeader, fontWeight: 700, fontSize: "0.95rem", padding: "12px 16px" }}>
-                      {p.name}<span style={{ fontWeight: 500, fontSize: "0.8rem", marginLeft: 12 }}>{p.challans} challan(s)</span>
+                      {formatShortDate(d.day)}<span style={{ fontWeight: 500, fontSize: "0.8rem", marginLeft: 12 }}>{d.challans} challan(s)</span>
                     </td>
                   </tr>
-                  <tr>
-                    <td colSpan={DETAIL_COLUMNS.length - 1} style={{ ...cellStyle, textAlign: "right", background: "#fef9c3", fontWeight: 700 }}>Opening Balance (b/f from previous quarter)</td>
-                    <td style={{ ...cellStyle, background: "#fef9c3", fontWeight: 700, fontVariantNumeric: "tabular-nums", ...negColor(p.opening) }}>{fmt(p.opening)}</td>
-                  </tr>
-                  {p.rows.map((r, idx) => {
+                  {d.rows.map((r, idx) => {
                     const bg = idx % 2 === 0 ? theme.colors.white : "#fafbfc";
                     const base = { ...cellStyle, background: bg };
                     return (
-                      <tr key={`${p.key}-${r.rowKey}-${idx}`}>
+                      <tr key={`${d.day}-${r.rowKey}-${idx}`}>
                         <td style={base}><span style={{ fontVariantNumeric: "tabular-nums", fontSize: "0.8rem" }}>{formatShortDate(r.challanDate)}</span></td>
                         <td style={base}>{r.challanNo}</td>
+                        <td style={{ ...base, textAlign: "left", fontWeight: 600 }}>{r.party}</td>
                         <td style={{ ...base, fontWeight: 500 }}>{r.jobNo}</td>
                         <td style={base}>{r.composition}</td>
                         <td style={base}>{r.color && r.color !== "-" ? <span style={{ display: "inline-block", padding: "2px 10px", borderRadius: 12, background: "#f1f5f9", fontSize: "0.8rem", fontWeight: 500 }}>{r.color}</span> : "-"}</td>
@@ -747,28 +714,35 @@ const QuarterlyBalance = () => {
                         <td style={{ ...base, fontVariantNumeric: "tabular-nums" }}>{fmt(r.yarnReturn)}</td>
                         <td style={{ ...base, fontVariantNumeric: "tabular-nums" }}>{fmt(r.greyFabricReceived)}</td>
                         {hasFinish && <td style={{ ...base, fontVariantNumeric: "tabular-nums" }}>{fmt(r.finishReceived)}</td>}
-                        <td style={{ ...base, fontVariantNumeric: "tabular-nums", fontWeight: 600, ...negColor(r.balance) }}>{fmt(r.balance)}</td>
+                        <td style={{ ...base, fontVariantNumeric: "tabular-nums", fontWeight: 600, ...negColor(r.net) }}>{fmt(r.net)}</td>
                       </tr>
                     );
                   })}
-                  {p.rows.length === 0 && <tr><td colSpan={DETAIL_COLUMNS.length} style={{ ...cellStyle, opacity: 0.6 }}>No challan in this quarter (opening balance only)</td></tr>}
                   <tr>
-                    <td colSpan={5} style={{ ...cellStyle, textAlign: "right", background: "#f5d8c9", fontWeight: 700 }}>Quarter Total</td>
-                    <td style={{ ...cellStyle, background: "#f5d8c9", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{fmt(p.yarnDelivery)}</td>
-                    <td style={{ ...cellStyle, background: "#f5d8c9", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{fmt(p.yarnReturn)}</td>
-                    <td style={{ ...cellStyle, background: "#f5d8c9", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{fmt(p.greyFabricReceived)}</td>
-                    {hasFinish && <td style={{ ...cellStyle, background: "#f5d8c9", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{fmt(p.finishReceived)}</td>}
-                    <td style={{ ...cellStyle, background: "#f5d8c9" }} />
-                  </tr>
-                  <tr>
-                    <td colSpan={DETAIL_COLUMNS.length - 1} style={{ ...cellStyle, textAlign: "right", background: "#d1fae5", fontWeight: 700 }}>Closing Balance (next quarter opening)</td>
-                    <td style={{ ...cellStyle, background: "#d1fae5", fontWeight: 800, fontVariantNumeric: "tabular-nums", ...negColor(p.closing) }}>{fmt(p.closing)}</td>
+                    <td colSpan={labelSpan} style={{ ...cellStyle, textAlign: "right", background: "#f5d8c9", fontWeight: 700 }}>Day Total</td>
+                    <td style={{ ...cellStyle, background: "#f5d8c9", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{fmt(d.yarnDelivery)}</td>
+                    <td style={{ ...cellStyle, background: "#f5d8c9", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{fmt(d.yarnReturn)}</td>
+                    <td style={{ ...cellStyle, background: "#f5d8c9", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{fmt(d.greyFabricReceived)}</td>
+                    {hasFinish && <td style={{ ...cellStyle, background: "#f5d8c9", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{fmt(d.finishReceived)}</td>}
+                    <td style={{ ...cellStyle, background: "#d1fae5", fontWeight: 800, fontVariantNumeric: "tabular-nums", ...negColor(d.net) }}>{fmt(d.net)}</td>
                   </tr>
                   <tr><td colSpan={DETAIL_COLUMNS.length} style={{ height: 14, border: "none", background: "#fff" }} /></tr>
                 </React.Fragment>
               ))}
-              {visibleParties.length === 0 && <tr><td colSpan={DETAIL_COLUMNS.length} style={{ ...cellStyle, padding: 40 }}>No data for this quarter.</td></tr>}
+              {dayGroups.length === 0 && <tr><td colSpan={DETAIL_COLUMNS.length} style={{ ...cellStyle, padding: 40 }}>No transaction for this date.</td></tr>}
             </tbody>
+            {dayGroups.length > 0 && (
+              <tfoot>
+                <tr>
+                  <td colSpan={labelSpan} style={{ ...tfootCellStyle, textAlign: "right", textTransform: "uppercase", fontSize: "0.75rem", letterSpacing: "0.05em" }}>Grand Total</td>
+                  <td style={tfootCellStyle}>{fmt(grand.yarnDelivery)}</td>
+                  <td style={tfootCellStyle}>{fmt(grand.yarnReturn)}</td>
+                  <td style={tfootCellStyle}>{fmt(grand.greyFabricReceived)}</td>
+                  {hasFinish && <td style={tfootCellStyle}>{fmt(grand.finishReceived)}</td>}
+                  <td style={tfootCellStyle}>{fmt(grand.net)}</td>
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
       )}
@@ -776,4 +750,4 @@ const QuarterlyBalance = () => {
   );
 };
 
-export default QuarterlyBalance;
+export default DailyTransaction;

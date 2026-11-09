@@ -98,25 +98,11 @@ jobs:
           $cargo = Get-Content "src-tauri/Cargo.toml" -Raw
           $version = [string]$config.version
           if ($package.version -ne $version) {
-            throw "package.json version ($($package.version)) does not match Tauri version ($version)."
+            throw "package.json version does not match Tauri version $version."
           }
-          if ($cargo -notmatch ('(?m)^version\s*=\s*"' + [regex]::Escape($version) + '"\s*
-      - name: Build and publish Tauri application
-        uses: tauri-apps/tauri-action@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', steps.app_version.outputs.version) }}
-          releaseName: "SM Sourcing ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', steps.app_version.outputs.version) }}"
-          releaseBody: "SM Sourcing Desktop release. Download the Windows MSI installer from the assets below."
-          releaseDraft: false
-          prerelease: false
-          uploadUpdaterJson: true
-          uploadUpdaterSignatures: true
-)) {
-            throw "Cargo.toml package version does not match Tauri version ($version)."
+          $cargoVersionLine = $cargo -split "\r?\n" | Where-Object { $_ -match "^\s*version\s*=" } | Select-Object -First 1
+          if ($cargoVersionLine -notmatch [regex]::Escape('version = "' + $version + '"')) {
+            throw "Cargo.toml package version does not match Tauri version $version."
           }
           if ("${{ github.ref_type }}" -eq "tag" -and "${{ github.ref_name }}" -ne "v$version") {
             throw "Git tag ${{ github.ref_name }} does not match application version v$version."

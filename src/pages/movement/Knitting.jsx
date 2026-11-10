@@ -29,14 +29,13 @@ const SEARCH_PAGE_SIZE = 30;
 
 // ===== MEMORY-SAFE LOADING CONFIG =====
 const LIST_URL = "/api/challan-movement/knittingOrder";
-const OPTIONS_URL = "/api/challan-filter-options/knittingOrder";
 
 // Compositions per request while scrolling (~10 table rows each, so a few hundred rows per request)
 const PAGE_LIMIT = 25;
 // HARD LIMIT of table rows kept in the browser. When reached, loading stops and the user is asked
 // to narrow the data with filters / month / search. This is what keeps RAM bounded.
 const MAX_LOADED_ROWS = 5000;
-// Excel export pulls the filtered data in bigger chunks (not kept in React state) up to this many rows
+// Excel export pulls the data in bigger chunks (not kept in React state) up to this many rows
 const EXPORT_PAGE_LIMIT = 100;
 const EXPORT_MAX_ROWS = 60000;
 
@@ -125,7 +124,7 @@ const pageButtonStyle = (active) => ({
 });
 
 // noFilter: true  => no header filter button.
-// Filters run on the SERVER, so only plain stored columns can be filtered
+// Column filters run in the BROWSER on the loaded rows, so only the plain text columns have one
 // (date has its own Month'Year filter; quantities / price / billing are calculated values).
 const tableHeader = [
     { header: "", width: "50px", key: "select", noFilter: true },
@@ -366,64 +365,55 @@ const buildRows = (movements) => {
 };
 // ===== END ROW BUILDING =====
 
-// ===== SERVER-SIDE COLUMN FILTERS =====
-// Same shape the old client-side filter hook had, but the filter values and the filtering itself
-// live on the server: nothing has to be loaded in the browser to build a dropdown or apply a filter.
-const useServerFilters = (axiosRef) => {
+// ===== FRONTEND COLUMN FILTER HELPERS =====
+// Column filters are applied in the browser on the rows that are already loaded.
+// filters = { columnKey: [selected values as strings] }
+const cellFilterValue = (row, key) => {
+    const v = row?.[key];
+    return v === null || v === undefined ? '' : String(v);
+};
+
+// Keeps only the rows that match every column filter (optionally ignoring one column)
+const applyColumnFilters = (rows, filters, ignoreKey = null) => {
+    const keys = Object.keys(filters || {}).filter((k) => k !== ignoreKey && Array.isArray(filters[k]) && filters[k].length > 0);
+    if (keys.length === 0) return rows;
+    const sets = keys.map((k) => [k, new Set(filters[k])]);
+    return rows.filter((row) => sets.every(([k, set]) => set.has(cellFilterValue(row, k))));
+};
+
+// Max number of values shown in the dropdown list at once (type in the search box to narrow it)
+const MAX_FILTER_OPTIONS_SHOWN = 200;
+// ===== END FRONTEND COLUMN FILTER HELPERS =====
+
+// ===== COLUMN FILTER STATE (frontend) =====
+// The values of the dropdown are NOT loaded from the server: the component builds them from the loaded rows.
+const useColumnFilters = () => {
     const [filters, setFilters] = useState({});
     const [openFilterKey, setOpenFilterKey] = useState(null);
     const [draftSelected, setDraftSelected] = useState(new Set());
-    const [filterSearch, setFilterSearchState] = useState("");
-    const [filterOptions, setFilterOptions] = useState([]);
-    const [optionsLoading, setOptionsLoading] = useState(false);
+    // values that were already applied when the dropdown was opened: kept in a FIXED order at the top
+    // of the list so ticking / unticking a value never makes the list jump around or items vanish
+    const [pinnedValues, setPinnedValues] = useState([]);
+    const [filterSearch, setFilterSearch] = useState("");
 
     const dropdownRef = useRef(null);
-    const reqRef = useRef(0);
-    const timerRef = useRef(null);
     const openKeyRef = useRef(null);
     openKeyRef.current = openFilterKey;
 
-    const fetchOptions = useCallback(async (key, q) => {
-        const id = ++reqRef.current;
-        setOptionsLoading(true);
-        try {
-            const res = await axiosRef.current.get(OPTIONS_URL, { params: { field: key, q } });
-            if (id !== reqRef.current) return;
-            const list = Array.isArray(res?.data?.data) ? res.data.data : [];
-            setFilterOptions(list.map(String));
-        } catch (err) {
-            if (id === reqRef.current) setFilterOptions([]);
-            console.error("Failed to load filter options:", err);
-        } finally {
-            if (id === reqRef.current) setOptionsLoading(false);
-        }
-    }, [axiosRef]);
-
     const closeFilter = useCallback(() => {
-        reqRef.current += 1;
-        if (timerRef.current) clearTimeout(timerRef.current);
         setOpenFilterKey(null);
-        setFilterSearchState("");
-        setFilterOptions([]);
-        setOptionsLoading(false);
+        setFilterSearch("");
+        setPinnedValues([]);
     }, []);
 
     const openFilter = useCallback((key) => {
         if (openKeyRef.current === key) { closeFilter(); return; }
+        const applied = (filters[key] || []).map(String);
         setOpenFilterKey(key);
-        setDraftSelected(new Set(filters[key] || []));
-        setFilterSearchState("");
-        setFilterOptions([]);
-        fetchOptions(key, "");
-    }, [filters, fetchOptions, closeFilter]);
-
-    const setFilterSearch = useCallback((q) => {
-        setFilterSearchState(q);
-        if (timerRef.current) clearTimeout(timerRef.current);
-        timerRef.current = setTimeout(() => {
-            if (openKeyRef.current) fetchOptions(openKeyRef.current, q.trim());
-        }, 250);
-    }, [fetchOptions]);
+        setDraftSelected(new Set(applied));
+        setPinnedValues(applied);
+        setFilterSearch("");
+    }, [filters, closeFilter]);
 
     const toggleDraftValue = useCallback((val) => {
         setDraftSelected((prev) => {
@@ -469,15 +459,13 @@ const useServerFilters = (axiosRef) => {
         return () => document.removeEventListener("mousedown", handleClick);
     }, [openFilterKey, closeFilter]);
 
-    useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
-
     return {
-        filters, openFilterKey, draftSelected, filterSearch, dropdownRef,
-        filterOptions, optionsLoading, setFilterSearch, openFilter,
+        filters, openFilterKey, draftSelected, pinnedValues, filterSearch, dropdownRef,
+        setFilterSearch, openFilter,
         toggleDraftValue, applyFilter, clearFilter, clearAllFilters,
     };
 };
-// ===== END SERVER-SIDE COLUMN FILTERS =====
+// ===== END COLUMN FILTER STATE =====
 
 // ===== EXCEL EXPORT CONFIG =====
 // Which factory sheet each quantity goes to (strict, no borrowing from the other factory):
@@ -638,7 +626,9 @@ const styleTotalRow = (row, numericIdx) => {
 };
 // ===== END EXCEL EXPORT CONFIG =====
 
-const FILTER_DROPDOWN_WIDTH = 270;
+// compact filter dropdown size
+const FILTER_DROPDOWN_WIDTH = 230;
+const FILTER_DROPDOWN_MAX_HEIGHT = 280;
 
 const Knitting = () => {
     // --- ALL STATE AT TOP LEVEL ---
@@ -657,7 +647,7 @@ const Knitting = () => {
     const tableScrollRef = useRef(null);
 
     // ===== PAGED LOADING STATE =====
-    const [initialLoading, setInitialLoading] = useState(true);   // first page of the current filters not received yet
+    const [initialLoading, setInitialLoading] = useState(true);   // first page of the current query not received yet
     const [loadingMore, setLoadingMore] = useState(false);
     const [hasMore, setHasMore] = useState(false);
     const [loadError, setLoadError] = useState(null);             // a later page failed (Retry resumes)
@@ -715,10 +705,10 @@ const Knitting = () => {
     axiosRef.current = axiosPrivate;
 
     const {
-        filters, openFilterKey, draftSelected, filterSearch, dropdownRef,
-        filterOptions, optionsLoading, setFilterSearch, openFilter,
+        filters, openFilterKey, draftSelected, pinnedValues, filterSearch, dropdownRef,
+        setFilterSearch, openFilter,
         toggleDraftValue, applyFilter, clearFilter, clearAllFilters,
-    } = useServerFilters(axiosRef);
+    } = useColumnFilters();
 
     const appliedMonthsKey = appliedMonthNames.join(',');
     // normal list mode = no challan/job text and no delivery-month search applied
@@ -726,17 +716,31 @@ const Knitting = () => {
 
     const filtersKey = JSON.stringify(filters || {});
     const selectedMonthsKey = [...selectedMonths].sort().join(',');
-    queryRef.current = { filtersKey, monthsKey: selectedMonthsKey };
+    // column filters are applied in the browser, so they are NOT sent to the server
+    queryRef.current = { filtersKey: '{}', monthsKey: selectedMonthsKey };
 
     // Rows built from the loaded records (bounded by MAX_LOADED_ROWS)
     const allRows = useMemo(() => buildRows(movements), [movements]);
-    const filteredRows = allRows; // filtering happens on the server now
+    // Column filters work on the loaded rows (frontend). Challan/job/month search results are not column-filtered.
+    const filteredRows = useMemo(
+        () => (searchActive ? allRows : applyColumnFilters(allRows, filters)),
+        [allRows, filters, searchActive]
+    );
 
     const capReached = hasMore && allRows.length >= MAX_LOADED_ROWS;
     hasMoreRef.current = hasMore;
     capRef.current = capReached;
     searchActiveRef.current = searchActive;
     loadErrorRef.current = loadError;
+
+    // Values of the open column filter, taken from the loaded rows (and the other active column filters)
+    const columnOptions = useMemo(() => {
+        if (!openFilterKey) return [];
+        const base = applyColumnFilters(allRows, filters, openFilterKey);
+        const seen = new Set();
+        base.forEach((row) => { seen.add(cellFilterValue(row, openFilterKey)); });
+        return [...seen].sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+    }, [openFilterKey, allRows, filters]);
 
     const updateDropdownPosition = useCallback(() => {
         if (!openFilterKey) return;
@@ -746,26 +750,35 @@ const Knitting = () => {
         const width = FILTER_DROPDOWN_WIDTH;
         let left = rect.right - width;
         left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
-        const estimatedHeight = 360;
-        let top = rect.bottom + 8;
+        const estimatedHeight = 260;
+        let top = rect.bottom + 6;
         if (top + estimatedHeight > window.innerHeight - 8) {
-            const aboveTop = rect.top - estimatedHeight - 8;
+            const aboveTop = rect.top - estimatedHeight - 6;
             top = aboveTop > 8 ? aboveTop : Math.max(8, window.innerHeight - estimatedHeight - 8);
         }
-        setDropdownPos({ top, left, width });
+        // only update state when the position really changed (avoids pointless re-renders)
+        setDropdownPos((prev) => (
+            prev && prev.top === top && prev.left === left && prev.width === width
+                ? prev
+                : { top, left, width }
+        ));
     }, [openFilterKey]);
 
     useLayoutEffect(() => {
         if (!openFilterKey) { setDropdownPos(null); return; }
         updateDropdownPosition();
-        const handler = () => updateDropdownPosition();
+        const handler = (e) => {
+            // scrolling the value list INSIDE the dropdown must not reposition / re-render the dropdown
+            if (e && e.type === 'scroll' && dropdownRef.current && e.target instanceof Node && dropdownRef.current.contains(e.target)) return;
+            updateDropdownPosition();
+        };
         window.addEventListener('scroll', handler, true);
         window.addEventListener('resize', handler);
         return () => {
             window.removeEventListener('scroll', handler, true);
             window.removeEventListener('resize', handler);
         };
-    }, [openFilterKey, updateDropdownPosition]);
+    }, [openFilterKey, updateDropdownPosition, dropdownRef]);
 
     // Month'Year options for the challan-date filter (the server applies it)
     const monthOptions = RECENT_MONTH_KEYS;
@@ -818,7 +831,7 @@ const Knitting = () => {
         setLoadingMore(false);
     }, []);
 
-    // Loads ONE page. replace=true starts a new list (first page of the current filters).
+    // Loads ONE page. replace=true starts a new list (first page of the current query).
     const fetchPage = useCallback(async (gen, cursor, replace) => {
         if (loadingRef.current && !replace) return;
         loadingRef.current = true;
@@ -870,7 +883,7 @@ const Knitting = () => {
         fetchPage(genRef.current, cursorRef.current, false);
     }, [fetchPage]);
 
-    // (Re)start the list whenever the server-side query changes
+    // (Re)start the list whenever the server-side query changes (column filters are frontend only)
     useEffect(() => {
         if (!listMode) return; // a challan/job/month search owns the table right now
         cancelLoad();
@@ -882,15 +895,21 @@ const Knitting = () => {
         setLoadError(null);
         setInitialLoading(true);
         fetchPage(gen, null, true);
-    }, [listMode, refreshKey, filtersKey, selectedMonthsKey, cancelLoad, fetchPage]);
+    }, [listMode, refreshKey, selectedMonthsKey, cancelLoad, fetchPage]);
 
     // stop everything when the page is left
     useEffect(() => () => cancelLoad(), [cancelLoad]);
 
-    // content shorter than the box (or after a page arrives): keep loading until it is filled / capped
+    // content shorter than the box (or after a page arrives / a column filter changes): keep loading until it is filled / capped
     useEffect(() => {
         maybeLoadMore();
-    }, [allRows.length, hasMore, loadingMore, loadError, maybeLoadMore]);
+    }, [allRows.length, filteredRows.length, hasMore, loadingMore, loadError, maybeLoadMore]);
+
+    // a column filter changed: go back to the top of the table
+    useEffect(() => {
+        if (tableScrollRef.current) tableScrollRef.current.scrollTop = 0;
+        setViewport((v) => (v.top === 0 ? v : { ...v, top: 0 }));
+    }, [filtersKey]);
 
     const retryLoad = () => {
         setLoadError(null);
@@ -1261,8 +1280,8 @@ const Knitting = () => {
 
     // ===== EXCEL EXPORT: one sheet per factory + Summary sheet =====
     // Delivery -> To Factory, Return / Greige -> From Factory (factory-to-factory transfer rule: see EXPORT CONFIG)
-    // The export fetches the FILTERED data from the server in chunks (not stored in React state),
-    // so it is not limited to the rows currently loaded in the table.
+    // The export fetches the data of the selected months from the server in chunks (not stored in React state),
+    // then applies the column filters in the browser, so it is not limited to the rows currently loaded in the table.
     const handleExport = async () => {
         setIsExporting(true);
         setExportProgress(0);
@@ -1274,7 +1293,7 @@ const Knitting = () => {
                 let rowCount = 0;
                 while (true) {
                     const res = await axiosPrivate.get(LIST_URL, {
-                        params: buildListParams(cursor, filtersKey, selectedMonthsKey, EXPORT_PAGE_LIMIT),
+                        params: buildListParams(cursor, '{}', selectedMonthsKey, EXPORT_PAGE_LIMIT),
                     });
                     const page = unwrapPage(res);
                     page.items.forEach((it) => {
@@ -1283,7 +1302,7 @@ const Knitting = () => {
                     });
                     setExportProgress(rowCount);
                     if (rowCount > EXPORT_MAX_ROWS) {
-                        alert(`Too many rows to export at once (more than ${EXPORT_MAX_ROWS}). Please narrow the data with filters or Month'Year and try again.`);
+                        alert(`Too many rows to export at once (more than ${EXPORT_MAX_ROWS}). Please narrow the data with Month'Year and try again.`);
                         return;
                     }
                     if (!page.hasMore || page.nextCursor === null || page.nextCursor === undefined) break;
@@ -1291,7 +1310,9 @@ const Knitting = () => {
                 }
             }
 
-            const exportRows = buildRows(exportMovements);
+            let exportRows = buildRows(exportMovements);
+            // column filters are applied in the browser
+            if (!searchActive) exportRows = applyColumnFilters(exportRows, filters);
             if (exportRows.length === 0) { alert("No data to export."); return; }
 
             const mod = await import('exceljs');
@@ -1449,10 +1470,17 @@ const Knitting = () => {
         const th = tableHeader.find(h => h.key === openFilterKey);
         if (!th) return null;
 
-        // selected values stay on top even when they are not in the current search results
-        const options = Array.from(new Set([...draftSelected, ...filterOptions]));
+        // Applied values stay pinned at the top in a FIXED order (snapshot taken when the dropdown opened),
+        // followed by the other values found in the loaded rows. Ticking / unticking never reorders the list.
+        const searchQuery = filterSearch.trim().toLowerCase();
+        const matchesSearch = (v) => !searchQuery || v.toLowerCase().includes(searchQuery);
+        const pinned = pinnedValues.filter(matchesSearch);
+        const pinnedSet = new Set(pinned);
+        const rest = columnOptions.filter((v) => matchesSearch(v) && !pinnedSet.has(v));
+        const options = [...pinned, ...rest.slice(0, MAX_FILTER_OPTIONS_SHOWN)];
+        const hiddenCount = Math.max(0, rest.length - MAX_FILTER_OPTIONS_SHOWN);
 
-        const availableHeight = Math.max(220, Math.min(380, window.innerHeight - dropdownPos.top - 16));
+        const availableHeight = Math.max(180, Math.min(FILTER_DROPDOWN_MAX_HEIGHT, window.innerHeight - dropdownPos.top - 16));
 
         return createPortal(
             <div
@@ -1462,45 +1490,40 @@ const Knitting = () => {
                     zIndex: 99999, background: theme.colors.white, border: `1px solid ${theme.colors.borderDark}`,
                     borderRadius: theme.radius, boxShadow: theme.shadows.xl, display: 'flex', flexDirection: 'column',
                     maxHeight: availableHeight, overflow: 'hidden', fontFamily: FONT_STACK, textAlign: 'left',
-                    textTransform: 'none', letterSpacing: 'normal', fontWeight: 400, fontSize: '0.875rem', color: theme.colors.textMain,
+                    textTransform: 'none', letterSpacing: 'normal', fontWeight: 400, fontSize: '0.8rem', color: theme.colors.textMain,
                 }}
             >
-                <div style={{ padding: '10px 12px', borderBottom: `1px solid #e2e8f0`, background: theme.colors.bgHeader, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                    <span style={{ fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: theme.colors.textMain, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <div style={{ padding: '6px 10px', borderBottom: `1px solid #e2e8f0`, background: theme.colors.bgHeader, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                    <span style={{ fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: theme.colors.textMain, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         Filter: {th.header}
                     </span>
                     <button onClick={() => openFilter(openFilterKey)} title="Close" style={{ border: 'none', background: 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 2, borderRadius: '50%', color: theme.colors.textMain, flexShrink: 0 }}>
-                        <X size={14} />
+                        <X size={13} />
                     </button>
                 </div>
-                <div style={{ padding: "10px 12px", borderBottom: `1px solid #e2e8f0` }}>
-                    <input type="text" value={filterSearch} onChange={(e) => setFilterSearch(e.target.value)} placeholder="Type to search values..." autoFocus style={{ width: "100%", padding: "8px 10px", border: `1px solid ${theme.colors.borderDark}`, borderRadius: '6px', fontSize: '0.8rem', outline: 'none', boxSizing: 'border-box', fontFamily: FONT_STACK, color: theme.colors.textMain }} />
+                <div style={{ padding: "6px 10px", borderBottom: `1px solid #e2e8f0` }}>
+                    <input type="text" value={filterSearch} onChange={(e) => setFilterSearch(e.target.value)} placeholder="Type to search values..." autoFocus style={{ width: "100%", padding: "5px 8px", border: `1px solid ${theme.colors.borderDark}`, borderRadius: '6px', fontSize: '0.75rem', outline: 'none', boxSizing: 'border-box', fontFamily: FONT_STACK, color: theme.colors.textMain }} />
                 </div>
-                <div style={{ flex: 1, overflowY: "auto", padding: "8px 12px", minHeight: 0 }}>
-                    {optionsLoading && (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 0', fontSize: '0.8rem', color: theme.colors.primary }}>
-                            <Loader size={14} className="animate-spin" /> Loading values...
-                        </div>
-                    )}
-                    {!optionsLoading && options.length === 0 && (
-                        <div style={{ padding: '12px 0', fontSize: '0.8rem', color: theme.colors.textMain, textAlign: 'center', opacity: 0.6 }}>No values found</div>
+                <div style={{ flex: 1, overflowY: "auto", padding: "4px 10px", minHeight: 0 }}>
+                    {options.length === 0 && (
+                        <div style={{ padding: '10px 0', fontSize: '0.75rem', color: theme.colors.textMain, textAlign: 'center', opacity: 0.6 }}>No values found</div>
                     )}
                     {options.map((val) => {
                         const isChecked = draftSelected.has(val);
                         return (
-                            <label key={val} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.8rem", padding: "5px 0", cursor: 'pointer', borderRadius: '4px' }}>
-                                <input type="checkbox" checked={isChecked} onChange={() => toggleDraftValue(val)} style={{ accentColor: theme.colors.primary, width: 15, height: 15, flexShrink: 0 }} />
+                            <label key={val} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.75rem", padding: "3px 0", cursor: 'pointer', borderRadius: '4px' }}>
+                                <input type="checkbox" checked={isChecked} onChange={() => toggleDraftValue(val)} style={{ accentColor: theme.colors.primary, width: 14, height: 14, flexShrink: 0 }} />
                                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={val}>{val === "" ? "(blank)" : val}</span>
                             </label>
                         );
                     })}
-                    {!optionsLoading && filterOptions.length >= 50 && (
-                        <div style={{ padding: '8px 0 2px', fontSize: '0.72rem', opacity: 0.6 }}>Showing the first 50 values. Type to narrow the list.</div>
+                    {hiddenCount > 0 && (
+                        <div style={{ padding: '6px 0 2px', fontSize: '0.68rem', opacity: 0.6 }}>{hiddenCount} more values not shown. Type to narrow the list.</div>
                     )}
                 </div>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "10px 12px", borderTop: `1px solid #e2e8f0`, background: theme.colors.bgHeader }}>
-                    <button onClick={() => clearFilter(openFilterKey)} style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4, background: theme.colors.white, color: theme.colors.textMain, border: `1px solid ${theme.colors.borderDark}`, borderRadius: '6px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 500, padding: '7px 0', fontFamily: FONT_STACK }}>Clear</button>
-                    <button onClick={() => applyFilter(openFilterKey)} style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4, background: theme.colors.primary, color: theme.colors.white, border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600, padding: '7px 0', fontFamily: FONT_STACK }}>Apply</button>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 6, padding: "6px 10px", borderTop: `1px solid #e2e8f0`, background: theme.colors.bgHeader }}>
+                    <button onClick={() => clearFilter(openFilterKey)} style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4, background: theme.colors.white, color: theme.colors.textMain, border: `1px solid ${theme.colors.borderDark}`, borderRadius: '6px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 500, padding: '5px 0', fontFamily: FONT_STACK }}>Clear</button>
+                    <button onClick={() => applyFilter(openFilterKey)} style={{ flex: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 4, background: theme.colors.primary, color: theme.colors.white, border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 600, padding: '5px 0', fontFamily: FONT_STACK }}>Apply</button>
                 </div>
             </div>,
             document.body
@@ -2059,10 +2082,18 @@ const Knitting = () => {
                         </span>
                     )}
                     {!loadingMore && !loadError && !capReached && hasMore && (
-                        <span style={{ opacity: 0.7 }}>{allRows.length} rows loaded. Scroll down to load more.</span>
+                        <span style={{ opacity: 0.7 }}>
+                            {filteredRows.length === allRows.length
+                                ? `${allRows.length} rows loaded. Scroll down to load more.`
+                                : `${filteredRows.length} of ${allRows.length} loaded rows match the filters. Scroll down to load more.`}
+                        </span>
                     )}
                     {!loadingMore && !loadError && !hasMore && (
-                        <span style={{ opacity: 0.7 }}>All {allRows.length} rows loaded</span>
+                        <span style={{ opacity: 0.7 }}>
+                            {filteredRows.length === allRows.length
+                                ? `All ${allRows.length} rows loaded`
+                                : `All ${allRows.length} rows loaded, ${filteredRows.length} match the filters`}
+                        </span>
                     )}
                 </div>
             )}

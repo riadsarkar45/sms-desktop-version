@@ -29,13 +29,17 @@ function readJson(name) {
   }
 }
 
-function run(command, args, quiet = false) {
+/**
+ * Execute commands without a shell.
+ * This prevents Windows shell argument-quoting problems.
+ */
+function run(command, args = [], quiet = false) {
   try {
     const output = execFileSync(command, args, {
       cwd: root,
       encoding: "utf8",
       stdio: quiet ? ["ignore", "pipe", "pipe"] : "inherit",
-      shell: process.platform === "win32",
+      shell: false,
     });
 
     return typeof output === "string" ? output.trim() : "";
@@ -54,6 +58,22 @@ function run(command, args, quiet = false) {
         errorOutput
     );
   }
+}
+
+/**
+ * Run npm using the current Node.js executable.
+ * npm_execpath is provided when this script runs through npm.
+ */
+function runNpm(args = []) {
+  const npmCli = process.env.npm_execpath;
+
+  if (!npmCli) {
+    fail(
+      "Cannot locate npm CLI. Run this script using npm run release:patch."
+    );
+  }
+
+  run(process.execPath, [npmCli, ...args]);
 }
 
 function getCargoVersion(content) {
@@ -173,7 +193,7 @@ function bump(version, kind) {
     fail("Use release:patch, release:minor, or release:major.");
   }
 
-  return major + "." + minor + "." + patch;
+  return `${major}.${minor}.${patch}`;
 }
 
 function setCargoVersion(content, nextVersion) {
@@ -192,7 +212,7 @@ function setCargoVersion(content, nextVersion) {
 
       return line.replace(
         /(version\s*=\s*")[^"]+(")/,
-        "$1" + nextVersion + "$2"
+        `$1${nextVersion}$2`
       );
     }
 
@@ -220,7 +240,7 @@ function setCargoLockVersion(content, nextVersion) {
 
     return block.replace(
       /^(version\s*=\s*")[^"]+(")/m,
-      "$1" + nextVersion + "$2"
+      `$1${nextVersion}$2`
     );
   });
 
@@ -231,10 +251,7 @@ function setCargoLockVersion(content, nextVersion) {
   return updated.join("");
 }
 
-function release(kind) {
-  const current = validate();
-  const next = bump(current, kind);
-
+function checkGitState() {
   console.log("\nChecking Git branch...");
 
   const branch = run("git", ["branch", "--show-current"], true);
@@ -266,25 +283,29 @@ function release(kind) {
         "Pull/push your changes first."
     );
   }
+}
 
-  const tag = "v" + next;
-
+function checkTag(tag) {
   console.log("\nChecking whether " + tag + " already exists...");
 
-  if (run("git", ["tag", "--list", tag], true)) {
+  const localTag = run("git", ["tag", "--list", tag], true);
+
+  if (localTag) {
     fail("Tag " + tag + " already exists locally.");
   }
 
-  if (
-    run(
-      "git",
-      ["ls-remote", "--tags", "origin", "refs/tags/" + tag],
-      true
-    )
-  ) {
+  const remoteTag = run(
+    "git",
+    ["ls-remote", "--tags", "origin", "refs/tags/" + tag],
+    true
+  );
+
+  if (remoteTag) {
     fail("Tag " + tag + " already exists on origin.");
   }
+}
 
+function updateVersions(nextVersion) {
   console.log("\nUpdating all six version fields...");
 
   const pkg = readJson(files.package);
@@ -295,10 +316,10 @@ function release(kind) {
     fail('package-lock.json is missing packages[""].');
   }
 
-  pkg.version = next;
-  lock.version = next;
-  lock.packages[""].version = next;
-  tauri.version = next;
+  pkg.version = nextVersion;
+  lock.version = nextVersion;
+  lock.packages[""].version = nextVersion;
+  tauri.version = nextVersion;
 
   fs.writeFileSync(
     absolute(files.package),
@@ -319,7 +340,7 @@ function release(kind) {
     absolute(files.cargo),
     setCargoVersion(
       fs.readFileSync(absolute(files.cargo), "utf8"),
-      next
+      nextVersion
     )
   );
 
@@ -327,26 +348,46 @@ function release(kind) {
     absolute(files.cargoLock),
     setCargoLockVersion(
       fs.readFileSync(absolute(files.cargoLock), "utf8"),
-      next
+      nextVersion
     )
   );
 
   validate();
+}
 
+function release(kind) {
+  const current = validate();
+  const next = bump(current, kind);
+  const tag = "v" + next;
+
+  // All Git safety checks happen before modifying files.
+  checkGitState();
+  checkTag(tag);
+
+  // Update all version files.
+  updateVersions(next);
+
+  // Build frontend using Node.js + npm CLI.
   console.log("\nBuilding frontend before creating " + tag + "...");
 
-  run("npm", ["run", "build"]);
+  runNpm(["run", "build"]);
 
-  console.log("\nCommitting release files...");
+  // Stage only the version files.
+  console.log("\nStaging release files...");
 
   run("git", ["add", ...Object.values(files)]);
 
+  // Commit.
+  console.log("\nCommitting release files...");
+
   run("git", ["commit", "-m", "chore(release): " + tag]);
 
+  // Annotated tag.
   console.log("\nCreating annotated Git tag...");
 
   run("git", ["tag", "-a", tag, "-m", "SM Sourcing " + tag]);
 
+  // Atomic push.
   console.log("\nPushing main and " + tag + " atomically...");
 
   run("git", [
@@ -358,7 +399,9 @@ function release(kind) {
   ]);
 
   console.log(
-    "\n🚀 " + tag + " pushed. GitHub Actions will publish the installer."
+    "\n🚀 " +
+      tag +
+      " pushed. GitHub Actions will publish the installer."
   );
 }
 

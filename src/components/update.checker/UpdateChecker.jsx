@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { check } from "@tauri-apps/plugin-updater";
+
 import {
   Download,
   X,
@@ -11,14 +12,19 @@ import {
   Loader2,
 } from "lucide-react";
 
-const INITIAL_CHECK_DELAY = 10 * 1000;
+const INITIAL_CHECK_DELAY = 10_000;
 const CHECK_INTERVAL = 6 * 60 * 60 * 1000;
+const CHECK_TIMEOUT = 30_000;
+
+const DISMISSED_VERSION_KEY = "sm-sourcing-dismissed-update-version";
 
 const UpdateChecker = () => {
   const [update, setUpdate] = useState(null);
   const [visible, setVisible] = useState(false);
 
+  const [checking, setChecking] = useState(false);
   const [installing, setInstalling] = useState(false);
+
   const [progress, setProgress] = useState(0);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
@@ -28,31 +34,41 @@ const UpdateChecker = () => {
   const installingRef = useRef(false);
 
   const updateRef = useRef(null);
-  const dismissedVersionRef = useRef(null);
 
-  const getErrorMessage = (err) => {
+  // Prevent duplicate checks and updates.
+  const checkRequestRef = useRef(0);
+
+  const getDismissedVersion = useCallback(() => {
+    try {
+      return localStorage.getItem(DISMISSED_VERSION_KEY);
+    } catch (err) {
+      console.error("Unable to read dismissed update version:", err);
+      return null;
+    }
+  }, []);
+
+  const saveDismissedVersion = useCallback((version) => {
+    try {
+      localStorage.setItem(DISMISSED_VERSION_KEY, version);
+    } catch (err) {
+      console.error("Unable to save dismissed update version:", err);
+    }
+  }, []);
+
+  const getErrorMessage = useCallback((err) => {
     const message =
       typeof err === "string"
         ? err
-        : err?.message || "";
+        : err?.message || String(err || "");
 
     const normalized = message.toLowerCase();
-
-    if (
-      normalized.includes("network") ||
-      normalized.includes("connection") ||
-      normalized.includes("timeout") ||
-      normalized.includes("fetch")
-    ) {
-      return "Unable to connect to the update server. Please check your internet connection and try again.";
-    }
 
     if (
       normalized.includes("signature") ||
       normalized.includes("verify") ||
       normalized.includes("verification")
     ) {
-      return "The update package could not be verified. For your security, the installation was stopped.";
+      return "The update package could not be verified. For your security, installation was stopped.";
     }
 
     if (
@@ -62,89 +78,147 @@ const UpdateChecker = () => {
       return "Windows denied permission to install the update. Please close other SM Sourcing instances and try again.";
     }
 
+    if (
+      normalized.includes("network") ||
+      normalized.includes("connection") ||
+      normalized.includes("timeout") ||
+      normalized.includes("fetch") ||
+      normalized.includes("request")
+    ) {
+      return "Unable to connect to the update server. Please check your internet connection and try again.";
+    }
+
     if (normalized.includes("download")) {
       return "The update could not be downloaded. Please check your internet connection and try again.";
     }
 
-    return "We couldn't install the update. Your current version is still available. Please try again.";
-  };
+    return "The update could not be installed. Your current version is still available. Please try again.";
+  }, []);
 
+  // Release an updater resource safely.
   const closeUpdate = useCallback(async () => {
     const currentUpdate = updateRef.current;
 
     updateRef.current = null;
 
-    if (currentUpdate) {
-      try {
-        await currentUpdate.close();
-      } catch (err) {
-        console.error("Updater cleanup error:", err);
-      }
+    if (!currentUpdate) return;
+
+    try {
+      await currentUpdate.close();
+    } catch (err) {
+      console.error("Updater resource cleanup failed:", err);
     }
   }, []);
 
-  // Check for updates silently.
-  const checkForUpdates = useCallback(async () => {
-    if (!isTauri()) return;
+  // Check for a new update.
+  // This function never displays UI when no update is available.
+  const checkForUpdates = useCallback(
+    async ({ showError = false } = {}) => {
+      if (!isTauri()) return;
 
-    if (checkingRef.current || installingRef.current) return;
+      if (checkingRef.current || installingRef.current) return;
 
-    checkingRef.current = true;
+      checkingRef.current = true;
 
-    try {
-      const result = await check({
-        timeout: 30000,
-      });
+      const requestId = ++checkRequestRef.current;
 
-      if (!mountedRef.current) {
-        if (result) {
-          await result.close();
-        }
-        return;
+      if (mountedRef.current) {
+        setChecking(true);
       }
 
-      // No update available: show absolutely nothing.
-      if (!result) {
+      let result = null;
+
+      try {
+        result = await check({
+          timeout: CHECK_TIMEOUT,
+        });
+
+        // Component was unmounted or a newer request replaced this one.
+        if (
+          !mountedRef.current ||
+          requestId !== checkRequestRef.current
+        ) {
+          if (result) {
+            await result.close();
+          }
+          return;
+        }
+
+        // No update available.
+        if (!result) {
+          await closeUpdate();
+
+          if (!mountedRef.current) return;
+
+          setUpdate(null);
+          setVisible(false);
+          setError("");
+          setStatus("");
+          setProgress(0);
+
+          return;
+        }
+
+        // Do not show the same dismissed version again.
+        const dismissedVersion = getDismissedVersion();
+
+        if (dismissedVersion === result.version) {
+          await result.close();
+
+          await closeUpdate();
+
+          if (!mountedRef.current) return;
+
+          setUpdate(null);
+          setVisible(false);
+          setError("");
+          setStatus("");
+
+          return;
+        }
+
+        // Replace any previously stored update resource.
         await closeUpdate();
 
-        if (!mountedRef.current) return;
+        if (!mountedRef.current) {
+          await result.close();
+          return;
+        }
 
-        setUpdate(null);
-        setVisible(false);
+        updateRef.current = result;
+
+        setUpdate(result);
+        setVisible(true);
+
+        setProgress(0);
         setError("");
-        setStatus("");
+        setStatus(`Version ${result.version} is available.`);
+      } catch (err) {
+        console.error("Update check failed:", err);
 
-        return;
+        if (result && result !== updateRef.current) {
+          try {
+            await result.close();
+          } catch (closeError) {
+            console.error("Update cleanup failed:", closeError);
+          }
+        }
+
+        if (mountedRef.current && showError) {
+          setError(getErrorMessage(err));
+          setStatus("");
+          setVisible(true);
+        }
+      } finally {
+        checkingRef.current = false;
+
+        if (mountedRef.current) {
+          setChecking(false);
+        }
       }
-
-      // Ignore an update already dismissed by the user.
-      if (dismissedVersionRef.current === result.version) {
-        await result.close();
-        return;
-      }
-
-      await closeUpdate();
-
-      if (!mountedRef.current) {
-        await result.close();
-        return;
-      }
-
-      updateRef.current = result;
-
-      setUpdate(result);
-      setProgress(0);
-      setError("");
-      setStatus(`Version ${result.version} is available.`);
-      setVisible(true);
-
-    } catch (err) {
-      // Automatic update checks remain silent on failure.
-      console.error("Update check failed:", err);
-    } finally {
-      checkingRef.current = false;
-    }
-  }, [closeUpdate]);
+    },
+    [closeUpdate, getDismissedVersion, getErrorMessage]
+  );
 
   // Download and install.
   const installUpdate = useCallback(async () => {
@@ -173,6 +247,7 @@ const UpdateChecker = () => {
 
             setProgress(0);
             setStatus("Downloading update...");
+
             break;
           }
 
@@ -180,21 +255,23 @@ const UpdateChecker = () => {
             downloaded += event.data.chunkLength || 0;
 
             if (total > 0) {
-              setProgress(
-                Math.min(
-                  100,
-                  Math.round((downloaded / total) * 100)
-                )
+              const percentage = Math.min(
+                100,
+                Math.round((downloaded / total) * 100)
               );
+
+              setProgress(percentage);
             }
 
             setStatus("Downloading update...");
+
             break;
           }
 
           case "Finished": {
             setProgress(100);
             setStatus("Download completed. Installing update...");
+
             break;
           }
 
@@ -205,12 +282,16 @@ const UpdateChecker = () => {
 
       if (!mountedRef.current) return;
 
+      // Windows normally exits the application after launching
+      // the updater installer successfully.
+      // If execution continues, show the completion state.
       setProgress(100);
       setStatus("Update installation completed.");
 
-      dismissedVersionRef.current = currentUpdate.version;
+      saveDismissedVersion(currentUpdate.version);
 
       updateRef.current = null;
+
       setUpdate(null);
       setInstalling(false);
       setVisible(true);
@@ -227,37 +308,52 @@ const UpdateChecker = () => {
     } finally {
       installingRef.current = false;
     }
-  }, []);
+  }, [getErrorMessage, saveDismissedVersion]);
 
-  // Dismiss popup.
+  // Dismiss the popup.
   const dismissNotification = useCallback(async () => {
     if (installingRef.current) return;
 
-    if (updateRef.current?.version) {
-      dismissedVersionRef.current = updateRef.current.version;
+    const currentUpdate = updateRef.current;
+
+    if (currentUpdate?.version) {
+      saveDismissedVersion(currentUpdate.version);
     }
 
     await closeUpdate();
 
-    setVisible(false);
+    if (!mountedRef.current) return;
+
     setUpdate(null);
+    setVisible(false);
+
     setError("");
     setStatus("");
-  }, [closeUpdate]);
+    setProgress(0);
+  }, [closeUpdate, saveDismissedVersion]);
 
-  // Retry installation.
-  const retryUpdate = useCallback(() => {
+  // Retry installation or update checking.
+  const retryUpdate = useCallback(async () => {
+    if (installingRef.current) return;
+
     setError("");
 
-    if (!updateRef.current) {
-      setVisible(false);
+    // Existing update resource is still available.
+    if (updateRef.current) {
+      await installUpdate();
       return;
     }
 
-    installUpdate();
-  }, [installUpdate]);
+    // Previous update resource is unavailable.
+    // Check the server again.
+    setVisible(false);
 
-  // Automatic update checking.
+    await checkForUpdates({
+      showError: true,
+    });
+  }, [installUpdate, checkForUpdates]);
+
+  // Automatic update checks.
   useEffect(() => {
     mountedRef.current = true;
 
@@ -278,31 +374,44 @@ const UpdateChecker = () => {
     return () => {
       mountedRef.current = false;
 
+      // Invalidate any pending check result.
+      checkRequestRef.current += 1;
+
       window.clearTimeout(initialTimer);
       window.clearInterval(intervalTimer);
 
-      const currentUpdate = updateRef.current;
-      updateRef.current = null;
+      // Do not close an updater resource during installation.
+      if (!installingRef.current) {
+        const currentUpdate = updateRef.current;
 
-      if (currentUpdate) {
-        currentUpdate.close().catch((err) => {
-          console.error("Updater cleanup failed:", err);
-        });
+        updateRef.current = null;
+
+        if (currentUpdate) {
+          currentUpdate.close().catch((err) => {
+            console.error("Updater cleanup failed:", err);
+          });
+        }
       }
     };
   }, [checkForUpdates]);
 
-  // Browser: never render updater UI.
+  // No UI in browser.
   if (!isTauri()) return null;
 
-  // No update, no error, no completed installation:
-  // render absolutely nothing.
+  // No update and no error: render nothing.
   if (!visible) return null;
 
   return (
-    <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-[420px] overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl">
-
+    <div
+      className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
+      role="presentation"
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="update-dialog-title"
+        className="w-full max-w-[420px] overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl"
+      >
         {/* Header */}
         <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4">
           <div className="flex items-center gap-3">
@@ -321,7 +430,10 @@ const UpdateChecker = () => {
             </div>
 
             <div>
-              <h3 className="text-sm font-bold text-gray-900">
+              <h3
+                id="update-dialog-title"
+                className="text-sm font-bold text-gray-900"
+              >
                 SM Sourcing
               </h3>
 
@@ -343,12 +455,12 @@ const UpdateChecker = () => {
           )}
         </div>
 
-        {/* Content */}
+        {/* Body */}
         <div className="p-5">
 
           {/* Error */}
           {error && (
-            <>
+            <div>
               <div className="flex items-start gap-3">
                 <AlertCircle
                   size={23}
@@ -369,25 +481,30 @@ const UpdateChecker = () => {
               <button
                 type="button"
                 onClick={retryUpdate}
-                disabled={installing || !updateRef.current}
-                className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:opacity-50"
+                disabled={installing || checking}
+                className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <Download size={17} />
-                Try Again
+                {checking ? (
+                  <Loader2 size={17} className="animate-spin" />
+                ) : (
+                  <Download size={17} />
+                )}
+
+                {checking ? "Checking..." : "Try Again"}
               </button>
 
               <button
                 type="button"
                 onClick={dismissNotification}
                 disabled={installing}
-                className="mt-2 w-full rounded-xl border border-gray-200 px-4 py-2.5 text-sm font-medium text-gray-600 hover:bg-gray-50"
+                className="mt-2 w-full rounded-xl border border-gray-200 px-4 py-2.5 text-sm font-medium text-gray-600 transition hover:bg-gray-50 disabled:opacity-50"
               >
                 Close
               </button>
-            </>
+            </div>
           )}
 
-          {/* Update available */}
+          {/* New update available */}
           {!error && update && (
             <>
               <div className="flex items-center gap-2">
@@ -415,7 +532,7 @@ const UpdateChecker = () => {
                 </div>
               )}
 
-              {/* Progress */}
+              {/* Download progress */}
               {installing && (
                 <div className="mt-5">
                   <div className="mb-2 flex items-center justify-between gap-3">
@@ -428,10 +545,18 @@ const UpdateChecker = () => {
                     </span>
                   </div>
 
-                  <div className="h-2 overflow-hidden rounded-full bg-gray-100">
+                  <div
+                    className="h-2 overflow-hidden rounded-full bg-gray-100"
+                    role="progressbar"
+                    aria-valuenow={progress}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                  >
                     <div
                       className="h-full rounded-full bg-blue-600 transition-all duration-300"
-                      style={{ width: `${progress}%` }}
+                      style={{
+                        width: `${progress}%`,
+                      }}
                     />
                   </div>
 
@@ -441,23 +566,25 @@ const UpdateChecker = () => {
                 </div>
               )}
 
+              {/* Install */}
               {!installing && (
                 <button
                   type="button"
                   onClick={installUpdate}
                   disabled={!updateRef.current}
-                  className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:opacity-50"
+                  className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Download size={18} />
                   Update Now
                 </button>
               )}
 
+              {/* Remind later */}
               {!installing && (
                 <button
                   type="button"
                   onClick={dismissNotification}
-                  className="mt-2 w-full rounded-xl px-4 py-2.5 text-sm font-medium text-gray-500 transition hover:bg-gray-50"
+                  className="mt-2 w-full rounded-xl px-4 py-2.5 text-sm font-medium text-gray-500 transition hover:bg-gray-50 hover:text-gray-800"
                 >
                   Remind Me Later
                 </button>
@@ -465,7 +592,7 @@ const UpdateChecker = () => {
             </>
           )}
 
-          {/* Completed */}
+          {/* Installation completed */}
           {!error && !update && status && (
             <div className="flex items-start gap-3">
               <CheckCircle2
@@ -480,6 +607,10 @@ const UpdateChecker = () => {
 
                 <p className="mt-1 text-sm leading-6 text-gray-600">
                   {status}
+                </p>
+
+                <p className="mt-2 text-xs text-gray-500">
+                  Restart the application if required.
                 </p>
               </div>
             </div>

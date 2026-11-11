@@ -4,7 +4,6 @@ import { isTauri } from "@tauri-apps/api/core";
 import { check } from "@tauri-apps/plugin-updater";
 import {
   Download,
-  RefreshCw,
   X,
   CheckCircle2,
   AlertCircle,
@@ -19,9 +18,7 @@ const UpdateChecker = () => {
   const [update, setUpdate] = useState(null);
   const [visible, setVisible] = useState(false);
 
-  const [checking, setChecking] = useState(false);
   const [installing, setInstalling] = useState(false);
-
   const [progress, setProgress] = useState(0);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
@@ -33,7 +30,6 @@ const UpdateChecker = () => {
   const updateRef = useRef(null);
   const dismissedVersionRef = useRef(null);
 
-  // Convert technical errors into user-friendly messages.
   const getErrorMessage = (err) => {
     const message =
       typeof err === "string"
@@ -56,7 +52,7 @@ const UpdateChecker = () => {
       normalized.includes("verify") ||
       normalized.includes("verification")
     ) {
-      return "The update package could not be verified. For your security, the installation was stopped. Please contact your system administrator.";
+      return "The update package could not be verified. For your security, the installation was stopped.";
     }
 
     if (
@@ -66,16 +62,13 @@ const UpdateChecker = () => {
       return "Windows denied permission to install the update. Please close other SM Sourcing instances and try again.";
     }
 
-    if (
-      normalized.includes("download")
-    ) {
+    if (normalized.includes("download")) {
       return "The update could not be downloaded. Please check your internet connection and try again.";
     }
 
     return "We couldn't install the update. Your current version is still available. Please try again.";
   };
 
-  // Safely release updater resources.
   const closeUpdate = useCallback(async () => {
     const currentUpdate = updateRef.current;
 
@@ -90,17 +83,13 @@ const UpdateChecker = () => {
     }
   }, []);
 
-  // Automatically check for new versions.
-  const checkForUpdates = useCallback(async ({ manual = false } = {}) => {
+  // Check for updates silently.
+  const checkForUpdates = useCallback(async () => {
     if (!isTauri()) return;
 
     if (checkingRef.current || installingRef.current) return;
 
     checkingRef.current = true;
-
-    if (mountedRef.current) {
-      setChecking(true);
-    }
 
     try {
       const result = await check({
@@ -114,26 +103,26 @@ const UpdateChecker = () => {
         return;
       }
 
-      // No update available.
+      // No update available: show absolutely nothing.
       if (!result) {
         await closeUpdate();
 
         if (!mountedRef.current) return;
 
         setUpdate(null);
-        setStatus(manual ? "You are using the latest version of SM Sourcing." : "");
+        setVisible(false);
         setError("");
-        setVisible(manual);
+        setStatus("");
+
         return;
       }
 
-      // Do not repeatedly show the same dismissed update.
+      // Ignore an update already dismissed by the user.
       if (dismissedVersionRef.current === result.version) {
         await result.close();
         return;
       }
 
-      // Replace any previous updater resource.
       await closeUpdate();
 
       if (!mountedRef.current) {
@@ -144,40 +133,24 @@ const UpdateChecker = () => {
       updateRef.current = result;
 
       setUpdate(result);
-      setError("");
       setProgress(0);
-
+      setError("");
       setStatus(`Version ${result.version} is available.`);
       setVisible(true);
+
     } catch (err) {
+      // Automatic update checks remain silent on failure.
       console.error("Update check failed:", err);
-      if (manual && mountedRef.current) {
-        setError(getErrorMessage(err));
-        setStatus("");
-        setVisible(true);
-      }
     } finally {
       checkingRef.current = false;
-
-      if (mountedRef.current) {
-        setChecking(false);
-      }
     }
   }, [closeUpdate]);
 
-  // Download and install the update.
+  // Download and install.
   const installUpdate = useCallback(async () => {
     const currentUpdate = updateRef.current;
 
-    if (!currentUpdate) {
-      setError(
-        "The update session has expired. Please wait while we check for updates again."
-      );
-      setVisible(true);
-      return;
-    }
-
-    if (installingRef.current) return;
+    if (!currentUpdate || installingRef.current) return;
 
     installingRef.current = true;
 
@@ -207,12 +180,12 @@ const UpdateChecker = () => {
             downloaded += event.data.chunkLength || 0;
 
             if (total > 0) {
-              const percentage = Math.min(
-                100,
-                Math.round((downloaded / total) * 100)
+              setProgress(
+                Math.min(
+                  100,
+                  Math.round((downloaded / total) * 100)
+                )
               );
-
-              setProgress(percentage);
             }
 
             setStatus("Downloading update...");
@@ -235,16 +208,13 @@ const UpdateChecker = () => {
       setProgress(100);
       setStatus("Update installation completed.");
 
-      // The application may close when the Windows installer starts.
-      // Keep the success state available if it remains open.
+      dismissedVersionRef.current = currentUpdate.version;
+
       updateRef.current = null;
       setUpdate(null);
       setInstalling(false);
-
       setVisible(true);
 
-      // No need to show the same update again.
-      dismissedVersionRef.current = currentUpdate.version;
     } catch (err) {
       console.error("Update installation failed:", err);
 
@@ -259,27 +229,33 @@ const UpdateChecker = () => {
     }
   }, []);
 
-  // Dismiss notification.
-  const dismissNotification = useCallback(() => {
+  // Dismiss popup.
+  const dismissNotification = useCallback(async () => {
     if (installingRef.current) return;
 
     if (updateRef.current?.version) {
       dismissedVersionRef.current = updateRef.current.version;
     }
 
-    setVisible(false);
-    setError("");
-  }, []);
+    await closeUpdate();
 
-  // Retry update installation.
+    setVisible(false);
+    setUpdate(null);
+    setError("");
+    setStatus("");
+  }, [closeUpdate]);
+
+  // Retry installation.
   const retryUpdate = useCallback(() => {
     setError("");
+
     if (!updateRef.current) {
-      checkForUpdates({ manual: true });
+      setVisible(false);
       return;
     }
+
     installUpdate();
-  }, [installUpdate, checkForUpdates]);
+  }, [installUpdate]);
 
   // Automatic update checking.
   useEffect(() => {
@@ -316,31 +292,16 @@ const UpdateChecker = () => {
     };
   }, [checkForUpdates]);
 
+  // Browser: never render updater UI.
   if (!isTauri()) return null;
 
-  if (!visible) {
-    return (
-      <div className="fixed bottom-6 right-6 z-[99999]">
-        <button
-          type="button"
-          onClick={() => checkForUpdates({ manual: true })}
-          disabled={checking || installing}
-          className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold text-gray-700 shadow-lg transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {checking ? (
-            <Loader2 size={17} className="animate-spin" />
-          ) : (
-            <RefreshCw size={17} />
-          )}
-          {checking ? "Checking for updates..." : "Check for updates"}
-        </button>
-      </div>
-    );
-  }
+  // No update, no error, no completed installation:
+  // render absolutely nothing.
+  if (!visible) return null;
 
   return (
-    <div className="fixed bottom-6 right-6 z-[99999] w-[400px] max-w-[calc(100vw-32px)]">
-      <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl">
+    <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-[420px] overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl">
 
         {/* Header */}
         <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4">
@@ -385,9 +346,9 @@ const UpdateChecker = () => {
         {/* Content */}
         <div className="p-5">
 
-          {/* Installation error */}
+          {/* Error */}
           {error && (
-            <div>
+            <>
               <div className="flex items-start gap-3">
                 <AlertCircle
                   size={23}
@@ -409,9 +370,9 @@ const UpdateChecker = () => {
                 type="button"
                 onClick={retryUpdate}
                 disabled={installing || !updateRef.current}
-                className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:opacity-50"
               >
-                <RefreshCw size={17} />
+                <Download size={17} />
                 Try Again
               </button>
 
@@ -419,14 +380,14 @@ const UpdateChecker = () => {
                 type="button"
                 onClick={dismissNotification}
                 disabled={installing}
-                className="mt-2 w-full rounded-xl border border-gray-200 px-4 py-2.5 text-sm font-medium text-gray-600 transition hover:bg-gray-50 disabled:opacity-50"
+                className="mt-2 w-full rounded-xl border border-gray-200 px-4 py-2.5 text-sm font-medium text-gray-600 hover:bg-gray-50"
               >
                 Close
               </button>
-            </div>
+            </>
           )}
 
-          {/* Available update */}
+          {/* Update available */}
           {!error && update && (
             <>
               <div className="flex items-center gap-2">
@@ -470,9 +431,7 @@ const UpdateChecker = () => {
                   <div className="h-2 overflow-hidden rounded-full bg-gray-100">
                     <div
                       className="h-full rounded-full bg-blue-600 transition-all duration-300"
-                      style={{
-                        width: `${progress}%`,
-                      }}
+                      style={{ width: `${progress}%` }}
                     />
                   </div>
 
@@ -482,13 +441,12 @@ const UpdateChecker = () => {
                 </div>
               )}
 
-              {/* Update button */}
               {!installing && (
                 <button
                   type="button"
                   onClick={installUpdate}
                   disabled={!updateRef.current}
-                  className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:opacity-50"
                 >
                   <Download size={18} />
                   Update Now
@@ -499,7 +457,7 @@ const UpdateChecker = () => {
                 <button
                   type="button"
                   onClick={dismissNotification}
-                  className="mt-2 w-full rounded-xl px-4 py-2.5 text-sm font-medium text-gray-500 transition hover:bg-gray-50 hover:text-gray-800"
+                  className="mt-2 w-full rounded-xl px-4 py-2.5 text-sm font-medium text-gray-500 transition hover:bg-gray-50"
                 >
                   Remind Me Later
                 </button>
@@ -507,7 +465,7 @@ const UpdateChecker = () => {
             </>
           )}
 
-          {/* Installation completed */}
+          {/* Completed */}
           {!error && !update && status && (
             <div className="flex items-start gap-3">
               <CheckCircle2
@@ -524,16 +482,6 @@ const UpdateChecker = () => {
                   {status}
                 </p>
               </div>
-            </div>
-          )}
-
-          {/* Background checking indicator is intentionally not shown
-              because normal update checks must remain silent. */}
-
-          {checking && (
-            <div className="flex items-center justify-center gap-2 text-xs text-gray-400">
-              <Loader2 size={14} className="animate-spin" />
-              Checking for updates...
             </div>
           )}
         </div>

@@ -124,7 +124,7 @@ const pageButtonStyle = (active) => ({
 });
 
 // noFilter: true  => no header filter button.
-// Column filters run in the BROWSER on the loaded rows, so only the plain text columns have one
+// Column filters run in the BROWSER on the loaded rows (list rows AND search results), so only the plain text columns have one
 // (date has its own Month'Year filter; quantities / price / billing are calculated values).
 const tableHeader = [
     { header: "", width: "50px", key: "select", noFilter: true },
@@ -366,7 +366,8 @@ const buildRows = (movements) => {
 // ===== END ROW BUILDING =====
 
 // ===== FRONTEND COLUMN FILTER HELPERS =====
-// Column filters are applied in the browser on the rows that are already loaded.
+// Column filters are applied in the browser on the rows that are already loaded
+// (normal list rows AND search results).
 // filters = { columnKey: [selected values as strings] }
 const cellFilterValue = (row, key) => {
     const v = row?.[key];
@@ -379,6 +380,12 @@ const applyColumnFilters = (rows, filters, ignoreKey = null) => {
     if (keys.length === 0) return rows;
     const sets = keys.map((k) => [k, new Set(filters[k])]);
     return rows.filter((row) => sets.every(([k, set]) => set.has(cellFilterValue(row, k))));
+};
+
+// Month'Year filter applied in the browser (used on search results, where the server list is not re-queried)
+const applyMonthFilter = (rows, monthSet) => {
+    if (!monthSet || monthSet.size === 0) return rows;
+    return rows.filter((row) => monthSet.has(getMonthKey(row.challanDate)));
 };
 
 // Max number of values shown in the dropdown list at once (type in the search box to narrow it)
@@ -489,6 +496,9 @@ const rowPairKey = (r) => [r.challanNo, r.jobNo, r.composition, r.color]
     .map((v) => String(v ?? '').trim().toLowerCase())
     .join('|');
 
+// Same factory typed with different spacing/casing is treated as one factory
+const factoryKey = (name) => String(name || 'Unknown').replace(/\s+/g, ' ').trim().toLowerCase();
+
 // Index of all Yarn Return rows: "pair|fromFactory|toFactory"
 const buildReturnIndex = (rows) => {
     const set = new Set();
@@ -531,8 +541,6 @@ const splitRowByParty = (row, returnIndex) => {
     if (hasBack) return [{ party: backParty, row }];
     return [{ party: cleanFactoryName(row.toFactory) || cleanFactoryName(row.fromFactory) || 'Unknown', row }];
 };
-// Same factory typed with different spacing/casing is treated as one factory
-const factoryKey = (name) => String(name || 'Unknown').replace(/\s+/g, ' ').trim().toLowerCase();
 
 const EXPORT_COLUMNS = [
     { header: 'Date', key: 'challanDate', width: 13, type: 'date' },
@@ -671,7 +679,8 @@ const Knitting = () => {
     const [foundSearchItems, setFoundSearchItems] = useState([]);
     const [notFoundSearchItems, setNotFoundSearchItems] = useState([]);
 
-    // Challan-date month filter (server-side) - labels shown as Month'Year (e.g. Sep'26)
+    // Challan-date month filter - labels shown as Month'Year (e.g. Sep'26).
+    // In list mode the server applies it; on search results it is applied in the browser.
     const [selectedMonths, setSelectedMonths] = useState(new Set());
     const [monthDropdownOpen, setMonthDropdownOpen] = useState(false);
     const [monthDraftSelected, setMonthDraftSelected] = useState(new Set());
@@ -721,11 +730,15 @@ const Knitting = () => {
 
     // Rows built from the loaded records (bounded by MAX_LOADED_ROWS)
     const allRows = useMemo(() => buildRows(movements), [movements]);
-    // Column filters work on the loaded rows (frontend). Challan/job/month search results are not column-filtered.
-    const filteredRows = useMemo(
-        () => (searchActive ? allRows : applyColumnFilters(allRows, filters)),
-        [allRows, filters, searchActive]
-    );
+
+    // Column filters work in the browser on the loaded rows, in BOTH list mode and search mode.
+    // In search mode the Month'Year filter is also applied in the browser
+    // (in list mode the server already applies it).
+    const filteredRows = useMemo(() => {
+        let rows = applyColumnFilters(allRows, filters);
+        if (searchActive) rows = applyMonthFilter(rows, selectedMonths);
+        return rows;
+    }, [allRows, filters, searchActive, selectedMonths]);
 
     const capReached = hasMore && allRows.length >= MAX_LOADED_ROWS;
     hasMoreRef.current = hasMore;
@@ -733,14 +746,15 @@ const Knitting = () => {
     searchActiveRef.current = searchActive;
     loadErrorRef.current = loadError;
 
-    // Values of the open column filter, taken from the loaded rows (and the other active column filters)
+    // Values of the open column filter, taken from the loaded rows (and the other active filters)
     const columnOptions = useMemo(() => {
         if (!openFilterKey) return [];
-        const base = applyColumnFilters(allRows, filters, openFilterKey);
+        let base = applyColumnFilters(allRows, filters, openFilterKey);
+        if (searchActive) base = applyMonthFilter(base, selectedMonths);
         const seen = new Set();
         base.forEach((row) => { seen.add(cellFilterValue(row, openFilterKey)); });
         return [...seen].sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
-    }, [openFilterKey, allRows, filters]);
+    }, [openFilterKey, allRows, filters, searchActive, selectedMonths]);
 
     const updateDropdownPosition = useCallback(() => {
         if (!openFilterKey) return;
@@ -780,7 +794,7 @@ const Knitting = () => {
         };
     }, [openFilterKey, updateDropdownPosition, dropdownRef]);
 
-    // Month'Year options for the challan-date filter (the server applies it)
+    // Month'Year options for the challan-date filter
     const monthOptions = RECENT_MONTH_KEYS;
 
     const deliveryMonthOptions = useMemo(() => {
@@ -816,6 +830,11 @@ const Knitting = () => {
     useEffect(() => {
         if (searchPage > totalSearchPages) setSearchPage(totalSearchPages);
     }, [searchPage, totalSearchPages]);
+
+    // a filter changed while looking at search results: go back to the first page
+    useEffect(() => {
+        if (searchActive) setSearchPage(1);
+    }, [filtersKey, selectedMonthsKey, searchActive]);
 
     const visibleRows = useMemo(() => {
         if (!searchActive) return filteredRows;
@@ -1068,14 +1087,12 @@ const Knitting = () => {
         return () => document.removeEventListener("mousedown", handleClick);
     }, [isDeliveryMonthDropdownOpen]);
 
-    // Column / month filters work on the full list, not on challan/job search results
+    // Column filters are always available (list rows and search results)
     const handleOpenFilter = (key) => {
-        if (searchActive) return;
         openFilter(key);
     };
 
     const openMonthFilter = () => {
-        if (searchActive) return;
         if (monthDropdownOpen) {
             setMonthDropdownOpen(false);
             setMonthSearch("");
@@ -1103,7 +1120,7 @@ const Knitting = () => {
         setMonthDraftSelected(prev => (prev.size === monthOptions.length ? new Set() : new Set(monthOptions)));
     };
 
-    const applyMonthFilter = () => {
+    const applyMonthFilterSelection = () => {
         // none or all selected == no month filter
         if (monthDraftSelected.size === 0 || monthDraftSelected.size === monthOptions.length) {
             setSelectedMonths(new Set());
@@ -1280,8 +1297,9 @@ const Knitting = () => {
 
     // ===== EXCEL EXPORT: one sheet per factory + Summary sheet =====
     // Delivery -> To Factory, Return / Greige -> From Factory (factory-to-factory transfer rule: see EXPORT CONFIG)
-    // The export fetches the data of the selected months from the server in chunks (not stored in React state),
+    // In list mode the export fetches the data of the selected months from the server in chunks (not stored in React state),
     // then applies the column filters in the browser, so it is not limited to the rows currently loaded in the table.
+    // In search mode it exports the search results with the active column / month filters applied.
     const handleExport = async () => {
         setIsExporting(true);
         setExportProgress(0);
@@ -1311,8 +1329,10 @@ const Knitting = () => {
             }
 
             let exportRows = buildRows(exportMovements);
-            // column filters are applied in the browser
-            if (!searchActive) exportRows = applyColumnFilters(exportRows, filters);
+            // column filters are applied in the browser (list mode and search mode)
+            exportRows = applyColumnFilters(exportRows, filters);
+            // in search mode the Month'Year filter is also applied in the browser
+            if (searchActive) exportRows = applyMonthFilter(exportRows, selectedMonths);
             if (exportRows.length === 0) { alert("No data to export."); return; }
 
             const mod = await import('exceljs');
@@ -1636,18 +1656,16 @@ const Knitting = () => {
                     </button>
                 )}
 
-                {/* ===== CHALLAN DATE MONTH FILTER (Month'Year) - applied on the server ===== */}
+                {/* ===== CHALLAN DATE MONTH FILTER (Month'Year) - server in list mode, browser on search results ===== */}
                 <div ref={monthDropdownRef} style={{ position: 'relative' }}>
                     <button
                         onClick={openMonthFilter}
-                        title={searchActive ? "Clear the search to use this filter" : undefined}
                         style={{
                             display: 'inline-flex', alignItems: 'center', gap: 6,
                             background: monthDropdownOpen || selectedMonths.size > 0 ? theme.colors.primary : theme.colors.white,
                             color: monthDropdownOpen || selectedMonths.size > 0 ? theme.colors.white : theme.colors.textMain,
                             padding: "10px 16px", borderRadius: theme.radius,
-                            border: `1px solid ${theme.colors.border}`, cursor: searchActive ? "not-allowed" : "pointer",
-                            opacity: searchActive ? 0.5 : 1,
+                            border: `1px solid ${theme.colors.border}`, cursor: "pointer",
                             fontSize: '0.875rem', fontWeight: 500, fontFamily: 'inherit', transition: 'all 0.2s ease'
                         }}
                     >
@@ -1700,7 +1718,7 @@ const Knitting = () => {
                             </div>
                             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '10px 12px', borderTop: `1px solid #e2e8f0`, background: theme.colors.bgHeader }}>
                                 <button onClick={clearMonthFilter} style={{ flex: 1, background: theme.colors.white, color: theme.colors.textMain, border: `1px solid ${theme.colors.borderDark}`, borderRadius: '6px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 500, padding: '7px 0', fontFamily: FONT_STACK }}>Clear</button>
-                                <button onClick={applyMonthFilter} style={{ flex: 1, background: theme.colors.primary, color: theme.colors.white, border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600, padding: '7px 0', fontFamily: FONT_STACK }}>Apply</button>
+                                <button onClick={applyMonthFilterSelection} style={{ flex: 1, background: theme.colors.primary, color: theme.colors.white, border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600, padding: '7px 0', fontFamily: FONT_STACK }}>Apply</button>
                             </div>
                         </div>
                     )}
@@ -1855,6 +1873,9 @@ const Knitting = () => {
                     fontSize: '0.875rem', color: '#065f46'
                 }}>
                     <strong>{filteredRows.length} record{filteredRows.length === 1 ? '' : 's'} found</strong>
+                    {filteredRows.length !== allRows.length && (
+                        <span>(filtered from {allRows.length})</span>
+                    )}
                     {filteredRows.length > 0 && (
                         <span>
                             Showing {rangeStart}–{rangeEnd}
@@ -1926,8 +1947,7 @@ const Knitting = () => {
                                                     ref={(el) => { filterButtonRefs.current[th.key] = el; }}
                                                     onMouseDown={(e) => e.stopPropagation()}
                                                     onClick={() => handleOpenFilter(th.key)}
-                                                    title={searchActive ? "Clear the search to use column filters" : undefined}
-                                                    style={{ border: "none", background: (isActive || isOpen) ? theme.colors.primary : "transparent", color: theme.colors.white, cursor: searchActive ? "not-allowed" : "pointer", opacity: searchActive ? 0.4 : 1, padding: "2px 4px", borderRadius: '4px', display: 'flex', alignItems: 'center', transition: 'all 0.15s', flexShrink: 0 }}
+                                                    style={{ border: "none", background: (isActive || isOpen) ? theme.colors.primary : "transparent", color: theme.colors.white, cursor: "pointer", padding: "2px 4px", borderRadius: '4px', display: 'flex', alignItems: 'center', transition: 'all 0.15s', flexShrink: 0 }}
                                                 >
                                                     <Filter size={12} />
                                                 </button>

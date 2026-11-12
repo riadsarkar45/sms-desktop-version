@@ -497,7 +497,7 @@ function OperationModal({ isOpen, onClose, onSave, isLoading, initialData, compo
     setCommon({
       date: initialData?.date || new Date().toISOString().split("T")[0],
       lineNo: initialData?.lineNo || "",
-      manufacturingUnit: user?.workingStation,
+      manufacturingUnit: user?.workingStation || "",
       compositionId: initialData?.compositionId || (compositions.length === 1 ? compositions[0].id : ""),
       productionType: "",
     });
@@ -604,7 +604,7 @@ function OperationModal({ isOpen, onClose, onSave, isLoading, initialData, compo
     const e = {};
     if (!common.date) e.date = "Select a date.";
     if (!common.lineNo.trim()) e.lineNo = "Enter the line number.";
-    if (!common.manufacturingUnit.trim()) e.manufacturingUnit = "Enter the manufacturing unit.";
+    if (!(common.manufacturingUnit || "").trim()) e.manufacturingUnit = "Enter the manufacturing unit.";
     if (compositions.length > 0 && !common.compositionId) e.compositionId = "Select a composition.";
 
     if (!useComplete && !useProcesses) e.mode = "Choose Complete GMTS, Processes, or both.";
@@ -669,7 +669,7 @@ function OperationModal({ isOpen, onClose, onSave, isLoading, initialData, compo
       <form
         onSubmit={handleSubmit}
         noValidate
-        className="bg-white rounded-2xl shadow-2xl w-full max-w-6xl max-h-[92vh] flex flex-col overflow-hidden border border-slate-100 animate-in fade-in zoom-in duration-200"
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-6xl max-h-[100vh] flex flex-col overflow-hidden border border-slate-100 animate-in fade-in zoom-in duration-200"
       >
         {/* Header */}
         <div className="shrink-0 px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-gradient-to-r from-slate-50 to-indigo-50/60">
@@ -810,7 +810,7 @@ function OperationModal({ isOpen, onClose, onSave, isLoading, initialData, compo
               <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
                 <Field label="Item Type" required error={errors.complete_itemType}>
                   <div className="relative">
-                    <input type="text" name="itemType" min="0" step="any" placeholder="Item type (e.g. T-shirt, Shirt, etc.)"
+                    <input type="text" name="itemType" placeholder="Item type (e.g. T-shirt, Shirt, etc.)"
                       value={complete.itemType} onChange={handleCompleteChange}
                       className={inputCls(errors.complete_itemType, "pl-10 bg-white tabular-nums")} />
                     <Tag size={16} className="absolute left-3.5 top-3 text-slate-400 pointer-events-none" />
@@ -830,9 +830,9 @@ function OperationModal({ isOpen, onClose, onSave, isLoading, initialData, compo
                     className={inputCls(errors.complete_production, "bg-white tabular-nums")} />
                 </Field>
                 <Field label="Party Name" required error={errors.complete_partyName}>
-                  <input type="text" name="partyName" min="0" placeholder="Party name"
+                  <input type="text" name="partyName" placeholder="Party name"
                     value={complete.partyName} onChange={handleCompleteChange}
-                    className={inputCls(errors.complete_partyName, "bg-white tabular-nums")} />
+                    className={inputCls(errors.complete_partyName, "bg-white")} />
                 </Field>
               </div>
               {Number(complete.pricePerPcs) > 0 && Number(complete.production) > 0 && (
@@ -1016,7 +1016,6 @@ export default function SewingContract() {
   const [searchResults, setSearchResults] = useState([]);
   const [selectedJob, setSelectedJob] = useState(null);
   const [compositionId, setCompositionId] = useState(null);
-  const skipNextSearch = useRef(false);
 
   const [rows, setRows] = useState([]);
   const [isLoadingRows, setIsLoadingRows] = useState(false);
@@ -1041,8 +1040,8 @@ export default function SewingContract() {
   };
 
   const fetchSummary = useCallback(async () => {
-    setIsLoadingRows(true);
     if (!user) return;
+    setIsLoadingRows(true);
     try {
       const { data } = await axiosPrivate.get(`/api/get-contractual-job-summary/${user?.workingStation}`);
       const list = Array.isArray(data) ? data : data ? [data] : [];
@@ -1072,7 +1071,6 @@ export default function SewingContract() {
     setSelectedJob(job);
     setCompositionId(chosenCompositionId !== null ? chosenCompositionId : firstValid ? firstValid.id : null);
     setHeaderData(prev => ({ ...prev, jobNo: job.jobNo || "", styleNo: job.styleNo || "" }));
-    skipNextSearch.current = true;
     setJobSearch(job.jobNo || "");
     setSearchResults([]);
   };
@@ -1083,25 +1081,31 @@ export default function SewingContract() {
     setJobSearch(""); setSearchResults([]);
   };
 
+  // Job search (debounced). Uses the typed term, and skips searching when the
+  // input simply mirrors the job that was just selected from the dropdown.
   useEffect(() => {
-    if (skipNextSearch.current) { skipNextSearch.current = false; return; }
     const term = jobSearch.trim();
-    if (!term) { setSearchResults([]); setIsSearching(false); return; }
+
+    if (!term) { setSearchResults([]); setIsSearching(false); return undefined; }
+    if (selectedJob && term === (selectedJob.jobNo || "").trim()) { return undefined; }
+
     let cancelled = false;
     const timer = setTimeout(async () => {
       setIsSearching(true);
       try {
-        const { data } = await axiosPrivate.get("/api/get-contractual-job", { params: { jobNo: jobNo } });
+        const { data } = await axiosPrivate.get("/api/get-contractual-job", { params: { jobNo: term } });
         if (cancelled) return;
         setSearchResults(Array.isArray(data) ? data : data ? [data] : []);
       } catch (e) {
-        console.log(e);
+        console.error("Job search failed:", e);
         if (!cancelled) setSearchResults([]);
+      } finally {
+        if (!cancelled) setIsSearching(false);
       }
-      finally { if (!cancelled) setIsSearching(false); }
     }, 800);
+
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [jobSearch, axiosPrivate]);
+  }, [jobSearch, selectedJob, axiosPrivate]);
 
   // Save: builds one payload per entry (1 for Complete GMTS + 1 per process row)
   const handleSaveOperation = async (form) => {

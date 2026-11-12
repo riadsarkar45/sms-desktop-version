@@ -95,12 +95,11 @@ const Login = () => {
                     <div>
                         {/* Logo */}
                         <div className="flex items-center gap-3.5 mb-10">
-                            <div className="w-[10] h-[10rem] rounded-xl bg-white border border-slate-200 shadow-sm flex items-center justify-center p-2.5">
-                                <img
-                                    src={Logo}
-                                    alt="SM Sourcing Logo"
-                                    className="w-full h-full object-contain"
-                                />
+                            <div className="w-40 h-40 rounded-xl bg-white border border-slate-200 shadow-sm flex items-center justify-center p-2.5">                                <img
+                                src={Logo}
+                                alt="SM Sourcing Logo"
+                                className="w-full h-full object-contain"
+                            />
                             </div>
                         </div>
 

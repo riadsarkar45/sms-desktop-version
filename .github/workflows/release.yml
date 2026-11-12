@@ -2,12 +2,8 @@ name: Publish SM Sourcing Desktop
 
 on:
   push:
-    branches:
-      - main
     tags:
       - "v*"
-  workflow_dispatch:
-
 permissions:
   contents: write
 
@@ -90,6 +86,16 @@ jobs:
           }
           Write-Host "WiX binaries are ready in Tauri's expected cache."
 
+      - name: Validate all application versions
+        id: app_version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          node scripts/release.js check "$env:GITHUB_REF_NAME"
+          $version = node -p "require('./package.json').version"
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Building SM Sourcing v$version"
+
       - name: Install frontend dependencies
         run: npm ci
 
@@ -100,8 +106,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v0.1.5' }}
-          releaseName: "SM Sourcing v${{ github.ref_type == 'tag' && github.ref_name || '0.1.5' }}"
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', steps.app_version.outputs.version) }}
+          releaseName: "SM Sourcing ${{ github.ref_type == 'tag' && github.ref_name || format('v{0}', steps.app_version.outputs.version) }}"
           releaseBody: "SM Sourcing Desktop release. Download the Windows MSI installer from the assets below."
           releaseDraft: false
           prerelease: false

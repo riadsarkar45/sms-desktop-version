@@ -31,6 +31,13 @@ const fmtYmd = (s) => {
     return `${d}-${MON[Number(m) - 1]}-${y}`;
 };
 
+/* "2026-11-01" -> "2026-10-31" (timezone safe) */
+const prevDay = (s) => {
+    const [y, m, d] = String(s).split("-").map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d - 1));
+    return dt.toISOString().slice(0, 10);
+};
+
 const pickMetric = (dt, aliases) => {
     const map = {};
     Object.keys(dt || {}).forEach((k) => {
@@ -88,96 +95,44 @@ const anchorOf = (el) => {
     return { left: r.left, bottom: r.bottom, zoom: getZoom(el) };
 };
 
-/* ===================================================================
-   STATIC ORDER TYPES  (knittingOrder, dyeingOrder, aopOrder)
-   metrics: field -> accepted API key names (lowercase, letters/digits only)
+/* factories of one API response -> Map(lowercase name -> { name, m }) with the metrics picked (strict aliases)
+   factories whose names only differ by spaces / case are merged */
+const factoryMetrics = (list, metrics) => {
+    const merged = new Map();
+    (Array.isArray(list) ? list : []).forEach((f) => {
+        const name = String(f?.factoryName ?? "").trim();
+        const key = name.toLowerCase();
+        const t = buildTotals(f);
+        if (!merged.has(key)) merged.set(key, { name, totals: {} });
+        const entry = merged.get(key);
+        Object.entries(t).forEach(([k, v]) => {
+            entry.totals[k] = (entry.totals[k] || 0) + v;
+        });
+    });
+    const out = new Map();
+    merged.forEach(({ name, totals }, key) => {
+        const m = {};
+        Object.entries(metrics).forEach(([k, aliases]) => {
+            m[k] = round2(pickMetric(totals, aliases));
+        });
+        out.set(key, { name, m });
+    });
+    return out;
+};
 
-   IMPORTANT: aliases are STRICT per tab. The API returns every factory on
-   every tab, and knitting / dyeing factories use similar names:
-     Knitting  -> "Grey Fabric Received"
-     Dyeing    -> "Grey Received", "Finish Received"
-     AOP       -> "AOP Finish Fabric Rcvd"
-   Sharing aliases between tabs double counts quantities.
-   =================================================================== */
-const ORDER_TYPES = [
-    {
-        key: "knittingOrder",
-        label: "Knitting",
-        title: "Knitting Party Stock",
-        fileName: "Knitting_Party_Stock",
-        Component: KnittingGlance,
-        metrics: {
-            yarnDelivery: ["yarndelivery"],
-            yarnReturn: ["yarnreturn"],
-            greyReceived: ["greyfabricreceived"],
-        },
-        derive: (m) => ({
-            partyStock: round2(m.yarnDelivery - m.yarnReturn - m.greyReceived),
-        }),
-        columns: [
-            { key: "serial", label: "SL", kind: "serial" },
-            { key: "factoryName", label: "Factory Name", kind: "text" },
-            { key: "yarnDelivery", label: "Yarn Delivery", kind: "num" },
-            { key: "yarnReturn", label: "Yarn Return", kind: "num" },
-            { key: "greyReceived", label: "Grey Received", kind: "num" },
-            { key: "partyStock", label: "Party Stock", kind: "stock" },
-        ],
-    },
-    {
-        key: "dyeingOrder",
-        label: "Dyeing",
-        title: "Dyeing Party Stock",
-        fileName: "Dyeing_Party_Stock",
-        Component: DyeingGlance,
-        metrics: {
-            greyDelivery: ["greydelivery"],
-            greyReturn: ["greyreturn"],
-            greyReceived: ["greyreceived"],
-            finishReceived: ["finishreceived"],
-        },
-        derive: (m) => ({
-            processLoss: m.greyReceived
-                ? round2(((m.greyReceived - m.finishReceived) / m.greyReceived) * 100)
-                : 0,
-            partyStock: round2(m.greyDelivery - m.greyReturn - m.greyReceived),
-        }),
-        columns: [
-            { key: "serial", label: "SL", kind: "serial" },
-            { key: "factoryName", label: "Factory Name", kind: "text" },
-            { key: "greyDelivery", label: "Grey Delivery", kind: "num" },
-            { key: "greyReturn", label: "Grey Return", kind: "num" },
-            { key: "greyReceived", label: "Grey Received", kind: "num" },
-            { key: "finishReceived", label: "Finish Received", kind: "num" },
-            { key: "processLoss", label: "Process Loss", kind: "pct" },
-            { key: "partyStock", label: "Party Stock", kind: "stock" },
-        ],
-    },
-    {
-        key: "aopOrder",
-        label: "AOP",
-        title: "AOP Party Stock",
-        fileName: "AOP_Party_Stock",
-        Component: AopGlance,
-        metrics: {
-            sentForAop: ["sentforaop"],
-            returnFromAop: ["returnfromaop"],
-            receivedFromAop: ["receivedfromaop"],
-            finishReceived: ["aopfinishfabricrcvd", "finishreceivedfromaop", "aopfinishreceived"],
-        },
-        derive: (m) => ({
-            partyStock: round2(m.sentForAop - m.returnFromAop - m.receivedFromAop),
-        }),
-        columns: [
-            { key: "serial", label: "SL", kind: "serial" },
-            { key: "factoryName", label: "Factory Name", kind: "text" },
-            { key: "sentForAop", label: "Sent For AOP", kind: "num" },
-            { key: "returnFromAop", label: "Return From AOP", kind: "num" },
-            { key: "receivedFromAop", label: "Received From AOP", kind: "num" },
-            { key: "finishReceived", label: "Finish Received From AOP", kind: "num" },
-            { key: "partyStock", label: "Party Stock", kind: "stock" },
-        ],
-    },
-];
+const hasActivity = (m) => Object.values(m).some((v) => v !== 0);
+
+/* rows of a normal order tab (Knitting / Dyeing / AOP): drops factories with no activity on that tab */
+const standardBuild = (orderKey, metrics, derive) => (ds) => {
+    const rows = [];
+    factoryMetrics(ds[orderKey], metrics).forEach(({ name, m }) => {
+        if (!hasActivity(m)) return;
+        rows.push({ factoryName: name, ...m, ...derive(m) });
+    });
+    return rows;
+};
+
+const sumOf = (rows, k) => round2(rows.reduce((s, r) => s + (Number(r[k]) || 0), 0));
 
 /* ---------- table / header styles ---------- */
 const cellStyle = {
@@ -207,11 +162,333 @@ const headerCellStyle = {
     padding: "9px 10px",
 };
 
+/* ===================================================================
+   GENERIC TABLE BODY (used by the Summary and Finish Fabric tabs)
+   renders <tbody> + <tfoot> like KnittingGlance / DyeingGlance / AopGlance
+   kinds: text | serial | count | num | pct | stock | open (Opening Qty)
+   =================================================================== */
+const StaticBody = ({ rows, totals, columns, showTotal = true, onRowClick }) => {
+    const renderValue = (c, r) => {
+        const v = r[c.key];
+        if (c.kind === "text" || c.kind === "serial") return v;
+        if (c.kind === "count") return Number(v) || 0;
+        if (c.kind === "pct") return pctCell(v);
+        if (c.kind === "stock") return Number(v) < 0 ? `(${fmt(Math.abs(v))})` : fmt(v);
+        if (c.kind === "open") {
+            if (!Number(v)) return "-";
+            return Number(v) < 0 ? `(${fmt(Math.abs(v))})` : fmt(v);
+        }
+        return Number(v) ? fmt(v) : "-"; // num: show - for zero
+    };
+
+    const styleOf = (c, r, idx) => {
+        const base = { ...cellStyle, backgroundColor: idx % 2 === 1 ? "#F2F7F4" : "#ffffff" };
+        if (c.kind === "text") return { ...base, textAlign: "left", fontWeight: 600 };
+        if (c.kind === "stock") {
+            return { ...base, backgroundColor: "#FBF0CD", fontWeight: 700, ...(Number(r[c.key]) < 0 ? { color: "#8C1D2F" } : {}) };
+        }
+        if (c.kind === "open") {
+            return { ...base, backgroundColor: "#E0F2FE", fontWeight: 700, ...(Number(r[c.key]) < 0 ? { color: "#8C1D2F" } : {}) };
+        }
+        if (c.kind === "pct") return { ...base, backgroundColor: "#CEFAE5" };
+        return base;
+    };
+
+    if (!rows.length) {
+        return (
+            <tbody>
+                <tr>
+                    <td colSpan={columns.length} style={{ ...cellStyle, padding: 40, color: "#6b7280", backgroundColor: "#fafafa" }}>
+                        No data found.
+                    </td>
+                </tr>
+            </tbody>
+        );
+    }
+
+    const footStyle = {
+        ...cellStyle,
+        position: "sticky",
+        bottom: 0,
+        zIndex: 15,
+        backgroundColor: "#E8F5E9",
+        fontWeight: 700,
+    };
+
+    return (
+        <>
+            <tbody>
+                {rows.map((r, idx) => (
+                    <tr
+                        key={r.id ?? `${r.factoryName}-${idx}`}
+                        onClick={onRowClick ? () => onRowClick(r) : undefined}
+                        title={onRowClick ? "Click to open this tab" : undefined}
+                        style={onRowClick ? { cursor: "pointer" } : undefined}
+                    >
+                        {columns.map((c) => (
+                            <td key={c.key} style={styleOf(c, r, idx)}>
+                                {renderValue(c, r)}
+                            </td>
+                        ))}
+                    </tr>
+                ))}
+            </tbody>
+            {showTotal && (
+                <tfoot>
+                    <tr>
+                        {columns.map((c) => {
+                            let val = "";
+                            if (c.kind === "text") val = "TOTAL";
+                            else if (c.kind === "serial") val = "";
+                            else if (c.kind === "count") val = Number(totals[c.key]) || 0;
+                            else if (c.kind === "pct") val = pctCell(totals[c.key]);
+                            else if (c.kind === "stock" || c.kind === "open")
+                                val = Number(totals[c.key]) < 0 ? `(${fmt(Math.abs(totals[c.key]))})` : fmt(totals[c.key]);
+                            else val = fmt(totals[c.key]);
+                            return (
+                                <td key={c.key} style={{ ...footStyle, textAlign: c.kind === "text" ? "left" : "center" }}>
+                                    {val}
+                                </td>
+                            );
+                        })}
+                    </tr>
+                </tfoot>
+            )}
+        </>
+    );
+};
+
+/* ===================================================================
+   TABS
+   metrics: field -> accepted API key names (lowercase, letters/digits only)
+
+   IMPORTANT: aliases are STRICT per tab. The API returns every factory on
+   every tab, and knitting / dyeing factories use similar names:
+     Knitting  -> "Grey Fabric Received"
+     Dyeing    -> "Grey Received", "Finish Received"
+     AOP       -> "AOP Finish Fabric Rcvd"
+   Sharing aliases between tabs double counts quantities.
+
+   needs  = which order APIs this tab loads (/api/mis-party-stock/:orderKey)
+   build  = (datasets, openingDatasets) -> rows
+            openingDatasets = same shape as datasets, but calculated up to the day
+            BEFORE the selected period starts (only used by the Summary tab)
+   =================================================================== */
+const KNIT_METRICS = {
+    yarnDelivery: ["yarndelivery"],
+    yarnReturn: ["yarnreturn"],
+    greyReceived: ["greyfabricreceived"],
+};
+const DYE_METRICS = {
+    greyDelivery: ["greydelivery"],
+    greyReturn: ["greyreturn"],
+    greyReceived: ["greyreceived"],
+    finishReceived: ["finishreceived"],
+};
+const AOP_METRICS = {
+    sentForAop: ["sentforaop"],
+    returnFromAop: ["returnfromaop"],
+    receivedFromAop: ["receivedfromaop"],
+    finishReceived: ["aopfinishfabricrcvd", "finishreceivedfromaop", "aopfinishreceived"],
+};
+
+const deriveKnit = (m) => ({
+    partyStock: round2(m.yarnDelivery - m.yarnReturn - m.greyReceived),
+});
+const deriveDye = (m) => ({
+    processLoss: m.greyReceived ? round2(((m.greyReceived - m.finishReceived) / m.greyReceived) * 100) : 0,
+    partyStock: round2(m.greyDelivery - m.greyReturn - m.greyReceived),
+});
+const deriveAop = (m) => ({
+    partyStock: round2(m.sentForAop - m.returnFromAop - m.receivedFromAop),
+});
+
+const KNITTING_TAB = {
+    key: "knittingOrder",
+    label: "Knitting",
+    title: "Knitting Party Stock",
+    fileName: "Knitting_Party_Stock",
+    unit: "factories",
+    Component: KnittingGlance,
+    needs: ["knittingOrder"],
+    sumKeys: Object.keys(KNIT_METRICS),
+    derive: deriveKnit,
+    build: standardBuild("knittingOrder", KNIT_METRICS, deriveKnit),
+    columns: [
+        { key: "serial", label: "SL", kind: "serial" },
+        { key: "factoryName", label: "Factory Name", kind: "text" },
+        { key: "yarnDelivery", label: "Yarn Delivery", kind: "num" },
+        { key: "yarnReturn", label: "Yarn Return", kind: "num" },
+        { key: "greyReceived", label: "Grey Received", kind: "num" },
+        { key: "partyStock", label: "Party Stock", kind: "stock" },
+    ],
+};
+
+const DYEING_TAB = {
+    key: "dyeingOrder",
+    label: "Dyeing",
+    title: "Dyeing Party Stock",
+    fileName: "Dyeing_Party_Stock",
+    unit: "factories",
+    Component: DyeingGlance,
+    needs: ["dyeingOrder"],
+    sumKeys: Object.keys(DYE_METRICS),
+    derive: deriveDye,
+    build: standardBuild("dyeingOrder", DYE_METRICS, deriveDye),
+    columns: [
+        { key: "serial", label: "SL", kind: "serial" },
+        { key: "factoryName", label: "Factory Name", kind: "text" },
+        { key: "greyDelivery", label: "Grey Delivery", kind: "num" },
+        { key: "greyReturn", label: "Grey Return", kind: "num" },
+        { key: "greyReceived", label: "Grey Received", kind: "num" },
+        { key: "finishReceived", label: "Finish Received", kind: "num" },
+        { key: "processLoss", label: "Process Loss", kind: "pct" },
+        { key: "partyStock", label: "Party Stock", kind: "stock" },
+    ],
+};
+
+const AOP_TAB = {
+    key: "aopOrder",
+    label: "AOP",
+    title: "AOP Party Stock",
+    fileName: "AOP_Party_Stock",
+    unit: "factories",
+    Component: AopGlance,
+    needs: ["aopOrder"],
+    sumKeys: Object.keys(AOP_METRICS),
+    derive: deriveAop,
+    build: standardBuild("aopOrder", AOP_METRICS, deriveAop),
+    columns: [
+        { key: "serial", label: "SL", kind: "serial" },
+        { key: "factoryName", label: "Factory Name", kind: "text" },
+        { key: "sentForAop", label: "Sent For AOP", kind: "num" },
+        { key: "returnFromAop", label: "Return From AOP", kind: "num" },
+        { key: "receivedFromAop", label: "Received From AOP", kind: "num" },
+        { key: "finishReceived", label: "Finish Received From AOP", kind: "num" },
+        { key: "partyStock", label: "Party Stock", kind: "stock" },
+    ],
+};
+
+/* FINISH FABRIC (factory wise) = Dyeing "Finish Received" + AOP "Finish Fabric Rcvd" */
+const FINISH_TAB = {
+    key: "finishFabric",
+    label: "Finish Fabric",
+    title: "Finish Fabric Received (Factory Wise)",
+    fileName: "Finish_Fabric_Received",
+    unit: "factories",
+    Component: StaticBody,
+    needs: ["dyeingOrder", "aopOrder"],
+    sumKeys: ["dyeingFinish", "aopFinish"],
+    derive: (m) => ({ totalFinish: round2(m.dyeingFinish + m.aopFinish) }),
+    build: (ds) => {
+        const dye = factoryMetrics(ds.dyeingOrder, { finish: DYE_METRICS.finishReceived });
+        const aop = factoryMetrics(ds.aopOrder, { finish: AOP_METRICS.finishReceived });
+        const keys = new Set([...dye.keys(), ...aop.keys()]);
+        const rows = [];
+        keys.forEach((k) => {
+            const d = dye.get(k);
+            const a = aop.get(k);
+            const dyeingFinish = d ? d.m.finish : 0;
+            const aopFinish = a ? a.m.finish : 0;
+            if (dyeingFinish === 0 && aopFinish === 0) return;
+            rows.push({
+                factoryName: (d && d.name) || (a && a.name) || "",
+                dyeingFinish,
+                aopFinish,
+                totalFinish: round2(dyeingFinish + aopFinish),
+            });
+        });
+        return rows.sort((x, y) => x.factoryName.toLowerCase().localeCompare(y.factoryName.toLowerCase()));
+    },
+    columns: [
+        { key: "serial", label: "SL", kind: "serial" },
+        { key: "factoryName", label: "Factory Name", kind: "text" },
+        { key: "dyeingFinish", label: "Dyeing Finish Received", kind: "num" },
+        { key: "aopFinish", label: "AOP Finish Received", kind: "num" },
+        { key: "totalFinish", label: "Total Finish Fabric Rcvd", kind: "stock" },
+    ],
+};
+
+/* SUMMARY = Yarn stock + Dyeing stock + AOP stock + Finish fabric stock
+   Opening Qty  = party stock of all transactions BEFORE the selected period
+   Party Stock  = Opening Qty + (Delivery - Return - Received) of the selected period (closing) */
+const SUMMARY_TAB = {
+    key: "summary",
+    label: "Summary",
+    title: "Party Stock Summary",
+    fileName: "Party_Stock_Summary",
+    unit: "stock types",
+    Component: StaticBody,
+    showTotal: false, // different stock types (yarn / fabric) are not added together
+    rowTab: true, // click a row = open that tab
+    needs: ["knittingOrder", "dyeingOrder", "aopOrder"],
+    sumKeys: ["factories", "opening", "delivery", "ret", "received", "finishReceived", "stock"],
+    derive: () => ({}),
+    build: (ds, openDs = {}) => {
+        const k = KNITTING_TAB.build(ds);
+        const d = DYEING_TAB.build(ds);
+        const a = AOP_TAB.build(ds);
+        const f = FINISH_TAB.build(ds);
+        const finishTotal = sumOf(f, "totalFinish");
+
+        /* opening = same calculation on the data before the period starts */
+        const ok = KNITTING_TAB.build(openDs);
+        const od = DYEING_TAB.build(openDs);
+        const oa = AOP_TAB.build(openDs);
+        const of = FINISH_TAB.build(openDs);
+        const openYarn = sumOf(ok, "partyStock");
+        const openDye = sumOf(od, "partyStock");
+        const openAop = sumOf(oa, "partyStock");
+        const openFinish = sumOf(of, "totalFinish");
+
+        return [
+            {
+                id: "yarn", tabKey: KNITTING_TAB.key, label: "Yarn Stock (Knitting)", factories: k.length,
+                opening: openYarn,
+                delivery: sumOf(k, "yarnDelivery"), ret: sumOf(k, "yarnReturn"), received: sumOf(k, "greyReceived"),
+                finishReceived: 0, stock: round2(openYarn + sumOf(k, "partyStock")),
+            },
+            {
+                id: "dyeing", tabKey: DYEING_TAB.key, label: "Dyeing Stock", factories: d.length,
+                opening: openDye,
+                delivery: sumOf(d, "greyDelivery"), ret: sumOf(d, "greyReturn"), received: sumOf(d, "greyReceived"),
+                finishReceived: sumOf(d, "finishReceived"), stock: round2(openDye + sumOf(d, "partyStock")),
+            },
+            {
+                id: "aop", tabKey: AOP_TAB.key, label: "AOP Stock", factories: a.length,
+                opening: openAop,
+                delivery: sumOf(a, "sentForAop"), ret: sumOf(a, "returnFromAop"), received: sumOf(a, "receivedFromAop"),
+                finishReceived: sumOf(a, "finishReceived"), stock: round2(openAop + sumOf(a, "partyStock")),
+            },
+            {
+                id: "finish", tabKey: FINISH_TAB.key, label: "Finish Fabric Stock", factories: f.length,
+                opening: openFinish,
+                delivery: 0, ret: 0, received: 0,
+                finishReceived: finishTotal, stock: round2(openFinish + finishTotal),
+            },
+        ];
+    },
+    columns: [
+        { key: "serial", label: "SL", kind: "serial" },
+        { key: "label", label: "Stock Type", kind: "text" },
+        { key: "factories", label: "Factories", kind: "count" },
+        { key: "opening", label: "Opening Qty", kind: "open" },
+        { key: "delivery", label: "Delivery / Sent", kind: "num" },
+        { key: "ret", label: "Return", kind: "num" },
+        { key: "received", label: "Received", kind: "num" },
+        { key: "finishReceived", label: "Finish Received", kind: "num" },
+        { key: "stock", label: "Party Stock", kind: "stock" },
+    ],
+};
+
+const TABS = [SUMMARY_TAB, KNITTING_TAB, DYEING_TAB, AOP_TAB, FINISH_TAB];
+
 /* ---------- filter helpers ---------- */
 const textOf = (col, row) => {
     const v = row[col.key];
     if (col.kind === "text") return String(v ?? "");
     if (col.kind === "serial") return String(v);
+    if (col.kind === "count") return String(Number(v) || 0);
     if (col.kind === "pct") return pctCell(v);
     return fmt(v);
 };
@@ -465,8 +742,9 @@ const MonthPicker = ({ options, selected, onApply }) => {
    PARENT
    =================================================================== */
 const PartyStockGlance = () => {
-    const [activeKey, setActiveKey] = useState(ORDER_TYPES[0].key);
-    const [data, setData] = useState([]);
+    const [activeKey, setActiveKey] = useState(TABS[0].key); // Summary tab first
+    const [datasets, setDatasets] = useState({}); // { knittingOrder: [...], dyeingOrder: [...], aopOrder: [...] }
+    const [openingDatasets, setOpeningDatasets] = useState({}); // same shape, data BEFORE the selected period (Summary only)
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState("");
     const [filters, setFilters] = useState({});
@@ -474,7 +752,7 @@ const PartyStockGlance = () => {
     const [openFilter, setOpenFilter] = useState(null); // { key, rect }
     const [exporting, setExporting] = useState(false);
 
-    /* date / month filter (sent to the API) */
+    /* date / month filter (sent to the API, calculated by challan date) */
     const [dateFrom, setDateFrom] = useState("");
     const [dateTo, setDateTo] = useState("");
     const [selMonths, setSelMonths] = useState([]); // ["2026-09", ...]
@@ -488,11 +766,25 @@ const PartyStockGlance = () => {
     const fetchRef = useRef(fetchData);
     fetchRef.current = fetchData; // always latest, never triggers re-fetch
 
-    const cfg = useMemo(() => ORDER_TYPES.find((o) => o.key === activeKey), [activeKey]);
-    const { columns, metrics, derive, Component } = cfg;
+    const cfg = useMemo(() => TABS.find((o) => o.key === activeKey) || TABS[0], [activeKey]);
+    const { columns, Component } = cfg;
+    const showTotal = cfg.showTotal !== false;
 
     const monthsKey = selMonths.join(",");
     const dateInvalid = !!(dateFrom && dateTo && dateFrom > dateTo);
+
+    /* ---------------- OPENING DATE ----------------
+       period start = earliest of (From date, first day of the earliest selected month)
+       opening data = everything up to the day BEFORE the period start
+       no From date / no month selected = no opening (everything counts from the beginning) */
+    const periodStart = useMemo(() => {
+        const c = [];
+        if (dateFrom) c.push(dateFrom);
+        if (selMonths.length) c.push(`${[...selMonths].sort()[0]}-01`);
+        return c.length ? c.sort()[0] : "";
+    }, [dateFrom, selMonths]);
+
+    const openingTo = periodStart ? prevDay(periodStart) : "";
 
     /* ---------------- table height: fill the screen below the cards ---------------- */
     const measure = useCallback(() => {
@@ -523,14 +815,18 @@ const PartyStockGlance = () => {
         };
     }, [measure]);
 
-    /* ---------------- API: /api/mis-party-stock/:orderType?fromDate&toDate&months ---------------- */
+    /* ---------------- API: /api/mis-party-stock/:orderType?fromDate&toDate&months ----------------
+       Summary loads knitting + dyeing + aop, Finish Fabric loads dyeing + aop, other tabs load their own order.
+       Summary also loads the same orders with toDate = (period start - 1 day) for the Opening Qty. */
     const load = useCallback(async () => {
         if (dateFrom && dateTo && dateFrom > dateTo) return; // invalid range, wait for the user
 
+        const tab = TABS.find((t) => t.key === activeKey) || TABS[0];
         const id = ++reqId.current;
         setLoading(true);
         setError("");
-        setData([]);
+        setDatasets({});
+        setOpeningDatasets({});
         try {
             const params = new URLSearchParams();
             if (dateFrom) params.set("fromDate", dateFrom);
@@ -538,25 +834,58 @@ const PartyStockGlance = () => {
             if (monthsKey) params.set("months", monthsKey);
             const qs = params.toString();
 
-            const res = await fetchRef.current(
-                `/api/mis-party-stock/${activeKey}${qs ? `?${qs}` : ""}`
-            );
-            const body = extractBody(res);
+            /* opening query: only toDate, no fromDate and no months = all earlier transactions */
+            const needOpening = tab.key === "summary" && !!openingTo;
+            const openQs = needOpening ? `?toDate=${openingTo}` : "";
 
-            if (body.success === false || (body.type && body.type !== "success")) {
-                throw new Error(body.message || "API returned an error");
+            const [responses, openResponses] = await Promise.all([
+                Promise.all(
+                    tab.needs.map((orderKey) =>
+                        fetchRef.current(`/api/mis-party-stock/${orderKey}${qs ? `?${qs}` : ""}`)
+                    )
+                ),
+                needOpening
+                    ? Promise.all(
+                          tab.needs.map((orderKey) =>
+                              fetchRef.current(`/api/mis-party-stock/${orderKey}${openQs}`)
+                          )
+                      )
+                    : Promise.resolve([]),
+            ]);
+
+            const next = {};
+            const monthMap = new Map();
+            tab.needs.forEach((orderKey, i) => {
+                const body = extractBody(responses[i]);
+                if (body.success === false || (body.type && body.type !== "success")) {
+                    throw new Error(body.message || "API returned an error");
+                }
+                next[orderKey] = Array.isArray(body.data) ? body.data : [];
+                if (Array.isArray(body.months)) body.months.forEach((mo) => monthMap.set(mo.key, mo));
+            });
+
+            const nextOpen = {};
+            if (needOpening) {
+                tab.needs.forEach((orderKey, i) => {
+                    const body = extractBody(openResponses[i]);
+                    if (body.success === false || (body.type && body.type !== "success")) {
+                        throw new Error(body.message || "Opening data API returned an error");
+                    }
+                    nextOpen[orderKey] = Array.isArray(body.data) ? body.data : [];
+                });
             }
 
             if (id !== reqId.current) return;
-            setData(Array.isArray(body.data) ? body.data : []);
-            if (Array.isArray(body.months)) setMonthOptions(body.months);
+            setDatasets(next);
+            setOpeningDatasets(nextOpen);
+            if (monthMap.size) setMonthOptions(Array.from(monthMap.values()));
         } catch (e) {
             if (id !== reqId.current) return;
             setError(e?.response?.data?.message || e?.message || "Failed to load data");
         } finally {
             if (id === reqId.current) setLoading(false);
         }
-    }, [activeKey, dateFrom, dateTo, monthsKey]);
+    }, [activeKey, dateFrom, dateTo, monthsKey, openingTo]);
 
     /* switching tab resets column filters (date / month filters stay) */
     useEffect(() => {
@@ -570,41 +899,11 @@ const PartyStockGlance = () => {
         load();
     }, [load]);
 
-    /* ---------------- rows ----------------
-       1. merge factories whose names only differ by spaces / case
-       2. pick the metrics of the active tab (strict aliases)
-       3. drop factories with no activity on this tab
-       4. number the remaining rows */
-    const allRows = useMemo(() => {
-        const merged = new Map();
-        data.forEach((f) => {
-            const name = String(f?.factoryName ?? "").trim();
-            const key = name.toLowerCase();
-            const t = buildTotals(f);
-            if (!merged.has(key)) merged.set(key, { name, totals: {} });
-            const entry = merged.get(key);
-            Object.entries(t).forEach(([k, v]) => {
-                entry.totals[k] = (entry.totals[k] || 0) + v;
-            });
-        });
-
-        const rows = [];
-        merged.forEach(({ name, totals: dt }) => {
-            const m = {};
-            Object.entries(metrics).forEach(([k, aliases]) => {
-                m[k] = round2(pickMetric(dt, aliases));
-            });
-            const hasActivity = Object.values(m).some((v) => v !== 0);
-            if (!hasActivity) return;
-            rows.push({
-                factoryName: name,
-                ...m,
-                ...derive(m),
-            });
-        });
-
-        return rows.map((r, i) => ({ serial: i + 1, ...r }));
-    }, [data, metrics, derive]);
+    /* ---------------- rows (built by the active tab, then numbered) ---------------- */
+    const allRows = useMemo(
+        () => cfg.build(datasets, openingDatasets).map((r, i) => ({ serial: i + 1, ...r })),
+        [datasets, openingDatasets, cfg]
+    );
 
     const filteredRows = useMemo(() => {
         const rows = allRows.filter((r) => matches(r, columns, filters, null));
@@ -623,16 +922,20 @@ const PartyStockGlance = () => {
     /* ---------------- totals (footer + cards, filtered rows only) ---------------- */
     const totals = useMemo(() => {
         const m = {};
-        Object.keys(metrics).forEach((k) => {
-            m[k] = round2(filteredRows.reduce((s, r) => s + r[k], 0));
+        cfg.sumKeys.forEach((k) => {
+            m[k] = round2(filteredRows.reduce((s, r) => s + (Number(r[k]) || 0), 0));
         });
-        return { ...m, ...derive(m) };
-    }, [filteredRows, metrics, derive]);
+        return { ...m, ...cfg.derive(m) };
+    }, [filteredRows, cfg]);
 
-    const cards = useMemo(
-        () => columns.filter((c) => c.kind === "num" || c.kind === "stock"),
-        [columns]
-    );
+    const cards = useMemo(() => {
+        if (cfg.key === "summary") {
+            return filteredRows.map((r) => ({ key: r.id, label: r.label, value: r.stock, stock: true }));
+        }
+        return columns
+            .filter((c) => c.kind === "num" || c.kind === "stock")
+            .map((c) => ({ key: c.key, label: c.label, value: totals[c.key], stock: c.kind === "stock" }));
+    }, [cfg, columns, filteredRows, totals]);
 
     /* ---------------- filter options (cascading like Excel) ---------------- */
     const popupOptions = useMemo(() => {
@@ -669,6 +972,8 @@ const PartyStockGlance = () => {
         dateFrom || dateTo
             ? `${dateFrom ? fmtYmd(dateFrom) : "Start"} to ${dateTo ? fmtYmd(dateTo) : "End"}`
             : "";
+
+    const openingText = cfg.key === "summary" && openingTo ? `Opening Qty = stock up to ${fmtYmd(openingTo)}` : "";
 
     const clearAll = () => {
         setFilters({});
@@ -711,9 +1016,10 @@ const PartyStockGlance = () => {
             const s = ws.getCell(2, 1);
             s.value =
                 `Generated: ${new Date().toLocaleString("en-GB")}   |   ` +
-                `Factories: ${filteredRows.length} of ${allRows.length}` +
-                (periodText ? `   |   Period: ${periodText}` : "") +
+                `${cfg.unit === "stock types" ? "Stock types" : "Factories"}: ${filteredRows.length} of ${allRows.length}` +
+                (periodText ? `   |   Period (challan date): ${periodText}` : "") +
                 (monthLabels ? `   |   Months: ${monthLabels}` : "") +
+                (openingText ? `   |   ${openingText}` : "") +
                 (filterText ? `   |   Filtered by: ${filterText}` : "");
             s.font = { italic: true, size: 10, color: { argb: "FF374151" } };
             s.alignment = { vertical: "middle", horizontal: "left", wrapText: true };
@@ -732,11 +1038,11 @@ const PartyStockGlance = () => {
             hr.height = 24;
 
             const numFmt = (c) =>
-                c.kind === "stock"
+                c.kind === "stock" || c.kind === "open"
                     ? "#,##0.00;[Red](#,##0.00);0.00"
                     : c.kind === "pct"
                         ? "0.00%"
-                        : c.kind === "serial"
+                        : c.kind === "serial" || c.kind === "count"
                             ? "0"
                             : "#,##0.00";
 
@@ -748,6 +1054,7 @@ const PartyStockGlance = () => {
                 if (c.kind !== "text") cell.numFmt = numFmt(c);
                 let fill = bg;
                 if (!bold && c.kind === "stock") fill = "FFFBF0CD";
+                if (!bold && c.kind === "open") fill = "FFE0F2FE";
                 if (!bold && c.kind === "pct") fill = "FFCEFAE5";
                 if (fill) cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: fill } };
             };
@@ -763,15 +1070,17 @@ const PartyStockGlance = () => {
                 });
             });
 
-            const fr = ws.getRow(5 + filteredRows.length);
-            columns.forEach((c, ci) => {
-                const cell = fr.getCell(ci + 1);
-                if (c.kind === "serial") cell.value = "";
-                else if (c.kind === "text") cell.value = "TOTAL";
-                else cell.value = c.kind === "pct" ? totals[c.key] / 100 : totals[c.key];
-                styleCell(cell, c, "FFE8F5E9", true);
-            });
-            fr.height = 22;
+            if (showTotal) {
+                const fr = ws.getRow(5 + filteredRows.length);
+                columns.forEach((c, ci) => {
+                    const cell = fr.getCell(ci + 1);
+                    if (c.kind === "serial") cell.value = "";
+                    else if (c.kind === "text") cell.value = "TOTAL";
+                    else cell.value = c.kind === "pct" ? totals[c.key] / 100 : totals[c.key];
+                    styleCell(cell, c, "FFE8F5E9", true);
+                });
+                fr.height = 22;
+            }
 
             ws.autoFilter = {
                 from: { row: 4, column: 1 },
@@ -848,9 +1157,9 @@ const PartyStockGlance = () => {
                 .ps-card-value { font-size: 20px; font-weight: 700; color: #1F2937; font-variant-numeric: tabular-nums; margin-top: 2px; }
             `}</style>
 
-            {/* ---------- order type tabs (static array) ---------- */}
+            {/* ---------- tabs: Summary / Knitting / Dyeing / AOP / Finish Fabric ---------- */}
             <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-                {ORDER_TYPES.map((o) => (
+                {TABS.map((o) => (
                     <button
                         key={o.key}
                         type="button"
@@ -880,10 +1189,15 @@ const PartyStockGlance = () => {
                 <div>
                     <div style={{ fontSize: 16, fontWeight: 700, color: "#1F2937" }}>{cfg.title}</div>
                     <div style={{ fontSize: 12, color: "#6B7280" }}>
-                        Showing {filteredRows.length} of {allRows.length} factories
+                        Showing {filteredRows.length} of {allRows.length} {cfg.unit}
                         {activeCount > 0 && ` • ${activeCount} filter${activeCount > 1 ? "s" : ""} active`}
                         {periodText && ` • Period: ${periodText}`}
                         {monthLabels && ` • Months: ${monthLabels}`}
+                    </div>
+                    <div style={{ fontSize: 12, color: "#6B7280" }}>
+                        Date filter works on challan date
+                        {cfg.rowTab && " • Click a row to open that tab"}
+                        {openingText && ` • ${openingText}`}
                     </div>
                     {dateInvalid && (
                         <div style={{ fontSize: 12, color: "#B91C1C", fontWeight: 600 }}>
@@ -940,18 +1254,20 @@ const PartyStockGlance = () => {
 
             {/* ---------- cards ---------- */}
             <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
-                <div className="ps-card ps-card-count">
-                    <div className="ps-card-label">Factories</div>
-                    <div className="ps-card-value">{filteredRows.length}</div>
-                </div>
+                {cfg.key !== "summary" && (
+                    <div className="ps-card ps-card-count">
+                        <div className="ps-card-label">Factories</div>
+                        <div className="ps-card-value">{filteredRows.length}</div>
+                    </div>
+                )}
                 {cards.map((c) => (
-                    <div key={c.key} className={`ps-card${c.kind === "stock" ? " ps-card-stock" : ""}`}>
+                    <div key={c.key} className={`ps-card${c.stock ? " ps-card-stock" : ""}`}>
                         <div className="ps-card-label">{c.label}</div>
                         <div
                             className="ps-card-value"
-                            style={c.kind === "stock" && totals[c.key] < 0 ? { color: "#8C1D2F" } : undefined}
+                            style={c.stock && c.value < 0 ? { color: "#8C1D2F" } : undefined}
                         >
-                            {totals[c.key] < 0 ? `(${fmt(Math.abs(totals[c.key]))})` : fmt(totals[c.key])}
+                            {c.value < 0 ? `(${fmt(Math.abs(c.value))})` : fmt(c.value)}
                         </div>
                     </div>
                 ))}
@@ -1032,7 +1348,13 @@ const PartyStockGlance = () => {
                         </tbody>
                     ) : (
                         /* child renders <tbody> + <tfoot> (or the empty state) */
-                        <Component rows={filteredRows} totals={totals} />
+                        <Component
+                            rows={filteredRows}
+                            totals={totals}
+                            columns={columns}
+                            showTotal={showTotal}
+                            onRowClick={cfg.rowTab ? (r) => setActiveKey(r.tabKey) : undefined}
+                        />
                     )}
                 </table>
             </div>

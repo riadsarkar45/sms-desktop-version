@@ -98,13 +98,16 @@ const tfootCellStyle = {
 // a quantity that can be clicked to open its details
 const linkCellStyle = { color: "#1d4ed8", textDecoration: "underline", cursor: "pointer", fontWeight: 600 };
 
+// active = highlighted (selected) button
 const toolbarBtn = (active, disabled) => ({
   display: "inline-flex", alignItems: "center", gap: 6,
   background: active ? theme.colors.primary : theme.colors.white,
   color: active ? theme.colors.white : theme.colors.textMain,
-  padding: "10px 16px", borderRadius: theme.radius, border: `1px solid ${theme.colors.border}`,
+  padding: "10px 16px", borderRadius: theme.radius,
+  border: `1px solid ${active ? theme.colors.primary : theme.colors.border}`,
+  boxShadow: active ? "0 0 0 3px rgb(59 130 246 / 0.25)" : "none",
   cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.7 : 1,
-  fontSize: "0.875rem", fontWeight: 500, fontFamily: "inherit",
+  fontSize: "0.875rem", fontWeight: active ? 700 : 500, fontFamily: "inherit",
 });
 const selectStyle = {
   padding: "10px 12px", borderRadius: theme.radius, border: `1px solid ${theme.colors.border}`,
@@ -228,6 +231,105 @@ const buildDayGroups = (entries) => {
   });
 };
 
+// ===================== NEW: SUMMARY TAB HELPERS =====================
+const ORDER_KEYS = ["knittingOrder", "dyeingOrder", "aopOrder"];
+
+const monthLabel = (ym) => {
+  const [y, m] = String(ym).split("-").map(Number);
+  return `${MONTH_SHORT[m - 1]}-${y}`;
+};
+const monthEndDay = (ym) => {
+  const [y, m] = String(ym).split("-").map(Number);
+  return `${ym}-${pad2(new Date(y, m, 0).getDate())}`;
+};
+
+const sumExtractQty = (dv) => {
+  if (dv?.deliveryQty !== undefined && dv?.deliveryQty !== null) {
+    const num = Number(dv.deliveryQty);
+    if (!isNaN(num)) return num;
+  }
+  for (const f of ["totalQty", "qty", "quantity", "weight", "kg", "amount"]) {
+    if (dv?.[f] !== undefined && dv?.[f] !== null) {
+      const num = Number(dv[f]);
+      if (!isNaN(num)) return num;
+    }
+  }
+  return 0;
+};
+
+// same classification as applyDelivery inside the component
+const sumKindOf = (dv) => {
+  const type = String(dv?.deliveryType || "").trim().toLowerCase().replace(/[\s_-]+/g, "");
+  if (type.includes("finish")) return "finishReceived";
+  if (type === "yarndelivery" || type === "greydelivery" || type === "sentforaop" || type.includes("sentfor") || (type.includes("delivery") && !type.includes("received"))) return "yarnDelivery";
+  if (type === "yarnreturn" || type === "greyreturn" || type === "aopreturn" || type.includes("return")) return "yarnReturn";
+  return "greyFabricReceived";
+};
+
+// API records of one order type -> [{ day, party, partyKey, challanNo, kind, qty }]
+const buildSummaryEntries = (movements, hasFinish) => {
+  const out = [];
+  const push = (challanNo, source, parent, factoryName) => {
+    const kind = sumKindOf(source);
+    if (!hasFinish && kind === "finishReceived") return;
+    const { date } = pickChallanDate(source, parent);
+    const day = getDayKey(date);
+    if (!day) return;
+    const { party } = resolveParty({
+      kind,
+      toFactory: source?.toFactory || parent?.toFactory || "",
+      fromFactory: source?.fromFactory || parent?.fromFactory || "",
+      factoryName,
+    });
+    out.push({ day, party, partyKey: factoryKey(party), challanNo: String(challanNo), kind, qty: sumExtractQty(source) });
+  };
+  (Array.isArray(movements) ? movements : []).forEach((item) => {
+    if (!item) return;
+    const factoryName = extractFactoryName(item);
+    if (Array.isArray(item.deliveries) && item.deliveries.length > 0) {
+      item.deliveries.forEach((dv) => {
+        if (dv?.challanNo === undefined || dv?.challanNo === null) return;
+        push(dv.challanNo, dv, item, factoryName);
+      });
+    } else if (item.challanNo !== undefined && item.challanNo !== null) {
+      push(item.challanNo, item, null, factoryName);
+    }
+  });
+  return out;
+};
+
+// entries -> groups by party / day / month, each with the date range + party it stands for (used by the click-through)
+const groupSummary = (entries, mode, range) => {
+  const map = new Map();
+  entries.forEach((e) => {
+    const id = mode === "party" ? e.partyKey : mode === "day" ? e.day : e.day.slice(0, 7);
+    if (!map.has(id)) {
+      map.set(id, {
+        id,
+        label: mode === "party" ? e.party : mode === "day" ? formatShortDate(e.day) : monthLabel(id),
+        t: { yarnDelivery: 0, yarnReturn: 0, greyFabricReceived: 0, finishReceived: 0 },
+        ch: new Set(),
+      });
+    }
+    const g = map.get(id);
+    g.t[e.kind] += e.qty;
+    g.ch.add(`${e.day}|${e.challanNo}`);
+  });
+  const list = [...map.values()].map((g) => {
+    const t = {};
+    Object.keys(g.t).forEach((k) => { t[k] = round2(g.t[k]); });
+    let from = range.from, to = range.to, partyKey = "ALL";
+    if (mode === "party") partyKey = g.id;
+    else if (mode === "day") { from = g.id; to = g.id; }
+    else {
+      from = `${g.id}-01` > range.from ? `${g.id}-01` : range.from;
+      to = monthEndDay(g.id) < range.to ? monthEndDay(g.id) : range.to;
+    }
+    return { id: g.id, label: g.label, ...t, challans: g.ch.size, from, to, partyKey };
+  });
+  return mode === "party" ? list.sort((a, b) => a.label.localeCompare(b.label)) : list.sort((a, b) => a.id.localeCompare(b.id));
+};
+
 // ===================== EXCEL HELPERS =====================
 const XL = { title: "FF1E293B", header: "FF657582", zebra: "FFF8FAFC", total: "FFF5D8C9", opening: "FFFEF9C3", closing: "FFD1FAE5", line: "FFCBD5E1", white: "FFFFFFFF", text: "FF0F172A" };
 const XL_NUM_FMT = '#,##0.00;[Red]-#,##0.00;"-"';
@@ -317,6 +419,18 @@ const DailyTransaction = () => {
   // DEFAULT TO KNITTING ORDER
   const [selectOrderType, setSelectOrderType] = useState("knittingOrder");
 
+  // ---------- NEW: Summary tab state ----------
+  // true  = the new "Summary" tab is open (Knitting + Dyeing + AOP together)
+  // false = one of the order tabs (Knitting / Dyeing / AOP) is open = your original page
+  const [showSummary, setShowSummary] = useState(true);
+  const [sumMode, setSumMode] = useState("day"); // "party" | "day" | "month"
+  const [sumFrom, setSumFrom] = useState(() => { const n = new Date(); return localDayKey(new Date(n.getFullYear(), n.getMonth(), 1)); });
+  const [sumTo, setSumTo] = useState(() => localDayKey(new Date()));
+  const [sumData, setSumData] = useState({ knittingOrder: [], dyeingOrder: [], aopOrder: [] });
+  const [sumFetching, setSumFetching] = useState(false);
+  const [sumError, setSumError] = useState(null);
+  const [sumRefresh, setSumRefresh] = useState(0);
+
   const { fetchData } = useFetchData();
 
   const cfg = ORDER_CONFIG[selectOrderType] || ORDER_CONFIG.knittingOrder;
@@ -369,6 +483,7 @@ const DailyTransaction = () => {
           if (monthList.length > 0 && monthList.length <= MAX_MONTHS) qp.append("challanMonths", monthList.join(","));
 
           const res = await fetchData(`/api/challan-movement/${selectOrderType}?${qp.toString()}`);
+          console.log(res.data, "fetched movement data")
           if (cancelled) return;
 
           const { items, hasMore, nextCursor } = unwrapResponse(res);
@@ -562,6 +677,132 @@ const DailyTransaction = () => {
     return { ...t, challans, rows: detailEntries.length };
   }, [detailEntries]);
 
+  // ===================== NEW: SUMMARY TAB (Knitting + Dyeing + AOP) =====================
+  const sumRange = useMemo(() => {
+    if (!sumFrom && !sumTo) return { from: "", to: "" };
+    let f = sumFrom || sumTo;
+    let t = sumTo || sumFrom;
+    if (f > t) [f, t] = [t, f];
+    return { from: f, to: t };
+  }, [sumFrom, sumTo]);
+
+  // loads all three order types for the selected period (only while the Summary tab is open)
+  useEffect(() => {
+    if (!showSummary) return undefined;
+    let cancelled = false;
+
+    if (!sumRange.from) {
+      setSumData({ knittingOrder: [], dyeingOrder: [], aopOrder: [] });
+      setSumError(null);
+      setSumFetching(false);
+      return undefined;
+    }
+
+    const months = buildMonthList(sumRange.from, sumRange.to);
+
+    const loadOne = async (orderKey) => {
+      let all = [];
+      let cursor = null;
+      let pages = 0;
+      do {
+        const qp = new URLSearchParams();
+        qp.append("limit", String(PAGE_SIZE));
+        if (cursor !== null && cursor !== undefined) qp.append("cursor", String(cursor));
+        if (months.length > 0 && months.length <= MAX_MONTHS) qp.append("challanMonths", months.join(","));
+        const res = await fetchData(`/api/challan-movement/${orderKey}?${qp.toString()}`);
+        if (cancelled) return [];
+        const { items, hasMore, nextCursor } = unwrapResponse(res);
+        all = all.concat(items);
+        pages += 1;
+        cursor = hasMore && nextCursor !== null && nextCursor !== undefined ? nextCursor : null;
+      } while (cursor !== null && pages < MAX_PAGES);
+      return buildSummaryEntries(all, !!ORDER_CONFIG[orderKey].finish);
+    };
+
+    (async () => {
+      setSumError(null);
+      setSumFetching(true);
+      try {
+        const results = await Promise.all(ORDER_KEYS.map(loadOne));
+        if (cancelled) return;
+        const next = {};
+        ORDER_KEYS.forEach((k, i) => { next[k] = results[i]; });
+        setSumData(next);
+      } catch (err) {
+        if (cancelled) return;
+        console.error("Summary fetch error:", err);
+        if (err?.response?.status === 403) setSumError("Permission denied");
+        else setSumError(err?.response?.data?.message || err?.response?.data?.msg || err?.message || "Failed to load data");
+      } finally {
+        if (!cancelled) setSumFetching(false);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [fetchData, showSummary, sumRange.from, sumRange.to, sumRefresh]);
+
+  const sumSections = useMemo(() => ORDER_KEYS.map((key) => {
+    const entriesOfOrder = (sumData[key] || []).filter((e) => sumRange.from && e.day >= sumRange.from && e.day <= sumRange.to);
+    const groups = groupSummary(entriesOfOrder, sumMode, sumRange);
+    const gt = { yarnDelivery: 0, yarnReturn: 0, greyFabricReceived: 0, finishReceived: 0 };
+    entriesOfOrder.forEach((e) => { gt[e.kind] += e.qty; });
+    Object.keys(gt).forEach((k) => { gt[k] = round2(gt[k]); });
+    gt.challans = new Set(entriesOfOrder.map((e) => `${e.day}|${e.challanNo}`)).size;
+    return { key, cfg: ORDER_CONFIG[key], groups, grand: gt };
+  }), [sumData, sumMode, sumRange]);
+
+  // quick filters of the Summary tab
+  const setSumRangeBoth = (f, t) => { setSumFrom(f); setSumTo(t); };
+  const sumToday = () => { const k = localDayKey(new Date()); setSumRangeBoth(k, k); };
+  const sumYesterday = () => { const d = new Date(); d.setDate(d.getDate() - 1); const k = localDayKey(d); setSumRangeBoth(k, k); };
+  const sumLast7 = () => { const e = new Date(); const s = new Date(); s.setDate(s.getDate() - 6); setSumRangeBoth(localDayKey(s), localDayKey(e)); };
+  const sumThisMonth = () => { const n = new Date(); setSumRangeBoth(localDayKey(new Date(n.getFullYear(), n.getMonth(), 1)), localDayKey(n)); };
+  const sumLastMonth = () => { const n = new Date(); setSumRangeBoth(localDayKey(new Date(n.getFullYear(), n.getMonth() - 1, 1)), localDayKey(new Date(n.getFullYear(), n.getMonth(), 0))); };
+  const sumClear = () => setSumRangeBoth("", "");
+
+  // ---- highlight of the active quick filter (derived from the dates, no extra state) ----
+  const _now = new Date();
+  const _todayKey = localDayKey(_now);
+  const _yd = new Date(); _yd.setDate(_yd.getDate() - 1);
+  const _l7 = new Date(); _l7.setDate(_l7.getDate() - 6);
+  const quickRanges = {
+    today: [_todayKey, _todayKey],
+    yesterday: [localDayKey(_yd), localDayKey(_yd)],
+    last7: [localDayKey(_l7), _todayKey],
+    thisMonth: [localDayKey(new Date(_now.getFullYear(), _now.getMonth(), 1)), _todayKey],
+    lastMonth: [localDayKey(new Date(_now.getFullYear(), _now.getMonth() - 1, 1)), localDayKey(new Date(_now.getFullYear(), _now.getMonth(), 0))],
+  };
+  const activeSumQuick = !sumFrom && !sumTo
+    ? "clear"
+    : Object.keys(quickRanges).find((k) => sumFrom === quickRanges[k][0] && sumTo === quickRanges[k][1]) || "";
+  const activeQuick = !dateFrom && !dateTo
+    ? "clear"
+    : dateFrom === dateTo && dateFrom === quickRanges.today[0]
+      ? "today"
+      : dateFrom === dateTo && dateFrom === quickRanges.yesterday[0]
+        ? "yesterday"
+        : "";
+
+  // Click on a quantity in the Summary tab -> jump to that order's tab (Knitting / Dyeing / AOP)
+  // with the dates, party and transaction type already filtered, showing the Details.
+  const openFromSummary = (orderKey, from, to, partyKey, typeKey) => {
+    setSelectOrderType(orderKey);
+    setDateFrom(from);
+    setDateTo(to);
+    setSelectedParty(partyKey || "ALL");
+    setTypeFilter(typeKey || "");
+    setView("detail");
+    setShowSummary(false);
+  };
+
+  const sumPeriodText = !sumRange.from
+    ? "-"
+    : sumRange.from === sumRange.to
+      ? formatShortDate(sumRange.from)
+      : `${formatShortDate(sumRange.from)} to ${formatShortDate(sumRange.to)}`;
+  const sumModeTitle = { party: "Party Wise", day: "Daily", month: "Monthly" }[sumMode];
+  const sumFirstHeader = { party: "Party / Factory", day: "Date", month: "Month" }[sumMode];
+
   // ===================== EXPORT =====================
   // Summary sheet = the party summary. "Daily Details" sheet = every transaction type (From / To factory wise)
   // for the selected dates and party, independent of the type filter on the screen.
@@ -669,10 +910,13 @@ const DailyTransaction = () => {
   const goYesterday = () => { const d = new Date(); d.setDate(d.getDate() - 1); setQuickDate(localDayKey(d)); };
   const goClear = () => { setDateFrom(""); setDateTo(""); setSelectedParty("ALL"); };
 
-  if (fetchError) {
+  if (fetchError && !showSummary) {
     return (
       <div style={{ padding: "12px 16px", color: "#991b1b", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: theme.radius, margin: 20, fontFamily: FONT_STACK }}>
         {fetchError}
+        <div style={{ marginTop: 8 }}>
+          <button style={toolbarBtn(false)} onClick={() => setShowSummary(true)}>Back to Summary</button>
+        </div>
       </div>
     );
   }
@@ -715,179 +959,306 @@ const DailyTransaction = () => {
 
   return (
     <div style={{ width: "100%", padding: 24, fontFamily: FONT_STACK, color: theme.colors.textMain }}>
+      {/* Tabs: NEW "Summary" tab + your original Knitting / Dyeing / AOP tabs (same design) */}
       <div className="border-b flex gap-3 pb-2 mb-3">
+        <div className={`p-2 text-white cursor-pointer font-bold rounded-md ${showSummary ? "bg-blue-900" : "bg-slate-800 "}`}>
+          <span onClick={() => setShowSummary(true)}>Summary</span>
+        </div>
         {orderTypes?.map((items, i) => (
-          <div className={`p-2 text-white cursor-pointer font-bold rounded-md ${items === selectOrderType ? "bg-blue-900" : "bg-slate-800 "}`} key={i}>
-            <span onClick={() => handleSelectOrderType(items)}>{ORDER_CONFIG[items]?.title || items}</span>
+          <div className={`p-2 text-white cursor-pointer font-bold rounded-md ${!showSummary && items === selectOrderType ? "bg-blue-900" : "bg-slate-800 "}`} key={i}>
+            <span onClick={() => { setShowSummary(false); handleSelectOrderType(items); }}>{ORDER_CONFIG[items]?.title || items}</span>
           </div>
         ))}
       </div>
 
-      <div style={{ display: "flex", gap: 10, marginBottom: 16, alignItems: "center", flexWrap: "wrap" }}>
-        <Calendar size={18} color={theme.colors.textMain} />
-        <label style={{ fontSize: "0.8rem", fontWeight: 600 }}>From</label>
-        <input type="date" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setSelectedParty("ALL"); }} style={selectStyle} title="From challan date" />
-        <label style={{ fontSize: "0.8rem", fontWeight: 600 }}>To</label>
-        <input type="date" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setSelectedParty("ALL"); }} style={selectStyle} title="To challan date" />
-        <button style={toolbarBtn(false)} onClick={goToday} title="Show today's challans">Today</button>
-        <button style={toolbarBtn(false)} onClick={goYesterday} title="Show yesterday's challans">Yesterday</button>
-        <button style={toolbarBtn(false)} onClick={goClear} title="Clear the dates">Clear</button>
-        <select value={activePartyValid ? selectedParty : "ALL"} onChange={(e) => setSelectedParty(e.target.value)} style={{ ...selectStyle, minWidth: 200 }} title="Party">
-          <option value="ALL">All Parties ({partyOptions.length})</option>
-          {partyOptions.map((p) => (<option key={p.key} value={p.key}>{p.name}</option>))}
-        </select>
-        {view === "detail" && (
-          <select value={activeType} onChange={(e) => setTypeFilter(e.target.value)} style={{ ...selectStyle, minWidth: 190 }} title="Transaction type">
-            <option value="">All Types</option>
-            {qtyTypes.map((t) => (<option key={t.key} value={t.key}>{t.header}</option>))}
-          </select>
-        )}
-        <button style={toolbarBtn(view === "summary")} onClick={() => setView("summary")}>Summary</button>
-        <button style={toolbarBtn(view === "detail")} onClick={() => setView("detail")}>Details</button>
-        <div style={{ flex: 1 }} />
-        <button style={toolbarBtn(false, isFetching)} onClick={() => setRefreshKey((k) => k + 1)} disabled={isFetching} title="Reload data">
-          {isFetching ? <Loader size={16} className="animate-spin" /> : <RefreshCw size={16} />} Refresh
-        </button>
-        <button style={toolbarBtn(false, isExporting)} onClick={handleExport} disabled={isExporting} title="Export Excel">
-          {isExporting ? <Loader size={16} className="animate-spin" /> : <Download size={16} />} {isExporting ? "Exporting..." : "Export Excel"}
-        </button>
-      </div>
-
-      {rangeFrom && (
-        <div style={{ marginBottom: 12, padding: "10px 16px", background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: theme.radius, display: "flex", flexWrap: "wrap", gap: 16, fontSize: "0.875rem", color: "#065f46" }}>
-          <strong>{cfg.title} Daily Transaction: {periodText}</strong>
-          <span>{visibleParties.length} part{visibleParties.length === 1 ? "y" : "ies"}</span>
-          <span>{dayGroups.length} day{dayGroups.length === 1 ? "" : "s"} with challans</span>
-          {/* <span>Net Movement = {cfg.delivery} - {cfg.ret} - {cfg.received}</span> */}
-          {hasFinish && !FINISH_IN_BALANCE && <span>{cfg.finish} is shown for information</span>}
-          {view === "summary" && <span>Click a quantity to see its From / To factory details</span>}
-        </div>
-      )}
-
-      <div style={{ marginBottom: 16, padding: "8px 16px", background: "#f8fafc", border: `1px solid ${theme.colors.borderDark}`, borderRadius: theme.radius, display: "flex", flexWrap: "wrap", gap: 16, fontSize: "0.8rem", color: "#334155" }}>
-        <span><strong>Data loaded:</strong> {movements.length} API records {rangeFrom ? `(${periodText})` : ""}</span>
-        {isFetching && <span style={{ color: "#1d4ed8" }}>Loading page {pagesLoaded + 1}...</span>}
-        <span>{allRows.length} challan rows</span>
-        <span>{entries.length} party entries</span>
-        {noFactoryNameCount > 0 && <span style={{ color: "#b45309" }}>{noFactoryNameCount} entr{noFactoryNameCount === 1 ? "y has" : "ies have"} no From/To factory (work order factory used)</span>}
-        {fallbackDateCount > 0 && <span style={{ color: "#b45309" }}>{fallbackDateCount} entr{fallbackDateCount === 1 ? "y uses" : "ies use"} created date</span>}
-        {undatedCount > 0 && <span style={{ color: "#b91c1c" }}>{undatedCount} entr{undatedCount === 1 ? "y has" : "ies have"} no date</span>}
-      </div>
-
-      {view === "summary" && (
-        <div style={{ width: "100%", maxHeight: "calc(100vh - 300px)", overflow: "auto", border: `1px solid ${theme.colors.border}`, borderRadius: theme.radius, boxShadow: theme.shadows.md, background: theme.colors.white }}>
-          <table style={{ width: "100%", minWidth: 900, borderCollapse: "separate", borderSpacing: 0, tableLayout: "fixed" }}>
-            <thead>
-              <tr>{summaryHeaders.map((h, i) => (<th key={`${h}-${i}`} style={{ ...thStickyStyle, width: i === 0 ? 260 : 130 }}>{h}</th>))}</tr>
-            </thead>
-            <tbody>
-              {visibleParties.map((p, idx) => {
-                const rowBg = idx % 2 === 0 ? "#fff" : "#fafbfc";
-                return (
-                  <tr key={p.key} style={{ cursor: "pointer" }} onClick={() => openDetails(p.key, "")} title="Click to see all details of this party">
-                    <td style={{ ...cellStyle, textAlign: "left", fontWeight: 600, background: rowBg }}>{p.name}</td>
-                    <td style={{ ...cellStyle, background: rowBg }}>{p.challans}</td>
-                    {qtyTypes.map((t) => {
-                      const clickable = !isZero(p[t.key]);
-                      return (
-                        <td
-                          key={t.key}
-                          onClick={clickable ? (e) => { e.stopPropagation(); openDetails(p.key, t.key); } : undefined}
-                          title={clickable ? `Click to see ${t.header} details (From / To factory wise)` : undefined}
-                          style={{ ...cellStyle, fontVariantNumeric: "tabular-nums", background: rowBg, ...(clickable ? linkCellStyle : {}) }}
-                        >
-                          {fmt(p[t.key])}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                );
-              })}
-              {visibleParties.length === 0 && <tr><td colSpan={summaryHeaders.length} style={{ ...cellStyle, padding: 40 }}>{emptyText}</td></tr>}
-            </tbody>
-            {visibleParties.length > 0 && (
-              <tfoot>
-                <tr>
-                  <td style={{ ...tfootCellStyle, textAlign: "left", textTransform: "uppercase", fontSize: "0.75rem", letterSpacing: "0.05em" }}>Grand Total</td>
-                  <td style={tfootCellStyle}>{grand.challans}</td>
-                  {qtyTypes.map((t) => {
-                    const clickable = !isZero(grand[t.key]);
-                    return (
-                      <td
-                        key={t.key}
-                        onClick={clickable ? () => openDetails(null, t.key) : undefined}
-                        title={clickable ? `Click to see ${t.header} details of ${selectedParty === "ALL" || !activePartyValid ? "all parties" : "this party"}` : undefined}
-                        style={{ ...tfootCellStyle, ...(clickable ? { textDecoration: "underline", cursor: "pointer" } : {}) }}
-                      >
-                        {fmt(grand[t.key])}
-                      </td>
-                    );
-                  })}
-                </tr>
-              </tfoot>
-            )}
-          </table>
-        </div>
-      )}
-
-      {view === "detail" && (
+      {/* ===================== NEW: SUMMARY TAB ===================== */}
+      {showSummary && (
         <>
-          {activeType && (
-            <div style={{ marginBottom: 12, padding: "10px 16px", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: theme.radius, display: "flex", flexWrap: "wrap", alignItems: "center", gap: 16, fontSize: "0.875rem", color: "#1e3a8a" }}>
-              <strong>{activeTypeHeader} details</strong>
-              <span>{detailPartyName}</span>
-              <span>{detailGrand.rows} transaction{detailGrand.rows === 1 ? "" : "s"} in {detailGrand.challans} challan{detailGrand.challans === 1 ? "" : "s"}</span>
-              <span>Total: <strong>{fmt(detailGrand[activeType])}</strong></span>
-              <button onClick={() => setTypeFilter("")} style={{ background: theme.colors.white, color: "#1e3a8a", border: "1px solid #93c5fd", borderRadius: 6, cursor: "pointer", fontSize: "0.8rem", fontWeight: 600, padding: "4px 12px", fontFamily: "inherit" }}>Show all types</button>
-              <button onClick={() => setView("summary")} style={{ background: theme.colors.white, color: "#1e3a8a", border: "1px solid #93c5fd", borderRadius: 6, cursor: "pointer", fontSize: "0.8rem", fontWeight: 600, padding: "4px 12px", fontFamily: "inherit" }}>Back to Summary</button>
+          <div style={{ display: "flex", gap: 10, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
+            <Calendar size={18} color={theme.colors.textMain} />
+            <label style={{ fontSize: "0.8rem", fontWeight: 600 }}>From</label>
+            <input type="date" value={sumFrom} onChange={(e) => setSumFrom(e.target.value)} style={selectStyle} title="From challan date" />
+            <label style={{ fontSize: "0.8rem", fontWeight: 600 }}>To</label>
+            <input type="date" value={sumTo} onChange={(e) => setSumTo(e.target.value)} style={selectStyle} title="To challan date" />
+            <button style={toolbarBtn(activeSumQuick === "today")} onClick={sumToday}>Today</button>
+            <button style={toolbarBtn(activeSumQuick === "yesterday")} onClick={sumYesterday}>Yesterday</button>
+            <button style={toolbarBtn(activeSumQuick === "last7")} onClick={sumLast7}>Last 7 Days</button>
+            <button style={toolbarBtn(activeSumQuick === "thisMonth")} onClick={sumThisMonth}>This Month</button>
+            <button style={toolbarBtn(activeSumQuick === "lastMonth")} onClick={sumLastMonth}>Last Month</button>
+            <button style={toolbarBtn(activeSumQuick === "clear")} onClick={sumClear}>Clear</button>
+            <div style={{ flex: 1 }} />
+            <button style={toolbarBtn(false, sumFetching)} onClick={() => setSumRefresh((k) => k + 1)} disabled={sumFetching} title="Reload data">
+              {sumFetching ? <Loader size={16} className="animate-spin" /> : <RefreshCw size={16} />} Refresh
+            </button>
+          </div>
+
+          <div style={{ display: "flex", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
+            <button style={toolbarBtn(sumMode === "party")} onClick={() => setSumMode("party")}>Party Wise Summary</button>
+            <button style={toolbarBtn(sumMode === "day")} onClick={() => setSumMode("day")}>Daily Summary</button>
+            <button style={toolbarBtn(sumMode === "month")} onClick={() => setSumMode("month")}>Monthly Summary</button>
+          </div>
+
+          {sumError && (
+            <div style={{ marginBottom: 12, padding: "12px 16px", color: "#991b1b", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: theme.radius }}>{sumError}</div>
+          )}
+
+          {sumRange.from && (
+            <div style={{ marginBottom: 12, padding: "10px 16px", background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: theme.radius, display: "flex", flexWrap: "wrap", gap: 16, fontSize: "0.875rem", color: "#065f46" }}>
+              <strong>{sumModeTitle} Summary: {sumPeriodText}</strong>
+              {sumFetching && <span style={{ color: "#1d4ed8" }}>Loading...</span>}
+              <span>Click any quantity to open its details in the Knitting / Dyeing / AOP tab</span>
             </div>
           )}
 
-          <div style={{ width: "100%", maxHeight: "calc(100vh - 300px)", overflow: "auto", border: `1px solid ${theme.colors.border}`, borderRadius: theme.radius, boxShadow: theme.shadows.md, background: theme.colors.white }}>
-            <table style={{ width: "100%", minWidth: detailMinWidth, borderCollapse: "separate", borderSpacing: 0, tableLayout: "fixed" }}>
-              <thead>
-                <tr>{DETAIL_COLUMNS.map((c) => (<th key={c.key} style={{ ...thStickyStyle, width: c.width }}>{c.header}</th>))}</tr>
-              </thead>
-              <tbody>
-                {dayGroups.map((d) => (
-                  <React.Fragment key={d.day}>
-                    <tr>
-                      <td colSpan={DETAIL_COLUMNS.length} style={{ ...cellStyle, textAlign: "left", background: theme.colors.bgHeader, fontWeight: 700, fontSize: "0.95rem", padding: "12px 16px" }}>
-                        {formatShortDate(d.day)}<span style={{ fontWeight: 500, fontSize: "0.8rem", marginLeft: 12 }}>{d.challans} challan(s)</span>
-                      </td>
-                    </tr>
-                    {d.rows.map((r, idx) => {
-                      const bg = idx % 2 === 0 ? theme.colors.white : "#fafbfc";
-                      const base = { ...cellStyle, background: bg };
-                      return (
-                        <tr key={`${d.day}-${r.rowKey}-${idx}`}>
-                          {DETAIL_COLUMNS.map((c) => renderDetailCell(c, r, base))}
+          {!sumRange.from && (
+            <div style={{ ...cellStyle, padding: 40, border: `1px solid ${theme.colors.border}`, borderRadius: theme.radius }}>
+              Select From and To date (or use a quick filter) to view the summary.
+            </div>
+          )}
+
+          {sumRange.from && sumSections.map(({ key, cfg: oc, groups, grand: sg }) => {
+            const qt = getQtyTypes(oc);
+            const heads = [sumFirstHeader, "Challans", ...qt.map((t) => t.header)];
+            return (
+              <div key={key} style={{ marginBottom: 24 }}>
+                <div style={{ fontWeight: 700, fontSize: "1rem", marginBottom: 6 }}>{oc.title} - {sumModeTitle} Summary</div>
+                <div style={{ width: "100%", maxHeight: "60vh", overflow: "auto", border: `1px solid ${theme.colors.border}`, borderRadius: theme.radius, boxShadow: theme.shadows.md, background: theme.colors.white }}>
+                  <table style={{ width: "100%", minWidth: 800, borderCollapse: "separate", borderSpacing: 0, tableLayout: "fixed" }}>
+                    <thead>
+                      <tr>{heads.map((h, i) => (<th key={`${h}-${i}`} style={{ ...thStickyStyle, width: i === 0 ? 260 : 130 }}>{h}</th>))}</tr>
+                    </thead>
+                    <tbody>
+                      {groups.map((g, idx) => {
+                        const rowBg = idx % 2 === 0 ? "#fff" : "#fafbfc";
+                        return (
+                          <tr key={g.id}>
+                            <td
+                              onClick={() => openFromSummary(key, g.from, g.to, g.partyKey, "")}
+                              title="Click to see all details"
+                              style={{ ...cellStyle, textAlign: "left", background: rowBg, ...linkCellStyle }}
+                            >
+                              {g.label}
+                            </td>
+                            <td style={{ ...cellStyle, background: rowBg }}>{g.challans}</td>
+                            {qt.map((t) => {
+                              const clickable = !isZero(g[t.key]);
+                              return (
+                                <td
+                                  key={t.key}
+                                  onClick={clickable ? () => openFromSummary(key, g.from, g.to, g.partyKey, t.key) : undefined}
+                                  title={clickable ? `Click to see ${oc.title} - ${t.header} details` : undefined}
+                                  style={{ ...cellStyle, fontVariantNumeric: "tabular-nums", background: rowBg, ...(clickable ? linkCellStyle : {}) }}
+                                >
+                                  {fmt(g[t.key])}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        );
+                      })}
+                      {groups.length === 0 && (
+                        <tr><td colSpan={heads.length} style={{ ...cellStyle, padding: 30 }}>{sumFetching ? `Loading ${oc.title} data...` : "No transaction in this period."}</td></tr>
+                      )}
+                    </tbody>
+                    {groups.length > 0 && (
+                      <tfoot>
+                        <tr>
+                          <td style={{ ...tfootCellStyle, textAlign: "left", textTransform: "uppercase", fontSize: "0.75rem", letterSpacing: "0.05em" }}>Grand Total</td>
+                          <td style={tfootCellStyle}>{sg.challans}</td>
+                          {qt.map((t) => {
+                            const clickable = !isZero(sg[t.key]);
+                            return (
+                              <td
+                                key={t.key}
+                                onClick={clickable ? () => openFromSummary(key, sumRange.from, sumRange.to, "ALL", t.key) : undefined}
+                                title={clickable ? `Click to see ${oc.title} - ${t.header} details of the whole period` : undefined}
+                                style={{ ...tfootCellStyle, ...(clickable ? { textDecoration: "underline", cursor: "pointer" } : {}) }}
+                              >
+                                {fmt(sg[t.key])}
+                              </td>
+                            );
+                          })}
                         </tr>
-                      );
-                    })}
-                    <tr>
-                      <td colSpan={labelSpan} style={{ ...cellStyle, textAlign: "right", background: "#f5d8c9", fontWeight: 700 }}>Day Total</td>
-                      {numericCols.map((c) => (
-                        <td key={c.key} style={{ ...cellStyle, background: "#f5d8c9", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{fmt(d[c.key])}</td>
-                      ))}
-                    </tr>
-                    <tr><td colSpan={DETAIL_COLUMNS.length} style={{ height: 14, border: "none", background: "#fff" }} /></tr>
-                  </React.Fragment>
-                ))}
-                {dayGroups.length === 0 && <tr><td colSpan={DETAIL_COLUMNS.length} style={{ ...cellStyle, padding: 40 }}>{emptyText}</td></tr>}
-              </tbody>
-              {dayGroups.length > 0 && (
-                <tfoot>
-                  <tr>
-                    <td colSpan={labelSpan} style={{ ...tfootCellStyle, textAlign: "right", textTransform: "uppercase", fontSize: "0.75rem", letterSpacing: "0.05em" }}>Grand Total</td>
-                    {numericCols.map((c) => (
-                      <td key={c.key} style={tfootCellStyle}>{fmt(detailGrand[c.key])}</td>
-                    ))}
-                  </tr>
-                </tfoot>
-              )}
-            </table>
+                      </tfoot>
+                    )}
+                  </table>
+                </div>
+              </div>
+            );
+          })}
+        </>
+      )}
+
+      {/* ===================== YOUR ORIGINAL PAGE (Knitting / Dyeing / AOP tabs) - unchanged ===================== */}
+      {!showSummary && (
+        <>
+          <div style={{ display: "flex", gap: 10, marginBottom: 16, alignItems: "center", flexWrap: "wrap" }}>
+            <Calendar size={18} color={theme.colors.textMain} />
+            <label style={{ fontSize: "0.8rem", fontWeight: 600 }}>From</label>
+            <input type="date" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setSelectedParty("ALL"); }} style={selectStyle} title="From challan date" />
+            <label style={{ fontSize: "0.8rem", fontWeight: 600 }}>To</label>
+            <input type="date" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setSelectedParty("ALL"); }} style={selectStyle} title="To challan date" />
+            <button style={toolbarBtn(activeQuick === "today")} onClick={goToday} title="Show today's challans">Today</button>
+            <button style={toolbarBtn(activeQuick === "yesterday")} onClick={goYesterday} title="Show yesterday's challans">Yesterday</button>
+            <button style={toolbarBtn(activeQuick === "clear")} onClick={goClear} title="Clear the dates">Clear</button>
+            <select value={activePartyValid ? selectedParty : "ALL"} onChange={(e) => setSelectedParty(e.target.value)} style={{ ...selectStyle, minWidth: 200 }} title="Party">
+              <option value="ALL">All Parties ({partyOptions.length})</option>
+              {partyOptions.map((p) => (<option key={p.key} value={p.key}>{p.name}</option>))}
+            </select>
+            {view === "detail" && (
+              <select value={activeType} onChange={(e) => setTypeFilter(e.target.value)} style={{ ...selectStyle, minWidth: 190 }} title="Transaction type">
+                <option value="">All Types</option>
+                {qtyTypes.map((t) => (<option key={t.key} value={t.key}>{t.header}</option>))}
+              </select>
+            )}
+            <button style={toolbarBtn(view === "summary")} onClick={() => setView("summary")}>Summary</button>
+            <button style={toolbarBtn(view === "detail")} onClick={() => setView("detail")}>Details</button>
+            <div style={{ flex: 1 }} />
+            <button style={toolbarBtn(false, isFetching)} onClick={() => setRefreshKey((k) => k + 1)} disabled={isFetching} title="Reload data">
+              {isFetching ? <Loader size={16} className="animate-spin" /> : <RefreshCw size={16} />} Refresh
+            </button>
+            <button style={toolbarBtn(false, isExporting)} onClick={handleExport} disabled={isExporting} title="Export Excel">
+              {isExporting ? <Loader size={16} className="animate-spin" /> : <Download size={16} />} {isExporting ? "Exporting..." : "Export Excel"}
+            </button>
           </div>
+
+          {rangeFrom && (
+            <div style={{ marginBottom: 12, padding: "10px 16px", background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: theme.radius, display: "flex", flexWrap: "wrap", gap: 16, fontSize: "0.875rem", color: "#065f46" }}>
+              <strong>{cfg.title} Daily Transaction: {periodText}</strong>
+              <span>{visibleParties.length} part{visibleParties.length === 1 ? "y" : "ies"}</span>
+              <span>{dayGroups.length} day{dayGroups.length === 1 ? "" : "s"} with challans</span>
+              {/* <span>Net Movement = {cfg.delivery} - {cfg.ret} - {cfg.received}</span> */}
+              {hasFinish && !FINISH_IN_BALANCE && <span>{cfg.finish} is shown for information</span>}
+              {view === "summary" && <span>Click a quantity to see its From / To factory details</span>}
+            </div>
+          )}
+
+          <div style={{ marginBottom: 16, padding: "8px 16px", background: "#f8fafc", border: `1px solid ${theme.colors.borderDark}`, borderRadius: theme.radius, display: "flex", flexWrap: "wrap", gap: 16, fontSize: "0.8rem", color: "#334155" }}>
+            <span><strong>Data loaded:</strong> {movements.length} API records {rangeFrom ? `(${periodText})` : ""}</span>
+            {isFetching && <span style={{ color: "#1d4ed8" }}>Loading page {pagesLoaded + 1}...</span>}
+            <span>{allRows.length} challan rows</span>
+            <span>{entries.length} party entries</span>
+            {noFactoryNameCount > 0 && <span style={{ color: "#b45309" }}>{noFactoryNameCount} entr{noFactoryNameCount === 1 ? "y has" : "ies have"} no From/To factory (work order factory used)</span>}
+            {fallbackDateCount > 0 && <span style={{ color: "#b45309" }}>{fallbackDateCount} entr{fallbackDateCount === 1 ? "y uses" : "ies use"} created date</span>}
+            {undatedCount > 0 && <span style={{ color: "#b91c1c" }}>{undatedCount} entr{undatedCount === 1 ? "y has" : "ies have"} no date</span>}
+          </div>
+
+          {view === "summary" && (
+            <div style={{ width: "100%", maxHeight: "calc(100vh - 300px)", overflow: "auto", border: `1px solid ${theme.colors.border}`, borderRadius: theme.radius, boxShadow: theme.shadows.md, background: theme.colors.white }}>
+              <table style={{ width: "100%", minWidth: 900, borderCollapse: "separate", borderSpacing: 0, tableLayout: "fixed" }}>
+                <thead>
+                  <tr>{summaryHeaders.map((h, i) => (<th key={`${h}-${i}`} style={{ ...thStickyStyle, width: i === 0 ? 260 : 130 }}>{h}</th>))}</tr>
+                </thead>
+                <tbody>
+                  {visibleParties.map((p, idx) => {
+                    const rowBg = idx % 2 === 0 ? "#fff" : "#fafbfc";
+                    return (
+                      <tr key={p.key} style={{ cursor: "pointer" }} onClick={() => openDetails(p.key, "")} title="Click to see all details of this party">
+                        <td style={{ ...cellStyle, textAlign: "left", fontWeight: 600, background: rowBg }}>{p.name}</td>
+                        <td style={{ ...cellStyle, background: rowBg }}>{p.challans}</td>
+                        {qtyTypes.map((t) => {
+                          const clickable = !isZero(p[t.key]);
+                          return (
+                            <td
+                              key={t.key}
+                              onClick={clickable ? (e) => { e.stopPropagation(); openDetails(p.key, t.key); } : undefined}
+                              title={clickable ? `Click to see ${t.header} details (From / To factory wise)` : undefined}
+                              style={{ ...cellStyle, fontVariantNumeric: "tabular-nums", background: rowBg, ...(clickable ? linkCellStyle : {}) }}
+                            >
+                              {fmt(p[t.key])}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
+                  {visibleParties.length === 0 && <tr><td colSpan={summaryHeaders.length} style={{ ...cellStyle, padding: 40 }}>{emptyText}</td></tr>}
+                </tbody>
+                {visibleParties.length > 0 && (
+                  <tfoot>
+                    <tr>
+                      <td style={{ ...tfootCellStyle, textAlign: "left", textTransform: "uppercase", fontSize: "0.75rem", letterSpacing: "0.05em" }}>Grand Total</td>
+                      <td style={tfootCellStyle}>{grand.challans}</td>
+                      {qtyTypes.map((t) => {
+                        const clickable = !isZero(grand[t.key]);
+                        return (
+                          <td
+                            key={t.key}
+                            onClick={clickable ? () => openDetails(null, t.key) : undefined}
+                            title={clickable ? `Click to see ${t.header} details of ${selectedParty === "ALL" || !activePartyValid ? "all parties" : "this party"}` : undefined}
+                            style={{ ...tfootCellStyle, ...(clickable ? { textDecoration: "underline", cursor: "pointer" } : {}) }}
+                          >
+                            {fmt(grand[t.key])}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  </tfoot>
+                )}
+              </table>
+            </div>
+          )}
+
+          {view === "detail" && (
+            <>
+              {activeType && (
+                <div style={{ marginBottom: 12, padding: "10px 16px", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: theme.radius, display: "flex", flexWrap: "wrap", alignItems: "center", gap: 16, fontSize: "0.875rem", color: "#1e3a8a" }}>
+                  <strong>{activeTypeHeader} details</strong>
+                  <span>{detailPartyName}</span>
+                  <span>{detailGrand.rows} transaction{detailGrand.rows === 1 ? "" : "s"} in {detailGrand.challans} challan{detailGrand.challans === 1 ? "" : "s"}</span>
+                  <span>Total: <strong>{fmt(detailGrand[activeType])}</strong></span>
+                  <button onClick={() => setTypeFilter("")} style={{ background: theme.colors.white, color: "#1e3a8a", border: "1px solid #93c5fd", borderRadius: 6, cursor: "pointer", fontSize: "0.8rem", fontWeight: 600, padding: "4px 12px", fontFamily: "inherit" }}>Show all types</button>
+                  <button onClick={() => setView("summary")} style={{ background: theme.colors.white, color: "#1e3a8a", border: "1px solid #93c5fd", borderRadius: 6, cursor: "pointer", fontSize: "0.8rem", fontWeight: 600, padding: "4px 12px", fontFamily: "inherit" }}>Back to Summary</button>
+                </div>
+              )}
+
+              <div style={{ width: "100%", maxHeight: "calc(100vh - 300px)", overflow: "auto", border: `1px solid ${theme.colors.border}`, borderRadius: theme.radius, boxShadow: theme.shadows.md, background: theme.colors.white }}>
+                <table style={{ width: "100%", minWidth: detailMinWidth, borderCollapse: "separate", borderSpacing: 0, tableLayout: "fixed" }}>
+                  <thead>
+                    <tr>{DETAIL_COLUMNS.map((c) => (<th key={c.key} style={{ ...thStickyStyle, width: c.width }}>{c.header}</th>))}</tr>
+                  </thead>
+                  <tbody>
+                    {dayGroups.map((d) => (
+                      <React.Fragment key={d.day}>
+                        <tr>
+                          <td colSpan={DETAIL_COLUMNS.length} style={{ ...cellStyle, textAlign: "left", background: theme.colors.bgHeader, fontWeight: 700, fontSize: "0.95rem", padding: "12px 16px" }}>
+                            {formatShortDate(d.day)}<span style={{ fontWeight: 500, fontSize: "0.8rem", marginLeft: 12 }}>{d.challans} challan(s)</span>
+                          </td>
+                        </tr>
+                        {d.rows.map((r, idx) => {
+                          const bg = idx % 2 === 0 ? theme.colors.white : "#fafbfc";
+                          const base = { ...cellStyle, background: bg };
+                          return (
+                            <tr key={`${d.day}-${r.rowKey}-${idx}`}>
+                              {DETAIL_COLUMNS.map((c) => renderDetailCell(c, r, base))}
+                            </tr>
+                          );
+                        })}
+                        <tr>
+                          <td colSpan={labelSpan} style={{ ...cellStyle, textAlign: "right", background: "#f5d8c9", fontWeight: 700 }}>Day Total</td>
+                          {numericCols.map((c) => (
+                            <td key={c.key} style={{ ...cellStyle, background: "#f5d8c9", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{fmt(d[c.key])}</td>
+                          ))}
+                        </tr>
+                        <tr><td colSpan={DETAIL_COLUMNS.length} style={{ height: 14, border: "none", background: "#fff" }} /></tr>
+                      </React.Fragment>
+                    ))}
+                    {dayGroups.length === 0 && <tr><td colSpan={DETAIL_COLUMNS.length} style={{ ...cellStyle, padding: 40 }}>{emptyText}</td></tr>}
+                  </tbody>
+                  {dayGroups.length > 0 && (
+                    <tfoot>
+                      <tr>
+                        <td colSpan={labelSpan} style={{ ...tfootCellStyle, textAlign: "right", textTransform: "uppercase", fontSize: "0.75rem", letterSpacing: "0.05em" }}>Grand Total</td>
+                        {numericCols.map((c) => (
+                          <td key={c.key} style={tfootCellStyle}>{fmt(detailGrand[c.key])}</td>
+                        ))}
+                      </tr>
+                    </tfoot>
+                  )}
+                </table>
+              </div>
+            </>
+          )}
         </>
       )}
     </div>

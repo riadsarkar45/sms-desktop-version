@@ -278,6 +278,8 @@ export default function Sidebar() {
   const { user, logout, isLoggedOut } = useAuth();
   const { sections = {} } = UseUserRoles() || {};
 
+  console.log(sections, "lists of user permission");
+
   // ----------------------------------------------
   // STATES
   // ----------------------------------------------

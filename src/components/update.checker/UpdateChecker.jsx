@@ -12,11 +12,14 @@ import {
   Loader2,
 } from "lucide-react";
 
+import UseUserRoles from "../../hooks/all-users/UseUserRoles";
+
 const INITIAL_CHECK_DELAY = 10_000;
 const CHECK_INTERVAL = 6 * 60 * 60 * 1000;
 const CHECK_TIMEOUT = 30_000;
 
-const DISMISSED_VERSION_KEY = "sm-sourcing-dismissed-update-version";
+const DISMISSED_VERSION_KEY =
+  "sm-sourcing-dismissed-update-version";
 
 const UpdateChecker = () => {
   const [update, setUpdate] = useState(null);
@@ -29,29 +32,50 @@ const UpdateChecker = () => {
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
 
+  // User permissions
+  const { sections = {} } = UseUserRoles();
+
+  // Only explicitly permitted users can check updates.
+  const canCheckForUpdates =
+    sections?.newSoftwareUpdates?.getNewUpdates === true;
+
   const mountedRef = useRef(false);
   const checkingRef = useRef(false);
   const installingRef = useRef(false);
 
   const updateRef = useRef(null);
 
-  // Prevent duplicate checks and updates.
+  // Keep the latest permission available to asynchronous operations.
+  const permissionRef = useRef(canCheckForUpdates);
+  permissionRef.current = canCheckForUpdates;
+
+  // Prevent outdated requests from updating the component.
   const checkRequestRef = useRef(0);
 
   const getDismissedVersion = useCallback(() => {
     try {
       return localStorage.getItem(DISMISSED_VERSION_KEY);
     } catch (err) {
-      console.error("Unable to read dismissed update version:", err);
+      console.error(
+        "Unable to read dismissed update version:",
+        err
+      );
+
       return null;
     }
   }, []);
 
   const saveDismissedVersion = useCallback((version) => {
     try {
-      localStorage.setItem(DISMISSED_VERSION_KEY, version);
+      localStorage.setItem(
+        DISMISSED_VERSION_KEY,
+        version
+      );
     } catch (err) {
-      console.error("Unable to save dismissed update version:", err);
+      console.error(
+        "Unable to save dismissed update version:",
+        err
+      );
     }
   }, []);
 
@@ -95,7 +119,7 @@ const UpdateChecker = () => {
     return "The update could not be installed. Your current version is still available. Please try again.";
   }, []);
 
-  // Release an updater resource safely.
+  // Safely release an updater resource.
   const closeUpdate = useCallback(async () => {
     const currentUpdate = updateRef.current;
 
@@ -106,17 +130,28 @@ const UpdateChecker = () => {
     try {
       await currentUpdate.close();
     } catch (err) {
-      console.error("Updater resource cleanup failed:", err);
+      console.error(
+        "Updater resource cleanup failed:",
+        err
+      );
     }
   }, []);
 
-  // Check for a new update.
-  // This function never displays UI when no update is available.
+  // Check for updates.
   const checkForUpdates = useCallback(
     async ({ showError = false } = {}) => {
+      // Permission is mandatory.
+      if (!permissionRef.current) return;
+
+      // Only Tauri desktop applications.
       if (!isTauri()) return;
 
-      if (checkingRef.current || installingRef.current) return;
+      if (
+        checkingRef.current ||
+        installingRef.current
+      ) {
+        return;
+      }
 
       checkingRef.current = true;
 
@@ -129,18 +164,23 @@ const UpdateChecker = () => {
       let result = null;
 
       try {
+        // Permission is checked BEFORE contacting the update server.
+        if (!permissionRef.current) return;
+
         result = await check({
           timeout: CHECK_TIMEOUT,
         });
 
-        // Component was unmounted or a newer request replaced this one.
+        // Reject outdated or unauthorized requests.
         if (
           !mountedRef.current ||
+          !permissionRef.current ||
           requestId !== checkRequestRef.current
         ) {
           if (result) {
             await result.close();
           }
+
           return;
         }
 
@@ -148,7 +188,12 @@ const UpdateChecker = () => {
         if (!result) {
           await closeUpdate();
 
-          if (!mountedRef.current) return;
+          if (
+            !mountedRef.current ||
+            !permissionRef.current
+          ) {
+            return;
+          }
 
           setUpdate(null);
           setVisible(false);
@@ -159,7 +204,7 @@ const UpdateChecker = () => {
           return;
         }
 
-        // Do not show the same dismissed version again.
+        // Ignore an already dismissed version.
         const dismissedVersion = getDismissedVersion();
 
         if (dismissedVersion === result.version) {
@@ -177,10 +222,14 @@ const UpdateChecker = () => {
           return;
         }
 
-        // Replace any previously stored update resource.
+        // Release any previous updater resource.
         await closeUpdate();
 
-        if (!mountedRef.current) {
+        if (
+          !mountedRef.current ||
+          !permissionRef.current ||
+          requestId !== checkRequestRef.current
+        ) {
           await result.close();
           return;
         }
@@ -192,19 +241,34 @@ const UpdateChecker = () => {
 
         setProgress(0);
         setError("");
-        setStatus(`Version ${result.version} is available.`);
+
+        setStatus(
+          `Version ${result.version} is available.`
+        );
       } catch (err) {
         console.error("Update check failed:", err);
 
-        if (result && result !== updateRef.current) {
+        if (
+          result &&
+          result !== updateRef.current
+        ) {
           try {
             await result.close();
           } catch (closeError) {
-            console.error("Update cleanup failed:", closeError);
+            console.error(
+              "Update cleanup failed:",
+              closeError
+            );
           }
         }
 
-        if (mountedRef.current && showError) {
+        // Never display errors to unauthorized users.
+        if (
+          mountedRef.current &&
+          permissionRef.current &&
+          requestId === checkRequestRef.current &&
+          showError
+        ) {
           setError(getErrorMessage(err));
           setStatus("");
           setVisible(true);
@@ -217,14 +281,23 @@ const UpdateChecker = () => {
         }
       }
     },
-    [closeUpdate, getDismissedVersion, getErrorMessage]
+    [
+      closeUpdate,
+      getDismissedVersion,
+      getErrorMessage,
+    ]
   );
 
-  // Download and install.
+  // Download and install update.
   const installUpdate = useCallback(async () => {
     const currentUpdate = updateRef.current;
 
-    if (!currentUpdate || installingRef.current) return;
+    if (
+      !currentUpdate ||
+      installingRef.current
+    ) {
+      return;
+    }
 
     installingRef.current = true;
 
@@ -270,7 +343,10 @@ const UpdateChecker = () => {
 
           case "Finished": {
             setProgress(100);
-            setStatus("Download completed. Installing update...");
+
+            setStatus(
+              "Download completed. Installing update..."
+            );
 
             break;
           }
@@ -282,11 +358,11 @@ const UpdateChecker = () => {
 
       if (!mountedRef.current) return;
 
-      // Windows normally exits the application after launching
-      // the updater installer successfully.
-      // If execution continues, show the completion state.
       setProgress(100);
-      setStatus("Update installation completed.");
+
+      setStatus(
+        "Update installation completed."
+      );
 
       saveDismissedVersion(currentUpdate.version);
 
@@ -295,9 +371,11 @@ const UpdateChecker = () => {
       setUpdate(null);
       setInstalling(false);
       setVisible(true);
-
     } catch (err) {
-      console.error("Update installation failed:", err);
+      console.error(
+        "Update installation failed:",
+        err
+      );
 
       if (mountedRef.current) {
         setError(getErrorMessage(err));
@@ -310,7 +388,7 @@ const UpdateChecker = () => {
     }
   }, [getErrorMessage, saveDismissedVersion]);
 
-  // Dismiss the popup.
+  // Dismiss notification.
   const dismissNotification = useCallback(async () => {
     if (installingRef.current) return;
 
@@ -332,19 +410,23 @@ const UpdateChecker = () => {
     setProgress(0);
   }, [closeUpdate, saveDismissedVersion]);
 
-  // Retry installation or update checking.
+  // Retry update checking or installation.
   const retryUpdate = useCallback(async () => {
-    if (installingRef.current) return;
+    if (
+      installingRef.current ||
+      !permissionRef.current
+    ) {
+      return;
+    }
 
     setError("");
 
-    // Existing update resource is still available.
+    // Existing update resource is available.
     if (updateRef.current) {
       await installUpdate();
       return;
     }
 
-    // Previous update resource is unavailable.
     // Check the server again.
     setVisible(false);
 
@@ -353,20 +435,50 @@ const UpdateChecker = () => {
     });
   }, [installUpdate, checkForUpdates]);
 
-  // Automatic update checks.
+  // Automatic update checking with permission control.
   useEffect(() => {
     mountedRef.current = true;
 
+    // Browser protection.
     if (!isTauri()) {
       return () => {
         mountedRef.current = false;
       };
     }
 
+    // No permission = absolutely no update check.
+    if (!canCheckForUpdates) {
+      // Invalidate any pending request.
+      checkRequestRef.current += 1;
+
+      // Clear any existing notification.
+      setUpdate(null);
+      setVisible(false);
+
+      setError("");
+      setStatus("");
+      setProgress(0);
+      setChecking(false);
+
+      // Release existing updater resource.
+      // Never interrupt an installation already in progress.
+      if (!installingRef.current) {
+        void closeUpdate();
+      }
+
+      return () => {
+        mountedRef.current = false;
+        checkRequestRef.current += 1;
+      };
+    }
+
+    // Permission granted.
+    // First check after 10 seconds.
     const initialTimer = window.setTimeout(() => {
       checkForUpdates();
     }, INITIAL_CHECK_DELAY);
 
+    // Check every 6 hours.
     const intervalTimer = window.setInterval(() => {
       checkForUpdates();
     }, CHECK_INTERVAL);
@@ -374,13 +486,13 @@ const UpdateChecker = () => {
     return () => {
       mountedRef.current = false;
 
-      // Invalidate any pending check result.
+      // Invalidate pending requests.
       checkRequestRef.current += 1;
 
       window.clearTimeout(initialTimer);
       window.clearInterval(intervalTimer);
 
-      // Do not close an updater resource during installation.
+      // Do not close updater during installation.
       if (!installingRef.current) {
         const currentUpdate = updateRef.current;
 
@@ -388,17 +500,27 @@ const UpdateChecker = () => {
 
         if (currentUpdate) {
           currentUpdate.close().catch((err) => {
-            console.error("Updater cleanup failed:", err);
+            console.error(
+              "Updater cleanup failed:",
+              err
+            );
           });
         }
       }
     };
-  }, [checkForUpdates]);
+  }, [
+    canCheckForUpdates,
+    checkForUpdates,
+    closeUpdate,
+  ]);
 
-  // No UI in browser.
+  // No updater outside Tauri.
   if (!isTauri()) return null;
 
-  // No update and no error: render nothing.
+  // Absolutely no UI without permission.
+  if (!canCheckForUpdates) return null;
+
+  // No update and no error.
   if (!visible) return null;
 
   return (
@@ -457,7 +579,6 @@ const UpdateChecker = () => {
 
         {/* Body */}
         <div className="p-5">
-
           {/* Error */}
           {error && (
             <div>
@@ -485,7 +606,10 @@ const UpdateChecker = () => {
                 className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {checking ? (
-                  <Loader2 size={17} className="animate-spin" />
+                  <Loader2
+                    size={17}
+                    className="animate-spin"
+                  />
                 ) : (
                   <Download size={17} />
                 )}

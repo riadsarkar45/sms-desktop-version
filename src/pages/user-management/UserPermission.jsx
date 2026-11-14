@@ -38,6 +38,13 @@ const PERMISSION_SECTIONS = [
         ],
     },
     {
+        key: 'newSoftwareUpdates',
+        title: "New Software Updates",
+        items: [
+            yes('getNewUpdates', "Get Updates"),
+        ],
+    },
+    {
         key: 'dashboard',
         title: "Dashboard",
         items: [

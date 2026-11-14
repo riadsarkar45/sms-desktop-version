@@ -1,9 +1,9 @@
 import { useContext, useEffect } from 'react';
 import UseAllUsers from './AllUsers';
-import { AuthContext } from '../../auth/AuthContext';
+import { useAuth } from '../../auth/AuthContext';
 
 const UseUserRoles = () => {
-    const { user } = useContext(AuthContext);
+    const { user } = useAuth();
 
     const { setOptionalUserId } = UseAllUsers();
 

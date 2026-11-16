@@ -3,7 +3,7 @@ import Deliveries from './Deliveries';
 
 const Modal = ({ setIsEditing, deliveryIssue, challanIssue, orderType, changedField, duplicateChallan, deliveriesLoading, isLoading, workOrderId, deliveries, handleSubmit, orderId, handleEditOnChange }) => {
     const deliveryTypes = [];
-    console.log(deliveries, "deliveries from modal deliveries");
+    // console.log(deliveries, "deliveries from modal deliveries");
     
     // ✅ Extract jobNo from the first available composition in the deliveries data
     const firstWO = deliveries?.[0];

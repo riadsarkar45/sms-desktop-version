@@ -128,22 +128,24 @@ const pageButtonStyle = (active) => ({
 // (date has its own Month'Year filter; quantities / price / billing are calculated values).
 const tableHeader = [
     { header: "", width: "50px", key: "select", noFilter: true },
-    { header: "Date", width: "110px", key: "challanDate", noFilter: true },
+    { header: "Date", width: "110px", key: "challanDate", },
     { header: "Challan No", width: "120px", key: "challanNo" },
+    { header: "Status", width: "120px", key: "status" },
     { header: "Job No", width: "140px", key: "jobNo" },
     { header: "Composition", width: "270px", key: "composition" },
     { header: "Color", width: "200px", key: "color" },
     { header: "From Factory", width: "160px", key: "fromFactory" },
     { header: "To Factory", width: "160px", key: "toFactory" },
-    { header: "Yarn Del", width: "110px", key: "yarnDelivery", noFilter: true },
-    { header: "Yarn Ret", width: "110px", key: "yarnReturn", noFilter: true },
-    { header: "Greige Rec", width: "120px", key: "greyFabricReceived", noFilter: true },
-    { header: "Price/KG", width: "100px", key: "unitePrice", noFilter: true },
-    { header: "Billing", width: "120px", key: "billingAmount", noFilter: true },
+    { header: "Yarn Del", width: "110px", key: "yarnDelivery" },
+    { header: "Yarn Ret", width: "110px", key: "yarnReturn" },
+    { header: "Greige Rec", width: "120px", key: "greyFabricReceived" },
+    { header: "PHYSICAL REC", width: "120px", key: "physicalRec" },
+    { header: "Price/KG", width: "100px", key: "unitePrice" },
+    { header: "Billing", width: "120px", key: "billingAmount" },
 ];
 
 // ===== FROZEN COLUMNS =====
-const FROZEN_COLUMN_KEYS = ['select', 'challanDate', 'challanNo', 'jobNo', 'composition'];
+const FROZEN_COLUMN_KEYS = ['select', 'challanDate', 'challanNo', 'status', 'jobNo', 'composition'];
 const FROZEN_LAST_KEY = FROZEN_COLUMN_KEYS[FROZEN_COLUMN_KEYS.length - 1];
 
 const FROZEN_LEFT_OFFSETS = (() => {
@@ -2019,7 +2021,17 @@ const Knitting = () => {
                                                 );
                                             }
 
-                                            const isNumber = ['yarnDelivery', 'yarnReturn', 'greyFabricReceived'].includes(th.key);
+                                            if (th.key === "status" || th.key === "status") {
+                                                return (
+                                                    <td key={th.key} style={baseStyle}>
+                                                        <div style={clampStyle} title={String(row[th.key])}>
+                                                            <span className={`${th.key === "status=="}`} >IN TRANSIT</span>
+                                                        </div>
+                                                    </td>
+                                                )
+                                            }
+
+                                            const isNumber = ['yarnDelivery', 'yarnReturn', 'greyFabricReceived', 'physicalRec'].includes(th.key);
                                             const currentValue = row[th.key];
 
                                             return (
@@ -2027,6 +2039,7 @@ const Knitting = () => {
                                                     <div title={isNumber ? undefined : String(currentValue || "")} style={{ ...clampStyle, textAlign: 'center', opacity: currentValue ? 1 : 0.5 }}>
                                                         {isNumber ? (Number(currentValue) > 0 ? Number(currentValue).toFixed(2) : "-") : (currentValue || "-")}
                                                     </div>
+                                                    XXX
                                                 </td>
                                             );
                                         })}

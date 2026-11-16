@@ -13,6 +13,7 @@ import AopOrder from "./AopOrders";
 import YarnDyeOrders from "./YarnDyeingOrders";
 import Toast from '../../components/tost/Tost';
 import WorkOrderCancelModal from "../../components/modals/WorkOrderCancellModal";
+import YarnDeliveryModal from "../../components/modals/YarnDeliveryModal";
 export const FROZEN_COUNT = 8;
 
 const FILTERABLE_COLUMNS = new Set([
@@ -359,6 +360,7 @@ const AllOrders = ({ orderType }) => {
         });
     };
 
+    // work order cancellation handler
     const getDataForCancellation = async ({ jobNo, isOpen }) => {
 
         if (!jobNo || !orderType) return null;
@@ -481,6 +483,7 @@ const AllOrders = ({ orderType }) => {
                 if (data) {
                     setDeliveries(data);
                     setWorkOrderId(singleWorkOrderId);
+                    console.log(data, "deliveries line 485");
                 }
             })
             .catch(error => {
@@ -1084,7 +1087,7 @@ const AllOrders = ({ orderType }) => {
                         .se-zero { background: #F3F4F6; border-color: #D6DAE1; color: #6B7280; }
                     `}</style>
 
-                    {isEditing && (
+                    {/* { orderType === !"yarnDyeingOrder" || isEditing && (
                         <Modal
                             workOrderId={workOrderId}
                             isLoading={isLoading}
@@ -1102,16 +1105,22 @@ const AllOrders = ({ orderType }) => {
                             challanIssue={challanIssue}
                             deliveryIssue={deliveryIssue}
                         />
+                    )} */}
+
+                    {orderType === "yarnDyeingOrder" && isEditing && (
+                        <YarnDeliveryModal
+                            deliveries={deliveries}
+                        />
                     )}
 
                     {
                         isCancelModalOpen && (
-                            <WorkOrderCancelModal 
-                            dataForCancellation = {dataForCancellation}
-                            setIsCancelModalOpen={setIsCancelModalOpen}
-                            orderType={orderType}
+                            <WorkOrderCancelModal
+                                dataForCancellation={dataForCancellation}
+                                setIsCancelModalOpen={setIsCancelModalOpen}
+                                orderType={orderType}
 
-                        />
+                            />
                         )
                     }
 

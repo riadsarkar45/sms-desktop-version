@@ -39,18 +39,36 @@ const MAX_LOADED_ROWS = 5000;
 const EXPORT_PAGE_LIMIT = 100;
 const EXPORT_MAX_ROWS = 60000;
 
-// Fixed row height so only the visible rows are in the DOM. Long text is clamped to 2 lines (full text on hover).
-const ROW_HEIGHT = 60;
+// ===== AUTO-FIT LAYOUT CONFIG =====
+// The table box always fills the rest of the screen (no fixed 30rem box any more).
+// The row height is calculated so that at least MIN_VISIBLE_ROWS rows are visible in one screen.
+//   - big screens  -> rows grow up to MAX_ROW_H (comfortable, 2 lines of text)
+//   - small screens -> rows shrink down to MIN_ROW_H (compact, 1 line of text)
+// Fixed row height inside one layout is what keeps the windowed rendering (only visible rows in the DOM) working.
+// true  = rows keep the normal size (MAX_ROW_H); ONLY the table height follows the screen
+//         (big screen = taller table = more rows, small screen = shorter table = fewer rows)
+// false = rows also shrink on small screens so at least MIN_VISIBLE_ROWS rows stay visible
+const KEEP_FIXED_ROW_HEIGHT = true;
+const FIT_DEBUG = false;       // true = prints the measured numbers in the browser console (F12) to help find layout problems
+const MIN_VISIBLE_ROWS = 20;
+const MIN_ROW_H =10;
+const MAX_ROW_H = 50;
+const HEADER_H = 44;           // header row height
+const FOOTER_H = 36;           // total row height
+const SCROLLBAR_ALLOWANCE = 17; // horizontal scrollbar at the bottom of the table box
+const MIN_TABLE_HEIGHT = 300;  // only a safety minimum - the real height is always calculated from the screen
+const FROZEN_MIN_WIDTH = 1000; // below this table-box width the frozen columns are turned off (they would hide the data)
 const OVERSCAN = 8;
-const NEAR_BOTTOM_PX = ROW_HEIGHT * 20; // start loading the next page this far before the end
+// ===== END AUTO-FIT LAYOUT CONFIG =====
 
-const clampStyle = {
-    display: '-webkit-box',
-    WebkitLineClamp: 2,
-    WebkitBoxOrient: 'vertical',
-    overflow: 'hidden',
-    wordBreak: 'break-word',
-    lineHeight: 1.2,
+// The ERP has its own zoom (67% / 100% ...). With CSS zoom / scale the real screen pixels are NOT the same as the CSS pixels
+// of the page, so the height must be corrected by this factor. 1 = no zoom.
+const getZoomScale = (el) => {
+    const rect = el.getBoundingClientRect();
+    const w = el.offsetWidth;
+    if (!w || !rect.width) return 1;
+    const scale = rect.width / w;
+    return scale > 0.2 && scale < 5 ? scale : 1;
 };
 
 // Accepts either the axios response, or the response body, and returns { items, nextCursor, hasMore }
@@ -74,6 +92,25 @@ const buildListParams = (cursor, filtersKey, monthsKey, limit = PAGE_LIMIT) => {
 };
 // ===== END CONFIG =====
 
+// ===== OK QTY CONFIG =====
+// Ok Qty is read from the delivery record field `okQty` (the quantity that was checked / received OK).
+// Billing = Ok Qty x Price/KG, and ONLY for Greige Received rows.
+// Yarn Delivery and Yarn Return rows are never billed.
+// If a Greige Received row has no `okQty` saved yet, true => its received qty is used as Ok Qty,
+// false => Ok Qty stays 0 (so billing stays 0) until Ok Qty is saved.
+const OK_QTY_FALLBACK_TO_QTY = true;
+// ===== END OK QTY CONFIG =====
+
+// Text clamp: 2 lines on big rows, 1 line on compact rows (full text on hover)
+const makeClampStyle = (lines) => ({
+    display: '-webkit-box',
+    WebkitLineClamp: lines,
+    WebkitBoxOrient: 'vertical',
+    overflow: 'hidden',
+    wordBreak: 'break-word',
+    lineHeight: 1.2,
+});
+
 const cellStyle = {
     padding: "12px 16px",
     borderBottom: `1px solid ${theme.colors.border}`,
@@ -94,14 +131,15 @@ const thStickyStyle = {
     ...cellStyle,
     position: "sticky", top: 0, zIndex: 30,
     background: "#657582",
-    fontWeight: 600, fontSize: "0.80rem",
-    textTransform: "uppercase", letterSpacing: "0.05em",
+    fontWeight: 600, fontSize: "0.75rem",
+    textTransform: "uppercase", letterSpacing: "0.04em",
     color: "white",
     borderBottom: `3px solid ${theme.colors.borderDark}`,
     boxShadow: theme.shadows.sm,
     whiteSpace: "normal", wordWrap: "break-word", wordBreak: "break-word",
     verticalAlign: "middle", textAlign: "center",
     backgroundClip: "padding-box",
+    height: HEADER_H, padding: "4px 8px", boxSizing: "border-box",
 };
 
 const tfootCellStyle = {
@@ -111,6 +149,7 @@ const tfootCellStyle = {
     borderTop: `2px solid ${theme.colors.borderDark}`, borderBottom: "none",
     color: "white", textAlign: "center",
     backgroundClip: "padding-box",
+    height: FOOTER_H, padding: "4px 8px", boxSizing: "border-box",
 };
 
 const pageButtonStyle = (active) => ({
@@ -126,9 +165,10 @@ const pageButtonStyle = (active) => ({
 // noFilter: true  => no header filter button.
 // Column filters run in the BROWSER on the loaded rows (list rows AND search results), so only the plain text columns have one
 // (date has its own Month'Year filter; quantities / price / billing are calculated values).
+// `width` is the BASE width in px. On wide screens every column is scaled up so the table fills the whole screen.
 const tableHeader = [
     { header: "", width: "50px", key: "select", noFilter: true },
-    { header: "Date", width: "110px", key: "challanDate", },
+    { header: "Date", width: "110px", key: "challanDate" },
     { header: "Challan No", width: "120px", key: "challanNo" },
     { header: "Status", width: "120px", key: "status" },
     { header: "Job No", width: "140px", key: "jobNo" },
@@ -139,30 +179,38 @@ const tableHeader = [
     { header: "Yarn Del", width: "110px", key: "yarnDelivery" },
     { header: "Yarn Ret", width: "110px", key: "yarnReturn" },
     { header: "Greige Rec", width: "120px", key: "greyFabricReceived" },
-    { header: "PHYSICAL REC", width: "120px", key: "physicalRec" },
+    { header: "Ok Qty", width: "110px", key: "okQty" },
     { header: "Price/KG", width: "100px", key: "unitePrice" },
     { header: "Billing", width: "120px", key: "billingAmount" },
 ];
 
-// ===== FROZEN COLUMNS =====
-const FROZEN_COLUMN_KEYS = ['select', 'challanDate', 'challanNo', 'status', 'jobNo', 'composition'];
+// ===== COLUMN WIDTHS + FROZEN COLUMNS (scale aware) =====
+const FROZEN_COLUMN_KEYS = ['select', 'challanDate', 'challanNo', 'jobNo', 'composition'];
 const FROZEN_LAST_KEY = FROZEN_COLUMN_KEYS[FROZEN_COLUMN_KEYS.length - 1];
+const BASE_TOTAL_WIDTH = tableHeader.reduce((sum, th) => sum + (parseInt(th.width, 10) || 0), 0);
 
-const FROZEN_LEFT_OFFSETS = (() => {
+// scale = 1 on normal screens, > 1 on wide screens. Widths are floored so the table never gets wider than its box.
+// The frozen `left` offsets are built from the SAME scaled widths, so frozen columns always line up exactly.
+const buildColumnLayout = (scale) => {
+    const widths = {};
     const offsets = {};
-    let cumulative = 0;
+    let total = 0;
+    let frozenCumulative = 0;
     tableHeader.forEach((th) => {
+        const w = Math.floor((parseInt(th.width, 10) || 0) * scale);
+        widths[th.key] = w;
+        total += w;
         if (FROZEN_COLUMN_KEYS.includes(th.key)) {
-            offsets[th.key] = cumulative;
-            cumulative += parseInt(th.width, 10) || 0;
+            offsets[th.key] = frozenCumulative;
+            frozenCumulative += w;
         }
     });
-    return offsets;
-})();
+    return { widths, offsets, total };
+};
 
-const getFrozenStyle = (key, area = 'body') => {
-    if (!FROZEN_COLUMN_KEYS.includes(key)) return {};
-    const left = FROZEN_LEFT_OFFSETS[key] ?? 0;
+const getFrozenStyle = (key, area, offsets, enabled) => {
+    if (!enabled || !FROZEN_COLUMN_KEYS.includes(key)) return {};
+    const left = offsets[key] ?? 0;
     const isLast = key === FROZEN_LAST_KEY;
     const zIndex = (area === 'header' || area === 'footer') ? 40 : 5;
     const style = {
@@ -177,7 +225,7 @@ const getFrozenStyle = (key, area = 'body') => {
     }
     return style;
 };
-// ===== END FROZEN COLUMNS =====
+// ===== END COLUMN WIDTHS + FROZEN COLUMNS =====
 
 // ===== DATE HELPERS =====
 const ISO_DATE_RE = /\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?/g;
@@ -285,6 +333,9 @@ const buildRows = (movements) => {
             toFactory: source?.toFactory || "",
             fromFactory: source?.fromFactory || "",
             yarnDelivery: 0, yarnReturn: 0, greyFabricReceived: 0, deliveryQty: 0,
+            // okQty       = Ok Qty shown in the table (any delivery type that has an Ok Qty)
+            // billableOkQty = Ok Qty of Greige Received only (this is what the billing uses)
+            okQty: 0, billableOkQty: 0,
             unitePrice: Number(source?.unitePrice) || 0,
             paidBillingAmount: Number(source?.paidBillingAmount) || 0,
         };
@@ -297,6 +348,22 @@ const buildRows = (movements) => {
         if (type.includes("yarndelivery")) row.yarnDelivery += qty;
         else if (type.includes("yarnreturn")) row.yarnReturn += qty;
         else if (type.includes("greyfabric") || type.includes("greigereceived") || type.includes("yarnreceived") || type.includes("greyreceived")) row.greyFabricReceived += qty;
+
+        // ===== OK QTY =====
+        // Same type rule as above: Yarn Delivery / Yarn Return are never Greige Received.
+        const isGreigeReceivedType =
+            !type.includes("yarndelivery") &&
+            !type.includes("yarnreturn") &&
+            (type.includes("greyfabric") || type.includes("greigereceived") || type.includes("yarnreceived") || type.includes("greyreceived"));
+        const rawOk = dv?.okQty;
+        const hasOk = rawOk !== undefined && rawOk !== null && rawOk !== "" && !isNaN(Number(rawOk));
+        const okValue = hasOk
+            ? Number(rawOk)
+            : (isGreigeReceivedType && OK_QTY_FALLBACK_TO_QTY ? qty : 0);
+        row.okQty += okValue;
+        // only Greige Received Ok Qty is billed; Yarn Delivery & Yarn Return are NOT calculated
+        if (isGreigeReceivedType) row.billableOkQty += okValue;
+        // ===================
 
         const price = Number(dv?.unitePrice || source?.unitePrice) || 0;
         if (price && !row.unitePrice) row.unitePrice = price;
@@ -360,9 +427,11 @@ const buildRows = (movements) => {
         }
     });
 
+    // Billing = Ok Qty (Greige Received only) x Price/KG
+    // Yarn Delivery & Yarn Return rows have billableOkQty = 0, so their billing is 0 (not calculated).
     return rows.map((row) => ({
         ...row,
-        billingAmount: row.greyFabricReceived * row.unitePrice,
+        billingAmount: row.billableOkQty * row.unitePrice,
     }));
 };
 // ===== END ROW BUILDING =====
@@ -535,7 +604,7 @@ const splitRowByParty = (row, returnIndex) => {
             return [{ party: deliveryParty, row }];
         }
         return [
-            { party: deliveryParty, row: { ...row, yarnReturn: 0, greyFabricReceived: 0, billingAmount: 0 } },
+            { party: deliveryParty, row: { ...row, yarnReturn: 0, greyFabricReceived: 0, okQty: 0, billableOkQty: 0, billingAmount: 0 } },
             { party: backParty, row: { ...row, yarnDelivery: 0 } },
         ];
     }
@@ -556,10 +625,11 @@ const EXPORT_COLUMNS = [
     { header: 'Yarn Delivery', key: 'yarnDelivery', width: 15, type: 'number' },
     { header: 'Yarn Return', key: 'yarnReturn', width: 15, type: 'number' },
     { header: 'Greige Received', key: 'greyFabricReceived', width: 17, type: 'number' },
+    { header: 'Ok Qty', key: 'okQty', width: 14, type: 'number' },
     { header: 'Price/KG', key: 'unitePrice', width: 12, type: 'number' },
     { header: 'Billing', key: 'billingAmount', width: 16, type: 'number' },
 ];
-const EXPORT_TOTAL_KEYS = ['yarnDelivery', 'yarnReturn', 'greyFabricReceived', 'billingAmount'];
+const EXPORT_TOTAL_KEYS = ['yarnDelivery', 'yarnReturn', 'greyFabricReceived', 'okQty', 'billingAmount'];
 
 const XL = {
     title: 'FF1E293B',
@@ -655,6 +725,7 @@ const Knitting = () => {
     const [searchActive, setSearchActive] = useState(false);
     const [searchPage, setSearchPage] = useState(1);
     const tableScrollRef = useRef(null);
+    const topRef = useRef(null); // wraps everything above the table (toolbar + banners), watched for size changes
 
     // ===== PAGED LOADING STATE =====
     const [initialLoading, setInitialLoading] = useState(true);   // first page of the current query not received yet
@@ -676,6 +747,36 @@ const Knitting = () => {
     const [viewport, setViewport] = useState({ top: 0, height: 800 });
     const rafRef = useRef(0);
     // ====================================
+
+    // ===== AUTO-FIT (screen size) STATE =====
+    // fit.height = height of the table box, fit.width = inner width of the table box
+    const [fit, setFit] = useState({ height: 560, width: 1400 });
+    const bottomReserveRef = useRef(60);
+
+    // Row height so that MIN_VISIBLE_ROWS rows fit in the box (clamped between MIN_ROW_H and MAX_ROW_H)
+    const rowHeight = useMemo(() => {
+        if (KEEP_FIXED_ROW_HEIGHT) return MAX_ROW_H;
+        const bodyHeight = fit.height - HEADER_H - FOOTER_H - SCROLLBAR_ALLOWANCE;
+        return Math.max(MIN_ROW_H, Math.min(MAX_ROW_H, Math.floor(bodyHeight / MIN_VISIBLE_ROWS)));
+    }, [fit.height]);
+    const rowHeightRef = useRef(rowHeight);
+    rowHeightRef.current = rowHeight;
+
+    // Text size / padding / lines follow the row height
+    const density = useMemo(() => {
+        if (rowHeight >= 46) return { font: '0.875rem', pad: '6px 12px', lines: 2, chipPad: '2px 10px' };
+        if (rowHeight >= 30) return { font: '0.8rem', pad: '3px 10px', lines: 1, chipPad: '1px 9px' };
+        return { font: '0.75rem', pad: '1px 8px', lines: 1, chipPad: '0 8px' };
+    }, [rowHeight]);
+    const clampStyle = useMemo(() => makeClampStyle(density.lines), [density.lines]);
+
+    // Wide screens: scale all columns up so the table fills the box (frozen columns stay aligned)
+    const colLayout = useMemo(() => {
+        const scale = Math.max(1, fit.width / BASE_TOTAL_WIDTH);
+        return buildColumnLayout(scale);
+    }, [fit.width]);
+    const frozenEnabled = fit.width >= FROZEN_MIN_WIDTH;
+    // =======================================
 
     // Search tracking (Found vs Not Found for BOTH Challan No and Job No)
     const [foundSearchItems, setFoundSearchItems] = useState([]);
@@ -829,6 +930,75 @@ const Knitting = () => {
 
     const totalSearchPages = Math.max(1, Math.ceil(filteredRows.length / SEARCH_PAGE_SIZE));
 
+    // ===== AUTO-FIT MEASURING =====
+    // Space under the table box that must stay free: page padding + status line (list mode) or pagination (search mode)
+    const bottomReserve = searchActive ? (totalSearchPages > 1 ? 80 : 28) : 60;
+    bottomReserveRef.current = bottomReserve;
+
+    // Table height = (visible screen height - table top) corrected for the ERP zoom - space kept free under the table.
+    // Nothing is hard-coded: a bigger screen gives a taller table, a smaller screen gives a shorter one.
+    const measureFit = useCallback(() => {
+        const el = tableScrollRef.current;
+        if (!el) return;
+        const viewH = (window.visualViewport && window.visualViewport.height) || window.innerHeight;
+        const scale = getZoomScale(el);
+        const rect = el.getBoundingClientRect();
+
+        // table top measured from the very top of the content, no matter how far the page / the ERP panel is scrolled
+        let scrolled = window.scrollY || 0;
+        let node = el.parentElement;
+        while (node && node !== document.body && node !== document.documentElement) {
+            if (node.scrollTop) scrolled += node.scrollTop * scale;
+            node = node.parentElement;
+        }
+        const visualTop = rect.top + scrolled;
+
+        const height = Math.max(MIN_TABLE_HEIGHT, Math.floor((viewH - visualTop) / scale - bottomReserveRef.current));
+        const width = el.clientWidth;
+        if (FIT_DEBUG) console.log('[Knitting fit]', { viewH, scale, visualTop, reserve: bottomReserveRef.current, height, width });
+        setFit((prev) => (prev.height === height && prev.width === width ? prev : { height, width }));
+    }, []);
+
+    // measure on mount, window resize, and whenever the page / the area above the table changes size
+    // (banners appear, the ERP shell finishes loading, sidebar opens, browser zoom changes ...)
+    useLayoutEffect(() => {
+        measureFit();
+        // the ERP shell / fonts / images can still move things after the first paint: measure again a bit later
+        const t1 = setTimeout(measureFit, 100);
+        const t2 = setTimeout(measureFit, 500);
+        const t3 = setTimeout(measureFit, 1500);
+        window.addEventListener('resize', measureFit);
+        window.addEventListener('load', measureFit);
+        if (window.visualViewport) window.visualViewport.addEventListener('resize', measureFit);
+        // the ERP zoom control changes a style / class on <html> or <body> without resizing anything: catch that too
+        let mo = null;
+        if (typeof MutationObserver !== 'undefined') {
+            mo = new MutationObserver(() => measureFit());
+            mo.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'class'] });
+            mo.observe(document.body, { attributes: true, attributeFilter: ['style', 'class'] });
+        }
+        // safety net: cheap re-check (state only changes when the number really changes)
+        const poll = setInterval(measureFit, 800);
+        let ro = null;
+        if (typeof ResizeObserver !== 'undefined') {
+            ro = new ResizeObserver(() => measureFit());
+            if (topRef.current) ro.observe(topRef.current);
+            if (tableScrollRef.current) ro.observe(tableScrollRef.current);
+            ro.observe(document.documentElement);
+            ro.observe(document.body);
+        }
+        return () => {
+            clearTimeout(t1); clearTimeout(t2); clearTimeout(t3);
+            clearInterval(poll);
+            if (mo) mo.disconnect();
+            window.removeEventListener('resize', measureFit);
+            window.removeEventListener('load', measureFit);
+            if (window.visualViewport) window.visualViewport.removeEventListener('resize', measureFit);
+            if (ro) ro.disconnect();
+        };
+    }, [measureFit, initialLoading, fetchError, searchActive, bottomReserve]);
+    // ==============================
+
     useEffect(() => {
         if (searchPage > totalSearchPages) setSearchPage(totalSearchPages);
     }, [searchPage, totalSearchPages]);
@@ -900,7 +1070,8 @@ const Knitting = () => {
         const el = tableScrollRef.current;
         if (!el || searchActiveRef.current) return;
         if (!hasMoreRef.current || loadingRef.current || capRef.current || loadErrorRef.current) return;
-        if (el.scrollHeight - el.scrollTop - el.clientHeight > NEAR_BOTTOM_PX) return;
+        // start loading when less than ~20 rows are left below the visible area
+        if (el.scrollHeight - el.scrollTop - el.clientHeight > rowHeightRef.current * 20) return;
         fetchPage(genRef.current, cursorRef.current, false);
     }, [fetchPage]);
 
@@ -921,10 +1092,11 @@ const Knitting = () => {
     // stop everything when the page is left
     useEffect(() => () => cancelLoad(), [cancelLoad]);
 
-    // content shorter than the box (or after a page arrives / a column filter changes): keep loading until it is filled / capped
+    // content shorter than the box (or after a page arrives / a column filter changes / the screen got taller):
+    // keep loading until it is filled / capped
     useEffect(() => {
         maybeLoadMore();
-    }, [allRows.length, filteredRows.length, hasMore, loadingMore, loadError, maybeLoadMore]);
+    }, [allRows.length, filteredRows.length, hasMore, loadingMore, loadError, fit.height, rowHeight, maybeLoadMore]);
 
     // a column filter changed: go back to the top of the table
     useEffect(() => {
@@ -943,12 +1115,12 @@ const Knitting = () => {
     const totalVisible = visibleRows.length;
 
     const { winStart, winEnd } = useMemo(() => {
-        const first = Math.floor(viewport.top / ROW_HEIGHT) - OVERSCAN;
-        const last = Math.ceil((viewport.top + viewport.height) / ROW_HEIGHT) + OVERSCAN;
+        const first = Math.floor(viewport.top / rowHeight) - OVERSCAN;
+        const last = Math.ceil((viewport.top + viewport.height) / rowHeight) + OVERSCAN;
         const s = Math.max(0, Math.min(first, Math.max(0, totalVisible - 1)));
         const e = Math.min(totalVisible, Math.max(last, s + 1));
         return { winStart: s, winEnd: e };
-    }, [viewport.top, viewport.height, totalVisible]);
+    }, [viewport.top, viewport.height, totalVisible, rowHeight]);
 
     const windowRows = useMemo(() => visibleRows.slice(winStart, winEnd), [visibleRows, winStart, winEnd]);
 
@@ -959,12 +1131,12 @@ const Knitting = () => {
             rafRef.current = 0;
             const top = el.scrollTop;
             const height = el.clientHeight;
-            setViewport((v) => (Math.abs(v.top - top) < ROW_HEIGHT / 2 && v.height === height ? v : { top, height }));
+            setViewport((v) => (Math.abs(v.top - top) < rowHeightRef.current / 2 && v.height === height ? v : { top, height }));
             maybeLoadMore();
         });
     }, [maybeLoadMore]);
 
-    // keep the viewport height in sync (first render, data change, window resize)
+    // keep the viewport height in sync (first render, data change, window resize, new auto-fit height)
     useLayoutEffect(() => {
         const sync = () => {
             const el = tableScrollRef.current;
@@ -974,7 +1146,7 @@ const Knitting = () => {
         sync();
         window.addEventListener('resize', sync);
         return () => window.removeEventListener('resize', sync);
-    }, [totalVisible > 0, initialLoading]);
+    }, [totalVisible > 0, initialLoading, fit.height, rowHeight]);
 
     useEffect(() => () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); }, []);
     // =============================================================================
@@ -999,11 +1171,12 @@ const Knitting = () => {
 
     // Totals of the rows currently loaded in the table
     const totals = useMemo(() => {
-        const t = { yarnDelivery: 0, yarnReturn: 0, greyFabricReceived: 0, billingAmount: 0 };
+        const t = { yarnDelivery: 0, yarnReturn: 0, greyFabricReceived: 0, okQty: 0, billingAmount: 0 };
         filteredRows.forEach((row) => {
             t.yarnDelivery += Number(row.yarnDelivery) || 0;
             t.yarnReturn += Number(row.yarnReturn) || 0;
             t.greyFabricReceived += Number(row.greyFabricReceived) || 0;
+            t.okQty += Number(row.okQty) || 0;
             t.billingAmount += Number(row.billingAmount) || 0;
         });
         return t;
@@ -1293,8 +1466,8 @@ const Knitting = () => {
     const getCellBaseStyle = (row, idx) => {
         const isHovered = hoveredRow === row.rowKey;
         let bg = isHovered ? theme.colors.bgHover : (idx % 2 === 0 ? theme.colors.white : '#fafbfc');
-        // fixed row height is what makes windowed rendering possible
-        return { ...cellStyle, backgroundColor: bg, height: ROW_HEIGHT, padding: '6px 12px', boxSizing: 'border-box', overflow: 'hidden' };
+        // fixed row height (auto-calculated from the screen size) is what makes windowed rendering possible
+        return { ...cellStyle, fontSize: density.font, backgroundColor: bg, height: rowHeight, padding: density.pad, boxSizing: 'border-box', overflow: 'hidden' };
     };
 
     // ===== EXCEL EXPORT: one sheet per factory + Summary sheet =====
@@ -1602,14 +1775,14 @@ const Knitting = () => {
     );
     const allMonthsDraftSelected = monthOptions.length > 0 && monthDraftSelected.size === monthOptions.length;
 
-    const topSpacerHeight = winStart * ROW_HEIGHT;
-    const bottomSpacerHeight = Math.max(0, totalVisible - winEnd) * ROW_HEIGHT;
+    const topSpacerHeight = winStart * rowHeight;
+    const bottomSpacerHeight = Math.max(0, totalVisible - winEnd) * rowHeight;
     const spacerCellStyle = { padding: 0, border: 'none', height: 'auto' };
 
     const showTableOverlay = searchLoading || (initialLoading && movements.length > 0);
 
     return (
-        <div style={{ width: "100%", padding: "24px", fontFamily: FONT_STACK, color: theme.colors.textMain }}>
+        <div style={{ width: "100%", padding: "16px 20px", fontFamily: FONT_STACK, color: theme.colors.textMain, boxSizing: 'border-box' }}>
             {isChallanEditing && (
                 <ChallanEditModal
                     setIsChallanEditing={setIsChallanEditing}
@@ -1618,8 +1791,10 @@ const Knitting = () => {
                 />
             )}
 
+            {/* Everything above the table: watched for size changes so the table box always re-fits the screen */}
+            <div ref={topRef}>
             {/* Toolbar */}
-            <div style={{ display: "flex", gap: "10px", marginBottom: "20px", alignItems: "center", flexWrap: "wrap" }}>
+            <div style={{ display: "flex", gap: "10px", marginBottom: "12px", alignItems: "center", flexWrap: "wrap" }}>
                 <div style={{ position: 'relative', flex: '0 1 320px' }}>
                     <Search size={16} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: '#94a3b8' }} />
                     <input
@@ -1814,7 +1989,7 @@ const Knitting = () => {
 
             {/* Error Banner */}
             {searchError && (
-                <div style={{ padding: "12px 16px", color: "#991b1b", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: theme.radius, marginBottom: "16px", fontSize: '0.875rem', display: 'flex', alignItems: 'center', gap: 8, fontFamily: 'inherit' }}>
+                <div style={{ padding: "12px 16px", color: "#991b1b", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: theme.radius, marginBottom: "12px", fontSize: '0.875rem', display: 'flex', alignItems: 'center', gap: 8, fontFamily: 'inherit' }}>
                     <X size={16} /> {searchError}
                 </div>
             )}
@@ -1822,12 +1997,12 @@ const Knitting = () => {
             {/* ===== FOUND / NOT FOUND SEARCH SUMMARY BANNER ===== */}
             {searchActive && !searchLoading && !searchError && (foundSearchItems.length > 0 || notFoundSearchItems.length > 0) && (
                 <div style={{
-                    marginBottom: "16px", padding: "16px", background: theme.colors.white,
+                    marginBottom: "12px", padding: "12px 16px", background: theme.colors.white,
                     border: "1px solid #e2e8f0", borderRadius: theme.radius,
-                    display: 'flex', flexDirection: 'column', gap: 12, fontFamily: 'inherit',
+                    display: 'flex', flexDirection: 'column', gap: 8, fontFamily: 'inherit',
                     fontSize: '0.875rem', boxShadow: theme.shadows.sm
                 }}>
-                    <div style={{ fontWeight: 600, marginBottom: 4, color: theme.colors.textMain }}>Search Results Summary:</div>
+                    <div style={{ fontWeight: 600, color: theme.colors.textMain }}>Search Results Summary:</div>
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
                         {foundSearchItems.length > 0 && (
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -1869,7 +2044,7 @@ const Knitting = () => {
             {/* Results count (search results only) */}
             {searchActive && !searchLoading && !searchError && (
                 <div style={{
-                    marginBottom: "16px", padding: "10px 16px", background: "#ecfdf5",
+                    marginBottom: "12px", padding: "8px 16px", background: "#ecfdf5",
                     border: "1px solid #a7f3d0", borderRadius: theme.radius,
                     display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 12, fontFamily: 'inherit',
                     fontSize: '0.875rem', color: '#065f46'
@@ -1890,7 +2065,7 @@ const Knitting = () => {
             {/* ===== BILLING BAR ===== */}
             {challanIds.length > 0 && (
                 <div style={{
-                    marginBottom: "16px", padding: "12px 16px", background: "#eff6ff",
+                    marginBottom: "12px", padding: "10px 16px", background: "#eff6ff",
                     border: "1px solid #bfdbfe", borderRadius: theme.radius,
                     display: 'flex', alignItems: 'center', gap: 12, fontFamily: 'inherit'
                 }}>
@@ -1913,6 +2088,8 @@ const Knitting = () => {
                     </button>
                 </div>
             )}
+            </div>
+            {/* end of the area above the table */}
 
             {/* Table wrapper */}
             <div style={{ position: 'relative' }}>
@@ -1924,15 +2101,17 @@ const Knitting = () => {
                     </div>
                 )}
 
-                <div ref={tableScrollRef} onScroll={handleTableScroll} style={{ width: "100%", maxHeight: "30rem", overflow: "auto", border: `1px solid ${theme.colors.border}`, borderRadius: theme.radius, boxShadow: theme.shadows.md, background: theme.colors.white, position: 'relative', minHeight: showTableOverlay ? 160 : undefined }}>
-                    <table style={{ width: "100%", minWidth: "1600px", borderCollapse: "separate", borderSpacing: 0, tableLayout: "fixed" }}>
+                {/* The box height is calculated from the screen: it fills everything under the toolbar */}
+                <div ref={tableScrollRef} onScroll={handleTableScroll} style={{ width: "100%", height: fit.height, overflow: "auto", border: `1px solid ${theme.colors.border}`, borderRadius: theme.radius, boxShadow: theme.shadows.md, background: theme.colors.white, position: 'relative', boxSizing: 'border-box' }}>
+                    <table style={{ width: colLayout.total, borderCollapse: "separate", borderSpacing: 0, tableLayout: "fixed" }}>
                         <thead>
                             <tr>
                                 {tableHeader.map((th) => {
-                                    const frozen = getFrozenStyle(th.key, 'header');
+                                    const frozen = getFrozenStyle(th.key, 'header', colLayout.offsets, frozenEnabled);
+                                    const colWidth = colLayout.widths[th.key];
                                     if (th.noFilter) {
                                         return (
-                                            <th key={th.key} style={{ ...thStickyStyle, width: th.width, ...frozen }}>
+                                            <th key={th.key} style={{ ...thStickyStyle, width: colWidth, ...frozen }}>
                                                 {th.key === 'select' ? (
                                                     <input type="checkbox" checked={allVisibleSelected} onChange={(e) => toggleSelectAllVisible(e.target.checked)} style={{ accentColor: theme.colors.primary, cursor: 'pointer', width: 16, height: 16 }} />
                                                 ) : th.header}
@@ -1942,9 +2121,9 @@ const Knitting = () => {
                                     const isActive = !!filters[th.key];
                                     const isOpen = openFilterKey === th.key;
                                     return (
-                                        <th key={th.key} style={{ ...thStickyStyle, width: th.width, ...frozen }}>
+                                        <th key={th.key} style={{ ...thStickyStyle, width: colWidth, ...frozen }}>
                                             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
-                                                <span style={{ whiteSpace: "normal", wordBreak: "break-word", textAlign: "center", flex: 1 }}>{th.header}</span>
+                                                <span style={{ whiteSpace: "normal", wordBreak: "break-word", textAlign: "center", flex: 1, lineHeight: 1.15 }}>{th.header}</span>
                                                 <button
                                                     ref={(el) => { filterButtonRefs.current[th.key] = el; }}
                                                     onMouseDown={(e) => e.stopPropagation()}
@@ -1972,7 +2151,7 @@ const Knitting = () => {
                                 return (
                                     <tr key={row.rowKey} onMouseEnter={() => setHoveredRow(row.rowKey)} onMouseLeave={() => setHoveredRow(null)}>
                                         {tableHeader.map((th) => {
-                                            const frozen = getFrozenStyle(th.key, 'body');
+                                            const frozen = getFrozenStyle(th.key, 'body', colLayout.offsets, frozenEnabled);
                                             const baseStyle = { ...getCellBaseStyle(row, idx), ...frozen };
 
                                             if (th.key === 'select') {
@@ -1986,7 +2165,7 @@ const Knitting = () => {
                                             if (th.key === 'challanDate') {
                                                 return (
                                                     <td key={th.key} style={baseStyle}>
-                                                        <span style={{ fontVariantNumeric: 'tabular-nums', fontSize: '0.8rem', whiteSpace: 'normal', wordBreak: 'break-word' }}>{formatShortDate(row.challanDate)}</span>
+                                                        <span style={{ fontVariantNumeric: 'tabular-nums', fontSize: 'inherit', whiteSpace: 'normal', wordBreak: 'break-word' }}>{formatShortDate(row.challanDate)}</span>
                                                     </td>
                                                 );
                                             }
@@ -1996,7 +2175,7 @@ const Knitting = () => {
                                                     <td key={th.key} style={baseStyle}>
                                                         {row.color && row.color !== "-" ? (
                                                             <div style={clampStyle} title={row.color}>
-                                                                <span style={{ display: 'inline-block', padding: '2px 10px', borderRadius: '12px', background: '#f1f5f9', fontSize: '0.8rem', fontWeight: 500, wordBreak: 'break-word' }}>{row.color}</span>
+                                                                <span style={{ display: 'inline-block', padding: density.chipPad, borderRadius: '12px', background: '#f1f5f9', fontSize: 'inherit', fontWeight: 500, wordBreak: 'break-word' }}>{row.color}</span>
                                                             </div>
                                                         ) : "-"}
                                                     </td>
@@ -2021,17 +2200,7 @@ const Knitting = () => {
                                                 );
                                             }
 
-                                            if (th.key === "status" || th.key === "status") {
-                                                return (
-                                                    <td key={th.key} style={baseStyle}>
-                                                        <div style={clampStyle} title={String(row[th.key])}>
-                                                            <span className={`${th.key === "status=="}`} >IN TRANSIT</span>
-                                                        </div>
-                                                    </td>
-                                                )
-                                            }
-
-                                            const isNumber = ['yarnDelivery', 'yarnReturn', 'greyFabricReceived', 'physicalRec'].includes(th.key);
+                                            const isNumber = ['yarnDelivery', 'yarnReturn', 'greyFabricReceived', 'okQty'].includes(th.key);
                                             const currentValue = row[th.key];
 
                                             return (
@@ -2070,11 +2239,11 @@ const Knitting = () => {
                             <tfoot>
                                 <tr>
                                     {tableHeader.map((th) => {
-                                        const frozen = getFrozenStyle(th.key, 'footer');
+                                        const frozen = getFrozenStyle(th.key, 'footer', colLayout.offsets, frozenEnabled);
                                         if (th.key === 'composition') {
                                             return <td key={th.key} style={{ ...tfootCellStyle, fontWeight: 700, textTransform: 'uppercase', fontSize: '0.75rem', letterSpacing: '0.05em', ...frozen }}>{searchActive || !hasMore ? 'Total' : 'Total (loaded)'}</td>;
                                         }
-                                        if (['yarnDelivery', 'yarnReturn', 'greyFabricReceived', 'billingAmount'].includes(th.key)) {
+                                        if (['yarnDelivery', 'yarnReturn', 'greyFabricReceived', 'okQty', 'billingAmount'].includes(th.key)) {
                                             return (
                                                 <td key={th.key} style={{ ...tfootCellStyle, fontVariantNumeric: 'tabular-nums', fontWeight: th.key === 'billingAmount' ? 800 : 700, ...frozen }}>
                                                     {totals[th.key] > 0 ? totals[th.key].toFixed(2) : "-"}
@@ -2092,7 +2261,7 @@ const Knitting = () => {
 
             {/* Paged loading status (normal list mode) */}
             {!searchActive && !initialLoading && (
-                <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 10, marginTop: 12, minHeight: 24, fontSize: '0.8rem', color: theme.colors.textMuted, fontFamily: 'inherit', textAlign: 'center', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 10, marginTop: 8, minHeight: 24, fontSize: '0.8rem', color: theme.colors.textMuted, fontFamily: 'inherit', textAlign: 'center', flexWrap: 'wrap' }}>
                     {loadingMore && (
                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, color: theme.colors.primary, fontWeight: 600 }}>
                             <Loader size={16} className="animate-spin" /> Loading more...
@@ -2133,7 +2302,7 @@ const Knitting = () => {
 
             {/* Pagination */}
             {searchActive && !searchLoading && totalSearchPages > 1 && (
-                <div style={{ display: "flex", justifyContent: "center", alignItems: 'center', marginTop: 20, gap: 4, fontFamily: 'inherit' }}>
+                <div style={{ display: "flex", justifyContent: "center", alignItems: 'center', marginTop: 12, gap: 4, fontFamily: 'inherit' }}>
                     <button style={{ ...pageButtonStyle(false), opacity: searchPage === 1 ? 0.4 : 1, cursor: searchPage === 1 ? 'not-allowed' : 'pointer', fontFamily: 'inherit' }} onClick={() => goToSearchPage(searchPage - 1)} disabled={searchPage === 1}>Prev</button>
                     {searchPageNumbers.map((p, i) =>
                         p === "..." ? <span key={`e-${i}`} style={{ margin: "0 6px", color: theme.colors.textMuted, letterSpacing: 2 }}>...</span> : <button key={p} style={pageButtonStyle(p === searchPage)} onClick={() => goToSearchPage(p)}>{p}</button>

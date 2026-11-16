@@ -49,6 +49,7 @@ import PartyStockGlance from "../pages/mis/party.stock/GlanceReport";
 import QuarterlyBalance from "../pages/mis/QuaterlyBalanceRep";
 import PrivateRoutes from "../components/private.routes/PrivateRoute";
 import DailyTransaction from "../pages/mis/party.stock/DailyTransaction";
+import InTransit from "../pages/movement/In-Transit";
 
 const routers = createBrowserRouter([
   {
@@ -266,6 +267,10 @@ const routers = createBrowserRouter([
               {
                 path: "mis/daily-transaction",
                 element: <DailyTransaction/>,
+              },
+              {
+                path: "in-transit",
+                element: <InTransit/>,
               },
 
             ],

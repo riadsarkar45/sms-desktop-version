@@ -768,7 +768,7 @@ export default function Sidebar() {
     },
   ];
 
-  const misItems = sections.mis
+    const misItems = sections.mis
     ? [
         {
           label: "At A Glance (Stock)",
@@ -784,6 +784,12 @@ export default function Sidebar() {
           label: "Daily Transaction",
           path: "/dashboard/mis/daily-transaction",
           icon: Move3D,
+        },
+        // NEW
+        {
+          label: "In-Transit",
+          path: "/dashboard/in-transit",
+          icon: Truck,
         },
       ]
     : [];
@@ -982,6 +988,7 @@ export default function Sidebar() {
     "/dashboard/challan/dyeing": "Dyeing Movement",
     "/dashboard/challan/knitting": "Knitting Movement",
     "/dashboard/quarterly-balance": "Quarterly Balance",
+    // "/dashboard/in-transit": "In-Transit",
 
     "/dashboard/challan/others/compacting": "Compacting",
     "/dashboard/challan/others/heat-set": "Heat Set",

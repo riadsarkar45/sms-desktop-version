@@ -76,6 +76,14 @@ const PERMISSION_SECTIONS = [
             yes('readOnly', 'READ ONLY'),
         ],
     },
+    
+    {
+        key: 'factoryChallanVerificationQcReceive',
+        title: "Reponsible for challan verification",
+        items: [
+            yes('verifyChallanQty', 'Verification'),
+        ],
+    },
     {
         key: 'mis',
         title: 'MIS INFORMATION',

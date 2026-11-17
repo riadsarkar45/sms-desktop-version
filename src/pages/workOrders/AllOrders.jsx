@@ -1087,7 +1087,7 @@ const AllOrders = ({ orderType }) => {
                         .se-zero { background: #F3F4F6; border-color: #D6DAE1; color: #6B7280; }
                     `}</style>
 
-                    {/* { orderType === !"yarnDyeingOrder" || isEditing && (
+                    { isEditing && (
                         <Modal
                             workOrderId={workOrderId}
                             isLoading={isLoading}
@@ -1105,13 +1105,13 @@ const AllOrders = ({ orderType }) => {
                             challanIssue={challanIssue}
                             deliveryIssue={deliveryIssue}
                         />
-                    )} */}
+                    )}
 
-                    {orderType === "yarnDyeingOrder" && isEditing && (
+                    {/* {orderType === "yarnDyeingOrder" && isEditing && (
                         <YarnDeliveryModal
                             deliveries={deliveries}
                         />
-                    )}
+                    )} */}
 
                     {
                         isCancelModalOpen && (

@@ -1,6 +1,6 @@
-import { useEffect, useState, useRef, useCallback, useMemo } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo, useLayoutEffect } from "react";
 import {
-    PlusCircle, RefreshCcw, ChevronLeft, ChevronRight, Filter, X, Search,
+    PlusCircle, RefreshCcw, Filter, X, Search,
     Loader, Download, Pen, FileText
 } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
@@ -65,6 +65,85 @@ const FROZEN_LEFTS = FROZEN_WIDTHS.reduce((acc, width, idx) => {
 const PERCENT_COLUMN_INDEXES = new Set([10, 34, 40]);
 const NO_TOTAL_COLUMN_INDEXES = new Set([20]);
 
+// ===== SCROLL LOADING CONFIG =====
+// Jobs are loaded page by page while the user scrolls down (same idea as the AOP page).
+const PAGE_LIMIT = 20;                // jobs per request while scrolling
+const MAX_LOADED_ROWS = 1000;         // HARD LIMIT of jobs kept in the browser (use filters to narrow the data)
+const LOAD_MORE_THRESHOLD = 400;      // start loading the next page when less than this many px are left below
+const EXPORT_PAGE_LIMIT = 10000;      // export pulls everything (same as the old single request)
+// ===== END SCROLL LOADING CONFIG =====
+
+// ===== AUTO-FIT LAYOUT CONFIG =====
+// The table box always fills the rest of the screen: bigger screen = taller table, smaller screen = shorter table.
+const FIT_DEBUG = false;        // true = prints the measured numbers in the browser console (F12)
+const MIN_TABLE_HEIGHT = 300;   // only a safety minimum - the real height is calculated from the screen
+const BOTTOM_RESERVE = 60;      // space kept free under the table (page padding + the loading status line)
+
+// The ERP has its own zoom (67% / 100% ...). With CSS zoom / scale the real screen pixels are NOT the same as the CSS
+// pixels of the page, so the height must be corrected by this factor. 1 = no zoom.
+// (only used as a fallback - measureFit measures the zoom factor from the table box itself)
+const getZoomScale = (el) => {
+    const rect = el.getBoundingClientRect();
+    const w = el.offsetWidth;
+    if (!w || !rect.width) return 1;
+    const scale = rect.width / w;
+    return scale > 0.2 && scale < 5 ? scale : 1;
+};
+// ===== END AUTO-FIT LAYOUT CONFIG =====
+
+// ===== FILTER DROPDOWN POSITION =====
+// The filter dropdown opens CENTERED under the column header that was clicked.
+const FILTER_DROPDOWN_WIDTH = 180;
+const FILTER_DROPDOWN_EST_HEIGHT = 320;
+
+// btn = the filter button of the clicked column, el = the real dropdown element (if already on screen),
+// current = the top/left that is applied to it right now.
+// When the dropdown is already on screen its REAL size and the real zoom factor are measured, so it is centered
+// exactly under the column whatever its width is and whatever the ERP zoom (67% / 100% ...) is.
+const computeFilterDropdownPos = (btn, el, current) => {
+    if (!btn) return null;
+    const th = (btn.closest && btn.closest('th')) || btn;
+    const rect = th.getBoundingClientRect();
+
+    let width = FILTER_DROPDOWN_WIDTH;
+    let height = FILTER_DROPDOWN_EST_HEIGHT;
+    let k = 1;
+    let elRect = null;
+    if (el && current) {
+        elRect = el.getBoundingClientRect();
+        if (elRect.width > 0 && elRect.height > 0) {
+            width = elRect.width;
+            height = elRect.height;
+            if (el.offsetWidth > 0) {
+                const scale = elRect.width / el.offsetWidth;
+                if (scale > 0.2 && scale < 5) k = scale;
+            }
+        } else {
+            elRect = null;
+        }
+    }
+
+    // wanted position on the real screen: horizontally the middle of the column, kept inside the screen
+    let wantLeft = rect.left + rect.width / 2 - width / 2;
+    wantLeft = Math.max(8, Math.min(wantLeft, window.innerWidth - width - 8));
+
+    // vertically just under the header, or above it when there is no room below
+    let wantTop = rect.bottom + 4;
+    if (wantTop + height > window.innerHeight - 8) {
+        const aboveTop = rect.top - height - 4;
+        wantTop = aboveTop > 8 ? aboveTop : Math.max(8, window.innerHeight - height - 8);
+    }
+
+    if (!elRect) return { top: wantTop, left: wantLeft };
+
+    // correct the applied top/left by the difference between where it really is and where it should be
+    return {
+        top: current.top + (wantTop - elRect.top) / k,
+        left: current.left + (wantLeft - elRect.left) / k,
+    };
+};
+// ===== END FILTER DROPDOWN POSITION =====
+
 // ── Helper functions ─────────────────────────────────────────────────────────
 const safeNum = (val) => {
     if (val === undefined || val === null || val === '') return 0;
@@ -103,6 +182,9 @@ export default function Summary() {
     const [showModal, setShowModal] = useState(false);
     const navigate = useNavigate();
     const scrollContainerRef = useRef(null);
+    const topRef = useRef(null); // wraps the toolbar, watched for size changes
+    // invisible element pinned to the screen: its bottom edge = the bottom of the visible screen
+    const viewportProbeRef = useRef(null);
 
     const [editingJobData, setEditingJobData] = useState(null);
     const [editLoading, setEditLoading] = useState(false);
@@ -128,38 +210,157 @@ export default function Summary() {
 
     const { fetchData } = useFetchData();
     const axiosPrivate = useAxiosPrivate();
+    // keep the latest axios instance in a ref so the loaders never re-run because of a new instance
+    const axiosRef = useRef(axiosPrivate);
+    axiosRef.current = axiosPrivate;
     const { sections } = UseUserRoles();
 
-    const ITEMS_PER_PAGE = 20;
-    const [currentPage, setCurrentPage] = useState(1);
+    // ===== SCROLL LOADING STATE =====
+    const [loadingMore, setLoadingMore] = useState(false);
+    const [hasMore, setHasMore] = useState(false);
+    const [loadError, setLoadError] = useState(null);   // a page failed (Retry resumes)
+    const genRef = useRef(0);                           // bumped to cancel in-flight requests
+    const abortRef = useRef(null);
+    const pageRef = useRef(1);                          // the NEXT page to load
+    const loadingRef = useRef(false);
+    const hasMoreRef = useRef(false);
+    const capRef = useRef(false);
+    const loadErrorRef = useRef(null);
+    const rawDataRef = useRef([]);
+    const activeFiltersRef = useRef(activeFilters);
+    activeFiltersRef.current = activeFilters;
+    // ================================
+
+    // ===== AUTO-FIT (screen size) STATE =====
+    const [fit, setFit] = useState({ height: 560, width: 1400 });
+    // =======================================
 
     const [dropdownPos, setDropdownPos] = useState({ top: 0, left: 0 });
+    const dropdownPosRef = useRef(dropdownPos);
+    dropdownPosRef.current = dropdownPos;
+    const dropdownRef = useRef(null);                 // the Excel-style filter dropdown element
     const filterBtnRefs = useRef({});
 
     const isAnyModalOpen = showModal || glanceReport.showGlanceModal;
 
-    const fetchFilteredData = useCallback(async () => {
-        setIsLoading(prev => ({ ...prev, refreshLoading: true }));
-        try {
-            const params = { page: 1, limit: 10000, reconciliation: false, styleRequirement: true };
-            if (Object.keys(activeFilters).length > 0) params.filters = JSON.stringify(activeFilters);
-            const res = await axiosPrivate.get('/api/styles', { params });
-            if (res.data && res.data.data) setRawData(res.data.data);
-            console.log(res.data, "style  data"); // style requirement log
-        } catch (err) {
-            console.error("Failed to fetch filtered data:", err);
-        } finally {
-            setIsLoading(prev => ({ ...prev, refreshLoading: false }));
-        }
-    }, [activeFilters, axiosPrivate]);
+    // ===== PAGED LOADING =====
+    const cancelLoad = useCallback(() => {
+        genRef.current += 1;
+        if (abortRef.current) abortRef.current.abort();
+        loadingRef.current = false;
+        setLoadingMore(false);
+    }, []);
 
+    // Loads ONE page. replace=true starts a new list (first page of the current filters).
+    const fetchPage = useCallback(async (gen, page, replace) => {
+        if (loadingRef.current && !replace) return;
+        loadingRef.current = true;
+        if (replace) setIsLoading(prev => ({ ...prev, refreshLoading: true }));
+        else setLoadingMore(true);
+        const controller = new AbortController();
+        abortRef.current = controller;
+
+        try {
+            const params = { page, limit: PAGE_LIMIT, reconciliation: false, styleRequirement: true };
+            const currentFilters = activeFiltersRef.current || {};
+            if (Object.keys(currentFilters).length > 0) params.filters = JSON.stringify(currentFilters);
+            const res = await axiosRef.current.get('/api/styles', { params, signal: controller.signal });
+            if (gen !== genRef.current) return; // cancelled / replaced by a newer load
+
+            console.log(res.data, "style  data"); // style requirement log
+            const body = res.data || {};
+            // the list can arrive as body.data, body.data.data, body.items ... (or the body itself)
+            const pickList = (b) => {
+                if (Array.isArray(b)) return b;
+                if (!b || typeof b !== 'object') return [];
+                for (const key of ['data', 'items', 'rows', 'result']) {
+                    if (Array.isArray(b[key])) return b[key];
+                }
+                return [];
+            };
+            let items = pickList(body);
+            if (items.length === 0 && body.data && typeof body.data === 'object') items = pickList(body.data);
+            const meta = (body.data && typeof body.data === 'object' && !Array.isArray(body.data)) ? { ...body.data, ...body } : body;
+
+            // jobs that are really new (the same job can arrive twice at a page border)
+            let freshCount = items.length;
+            setRawData(prev => {
+                if (replace) return items;
+                const seen = new Set();
+                prev.forEach((r) => { if (r?.id !== undefined && r?.id !== null) seen.add(r.id); });
+                const fresh = items.filter((it) => it?.id === undefined || it?.id === null || !seen.has(it.id));
+                return prev.concat(fresh);
+            });
+            if (!replace) {
+                const seenNow = new Set();
+                rawDataRef.current.forEach((r) => { if (r?.id !== undefined && r?.id !== null) seenNow.add(r.id); });
+                freshCount = items.filter((it) => it?.id === undefined || it?.id === null || !seenNow.has(it.id)).length;
+            }
+
+            // is there another page?
+            let more;
+            if (typeof meta.hasMore === 'boolean') more = meta.hasMore;
+            else if (meta.totalPages !== undefined && meta.totalPages !== null) more = page < Number(meta.totalPages);
+            else if (meta.total !== undefined && meta.total !== null) more = page * PAGE_LIMIT < Number(meta.total);
+            else more = items.length >= PAGE_LIMIT;
+            if (items.length === 0) more = false;
+            // the server ignored the page size and sent everything / sent the same jobs again: nothing more to load
+            if (items.length > PAGE_LIMIT || freshCount === 0) more = false;
+
+            pageRef.current = page + 1;
+            setHasMore(more);
+        } catch (err) {
+            if (gen !== genRef.current) return; // aborted on purpose
+            console.error("Failed to fetch filtered data:", err);
+            const message = err?.response?.status === 403
+                ? "Permission denied"
+                : (err?.response?.data?.message || err?.response?.data?.msg || err?.message || "Failed to load jobs");
+            setHasMore(false);
+            setLoadError(message);
+        } finally {
+            if (gen === genRef.current) {
+                loadingRef.current = false;
+                setLoadingMore(false);
+                if (replace) setIsLoading(prev => ({ ...prev, refreshLoading: false }));
+            }
+        }
+    }, []);
+
+    // Load the next page when the user scrolls near the bottom (and the memory cap is not reached)
+    const maybeLoadMore = useCallback(() => {
+        const el = scrollContainerRef.current;
+        if (!el) return;
+        if (!hasMoreRef.current || loadingRef.current || capRef.current || loadErrorRef.current) return;
+        if (el.scrollHeight - el.scrollTop - el.clientHeight > LOAD_MORE_THRESHOLD) return;
+        fetchPage(genRef.current, pageRef.current, false);
+    }, [fetchPage]);
+
+    // (Re)start the list from page 1
+    const fetchFilteredData = useCallback(() => {
+        cancelLoad();
+        const gen = genRef.current;
+        pageRef.current = 1;
+        setHasMore(false);
+        setLoadError(null);
+        loadErrorRef.current = null;
+        if (scrollContainerRef.current) scrollContainerRef.current.scrollTop = 0;
+        fetchPage(gen, 1, true);
+    }, [cancelLoad, fetchPage]);
+
+    // restart whenever the filters change (and on first load)
     useEffect(() => {
         fetchFilteredData();
-    }, [fetchFilteredData]);
+    }, [fetchFilteredData, activeFilters]);
 
-    useEffect(() => {
-        setCurrentPage(1);
-    }, [activeFilters]);
+    // stop everything when the page is left
+    useEffect(() => () => cancelLoad(), [cancelLoad]);
+
+    const retryLoad = () => {
+        setLoadError(null);
+        loadErrorRef.current = null;
+        fetchPage(genRef.current, pageRef.current, pageRef.current === 1);
+    };
+    // ==========================
 
     const handleRedirect = (jobNumber) => navigate(`/dashboard/new-order/${jobNumber}`);
 
@@ -172,49 +373,143 @@ export default function Summary() {
     }, [activeFilters]);
 
     const filteredData = rawData;
+    rawDataRef.current = rawData;
 
-    const paginatedData = useMemo(() => {
-        const start = (currentPage - 1) * ITEMS_PER_PAGE;
-        return filteredData.slice(start, start + ITEMS_PER_PAGE);
-    }, [filteredData, currentPage]);
+    // every loaded job is shown (the table scrolls and loads more jobs at the bottom)
+    const paginatedData = filteredData;
 
-    const totalPages = Math.ceil(filteredData.length / ITEMS_PER_PAGE);
-    const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
-    const endIndex = Math.min(startIndex + ITEMS_PER_PAGE, filteredData.length);
+    const capReached = hasMore && filteredData.length >= MAX_LOADED_ROWS;
+    hasMoreRef.current = hasMore;
+    capRef.current = capReached;
+    loadErrorRef.current = loadError;
+
+    // content shorter than the box (or after a page arrives / the screen got taller): keep loading until it is filled / capped
+    useEffect(() => {
+        maybeLoadMore();
+    }, [filteredData.length, hasMore, loadingMore, loadError, fit.height, maybeLoadMore]);
 
     const totals = useMemo(
         () => footerTotals({ FROZEN_COUNT, filteredData, COLUMNS, getBreakdownValue }),
         [filteredData]
     );
 
-    const getPageNumbers = () => {
-        const pages = [];
-        const maxVisiblePages = 5;
-        let startPage = Math.max(1, currentPage - Math.floor(maxVisiblePages / 2));
-        let endPage = Math.min(totalPages, startPage + maxVisiblePages - 1);
+    // ===== AUTO-FIT MEASURING =====
+    // Table height = (bottom of the visible screen - top of the table) - space kept free under the table.
+    // Nothing is hard-coded: a bigger screen gives a taller table, a smaller screen gives a shorter one.
+    // Everything is measured with getBoundingClientRect (one single coordinate space), so it works the same with the
+    // ERP zoom (67% / 100% / ...), browser zoom, phones and tablets.
+    const measureFit = useCallback(() => {
+        const el = scrollContainerRef.current;
+        if (!el) return;
 
-        if (endPage - startPage + 1 < maxVisiblePages) {
-            startPage = Math.max(1, endPage - maxVisiblePages + 1);
+        const rect = el.getBoundingClientRect();
+
+        // zoom factor measured from the table box: rendered height / the CSS height we gave it
+        const applied = parseFloat(el.style.height);
+        let k = applied > 0 && rect.height > 0 ? rect.height / applied : getZoomScale(el);
+        if (!(k > 0.2 && k < 5)) k = 1;
+
+        // bottom of the visible screen (same coordinate space as `rect`)
+        const probe = viewportProbeRef.current;
+        const probeRect = probe ? probe.getBoundingClientRect() : null;
+        const viewH = (window.visualViewport && window.visualViewport.height) || window.innerHeight;
+        const viewportBottom = probeRect && probeRect.height > 0 ? probeRect.bottom : viewH;
+
+        // table top measured from the very top of the content, no matter how far the page / the ERP panel is scrolled
+        const docTop = document.documentElement.getBoundingClientRect().top;
+        let top = rect.top - docTop;
+        if (document.body.scrollTop) top += document.body.scrollTop * k;
+        let node = el.parentElement;
+        while (node && node !== document.body && node !== document.documentElement) {
+            if (node.scrollTop) top += node.scrollTop * k;
+            node = node.parentElement;
         }
 
-        for (let i = startPage; i <= endPage; i++) {
-            pages.push(i);
+        const height = Math.max(MIN_TABLE_HEIGHT, Math.floor((viewportBottom - top) / k - BOTTOM_RESERVE));
+        if (FIT_DEBUG) console.log('[Summary fit]', { viewportBottom, top, k, reserve: BOTTOM_RESERVE, height });
+        const width = el.clientWidth;
+        setFit((prev) => (prev.height === height && prev.width === width ? prev : { height, width }));
+    }, []);
+
+    // measure on mount, window resize, and whenever the page / the area above the table changes size
+    // (filter chips appear, the ERP shell finishes loading, sidebar opens, browser zoom changes ...)
+    useLayoutEffect(() => {
+        measureFit();
+        // the ERP shell / fonts / images can still move things after the first paint: measure again a bit later
+        const t1 = setTimeout(measureFit, 100);
+        const t2 = setTimeout(measureFit, 500);
+        const t3 = setTimeout(measureFit, 1500);
+        window.addEventListener('resize', measureFit);
+        window.addEventListener('orientationchange', measureFit);
+        window.addEventListener('load', measureFit);
+        if (window.visualViewport) window.visualViewport.addEventListener('resize', measureFit);
+        // the ERP zoom control changes a style / class on <html> or <body> without resizing anything: catch that too
+        let mo = null;
+        if (typeof MutationObserver !== 'undefined') {
+            mo = new MutationObserver(() => measureFit());
+            mo.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'class'] });
+            mo.observe(document.body, { attributes: true, attributeFilter: ['style', 'class'] });
         }
-        return pages;
-    };
+        // safety net: cheap re-check (state only changes when the number really changes)
+        const poll = setInterval(measureFit, 800);
+        let ro = null;
+        if (typeof ResizeObserver !== 'undefined') {
+            ro = new ResizeObserver(() => measureFit());
+            if (topRef.current) ro.observe(topRef.current);
+            if (scrollContainerRef.current) ro.observe(scrollContainerRef.current);
+            ro.observe(document.documentElement);
+            ro.observe(document.body);
+        }
+        return () => {
+            clearTimeout(t1); clearTimeout(t2); clearTimeout(t3);
+            clearInterval(poll);
+            if (mo) mo.disconnect();
+            window.removeEventListener('resize', measureFit);
+            window.removeEventListener('orientationchange', measureFit);
+            window.removeEventListener('load', measureFit);
+            if (window.visualViewport) window.visualViewport.removeEventListener('resize', measureFit);
+            if (ro) ro.disconnect();
+        };
+    }, [measureFit, selectedRows.size]);
+    // ==============================
+
+    // place the dropdown centered under its column using the REAL dropdown element (runs after every render while open,
+    // so it also fixes itself when the options finish loading and the dropdown changes size)
+    useLayoutEffect(() => {
+        if (openFilter === null) return;
+        const el = dropdownRef.current;
+        if (!el) return;
+        const pos = computeFilterDropdownPos(filterBtnRefs.current[openFilter], el, dropdownPos);
+        if (pos && (Math.abs(pos.top - dropdownPos.top) > 0.5 || Math.abs(pos.left - dropdownPos.left) > 0.5)) {
+            setDropdownPos(pos);
+        }
+    }, [openFilter, dropdownPos, filterOptions, filterOptionsLoading]);
+
+    // keep the filter dropdown glued to its column while the table / page scrolls or the screen is resized
+    useEffect(() => {
+        if (openFilter === null) return;
+        const handler = (e) => {
+            // scrolling the value list INSIDE the dropdown must not reposition it
+            if (e && e.type === 'scroll' && dropdownRef.current && e.target instanceof Node && dropdownRef.current.contains(e.target)) return;
+            const el = dropdownRef.current;
+            const pos = computeFilterDropdownPos(filterBtnRefs.current[openFilter], el, dropdownPosRef.current);
+            if (pos) setDropdownPos((prev) => (Math.abs(prev.top - pos.top) <= 0.5 && Math.abs(prev.left - pos.left) <= 0.5 ? prev : pos));
+        };
+        window.addEventListener('scroll', handler, true);
+        window.addEventListener('resize', handler);
+        return () => {
+            window.removeEventListener('scroll', handler, true);
+            window.removeEventListener('resize', handler);
+        };
+    }, [openFilter]);
 
     const openFilterDropdown = async (colIndex, e) => {
         e.stopPropagation();
         if (openFilter === colIndex) { setOpenFilter(null); return; }
 
-        const btn = filterBtnRefs.current[colIndex];
-        if (btn) {
-            const rect = btn.getBoundingClientRect();
-            setDropdownPos({
-                top: rect.bottom + 4,
-                left: Math.min(rect.left, window.innerWidth - 290),
-            });
-        }
+        // open centered under the clicked column
+        const pos = computeFilterDropdownPos(filterBtnRefs.current[colIndex], null, null);
+        if (pos) setDropdownPos(pos);
         setOpenFilter(colIndex);
         setFilterOptions([]);
 
@@ -323,8 +618,27 @@ export default function Summary() {
         }
     };
 
-    const handleExportExcelFile = () => {
-        handleExportExcel({ filteredData, COLUMNS, getBreakdownValue, FROZEN_COUNT, footerTotals: totals, NO_TOTAL_COLUMN_INDEXES, PERCENT_COLUMN_INDEXES })
+    // The table only holds the jobs loaded so far, so when more jobs exist on the server the export
+    // pulls the full list first (same request the page used to make), then exports exactly as before.
+    const handleExportExcelFile = async () => {
+        let exportData = filteredData;
+        let exportTotals = totals;
+
+        if (hasMore) {
+            try {
+                const params = { page: 1, limit: EXPORT_PAGE_LIMIT, reconciliation: false, styleRequirement: true };
+                if (Object.keys(activeFilters).length > 0) params.filters = JSON.stringify(activeFilters);
+                const res = await axiosPrivate.get('/api/styles', { params });
+                if (res.data && Array.isArray(res.data.data)) {
+                    exportData = res.data.data;
+                    exportTotals = footerTotals({ FROZEN_COUNT, filteredData: exportData, COLUMNS, getBreakdownValue });
+                }
+            } catch (err) {
+                console.error("Failed to fetch all data for export:", err);
+            }
+        }
+
+        handleExportExcel({ filteredData: exportData, COLUMNS, getBreakdownValue, FROZEN_COUNT, footerTotals: exportTotals, NO_TOTAL_COLUMN_INDEXES, PERCENT_COLUMN_INDEXES })
     };
 
     const generateBooking = (rowData) => {
@@ -365,6 +679,14 @@ export default function Summary() {
 
     return (
         <DashboardLayout>
+            {/* Invisible screen-height probe (used only to measure the bottom of the visible screen) */}
+            <div
+                ref={viewportProbeRef}
+                aria-hidden="true"
+                style={{ position: 'fixed', top: 0, bottom: 0, left: 0, width: 1, pointerEvents: 'none', visibility: 'hidden' }}
+            />
+
+            <div ref={topRef}>
             <div className="flex gap-2 mb-4 items-center flex-wrap">
                 {
                     sections?.styleRequirements?.addJob && (
@@ -465,6 +787,7 @@ export default function Summary() {
                     {filteredData.length} rows
                 </span>
             </div>
+            </div>
 
             {showModal && (
                 <StyleReqModal
@@ -491,6 +814,7 @@ export default function Summary() {
 
             {openFilter !== null && (
                 <FilterDropDown
+                    key={openFilter}
                     colIndex={openFilter}
                     colLabel={COLUMNS[openFilter]}
                     allValues={filterOptions}
@@ -500,7 +824,10 @@ export default function Summary() {
                     onClear={() => clearFilter(openFilter)}
                     onClose={() => setOpenFilter(null)}
                     anchorRef={{ current: filterBtnRefs.current[openFilter] }}
-                    style={{ top: dropdownPos.top, left: dropdownPos.left, position: "fixed" }}
+                    dropdownRef={dropdownRef}
+                    width={FILTER_DROPDOWN_WIDTH}
+                    maxHeight={FILTER_DROPDOWN_EST_HEIGHT}
+                    style={{ top: dropdownPos.top, left: dropdownPos.left }}
                 />
             )}
 
@@ -518,10 +845,12 @@ export default function Summary() {
                 }
             `}</style>
 
+            {/* The box height is calculated from the screen: it fills everything under the toolbar */}
             <div
                 ref={scrollContainerRef}
+                onScroll={maybeLoadMore}
                 className="relative overflow-auto shadow-xs"
-                style={{ height: '40rem', border: `1px solid ${BORDER_COLOR}`, borderRadius: '14px' }}
+                style={{ height: fit.height, boxSizing: 'border-box', border: `1px solid ${BORDER_COLOR}`, borderRadius: '14px' }}
             >
                 <table
                     className="w-full text-sm text-left rtl:text-right text-body"
@@ -591,6 +920,7 @@ export default function Summary() {
                                             {isFilterable && (
                                                 <button
                                                     ref={el => filterBtnRefs.current[index] = el}
+                                                    data-filter-btn="true"
                                                     onClick={(e) => openFilterDropdown(index, e)}
                                                     title={hasFilter ? "Filter active" : "Filter"}
                                                     className={`shrink-0 flex items-center justify-center w-5 h-5 rounded transition-colors ${hasFilter
@@ -612,7 +942,7 @@ export default function Summary() {
                         {isLoading.refreshLoading && paginatedData.length === 0 && (
                             <tr>
                                 <td colSpan={COLUMNS.length + 1} className="px-4 py-20 text-center align-middle">
-                                    <div className="flex flex-col items-center justify-center gap-3">
+                                    <div className="flex flex-col items-center justify-center gap-3" style={{ position: 'sticky', left: 0, width: fit.width }}>
                                         <RefreshCcw size={24} className="animate-spin text-teal-600" />
                                         <span className="text-sm font-medium text-gray-500">Loading summary data...</span>
                                     </div>
@@ -1007,7 +1337,20 @@ export default function Summary() {
                         {!isLoading.refreshLoading && paginatedData.length === 0 && (
                             <tr>
                                 <td colSpan={COLUMNS.length + 1} className="px-6 py-12 text-center text-gray-400 text-sm">
-                                    No rows match the active filters.
+                                    {/* sticky: the message stays in the visible part of the table (the table is very wide) */}
+                                    <div style={{ position: 'sticky', left: 0, width: fit.width }}>
+                                        {loadError ? (
+                                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10, color: '#b91c1c' }}>
+                                                {loadError}
+                                                <button
+                                                    onClick={retryLoad}
+                                                    style={{ background: '#0d9488', color: '#ffffff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600, padding: '5px 12px' }}
+                                                >
+                                                    Retry
+                                                </button>
+                                            </span>
+                                        ) : "No rows match the active filters."}
+                                    </div>
                                 </td>
                             </tr>
                         )}
@@ -1080,67 +1423,40 @@ export default function Summary() {
                 </table>
             </div>
 
-            {totalPages > 1 && (
-                <div className="flex items-center justify-between px-4 py-3 bg-white border border-t-0 shadow-xs" style={{ borderColor: BORDER_COLOR, borderRadius: '0 0 14px 14px' }}>
-                    <div className="hidden sm:flex-1 sm:flex sm:items-center sm:justify-between">
-                        <div>
-                            <p className="text-sm text-gray-700">
-                                Showing <span className="font-medium">{startIndex + 1}</span> to <span className="font-medium">{endIndex}</span> of <span className="font-medium">{filteredData.length}</span> results
-                            </p>
-                        </div>
-                        <div>
-                            <nav className="relative z-0 inline-flex rounded-md shadow-sm -space-x-px" aria-label="Pagination">
-                                <button
-                                    onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                                    disabled={currentPage === 1}
-                                    className="relative inline-flex items-center px-3 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                    <ChevronLeft size={16} className="mr-1" /> Prev
-                                </button>
-
-                                {getPageNumbers().map(page => (
-                                    <button
-                                        key={page}
-                                        onClick={() => setCurrentPage(page)}
-                                        className={`relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium ${currentPage === page
-                                            ? 'bg-teal-600 text-white z-10'
-                                            : 'bg-white text-gray-700 hover:bg-gray-50'
-                                            }`}
-                                    >
-                                        {page}
-                                    </button>
-                                ))}
-
-                                <button
-                                    onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-                                    disabled={currentPage === totalPages}
-                                    className="relative inline-flex items-center px-3 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                    Next <ChevronRight size={16} className="ml-1" />
-                                </button>
-                            </nav>
-                        </div>
-                    </div>
-
-                    <div className="flex justify-between sm:hidden w-full">
-                        <button
-                            onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                            disabled={currentPage === 1}
-                            className="relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
-                        >
-                            Previous
-                        </button>
-                        <span className="text-sm text-gray-700 self-center">
-                            Page {currentPage} of {totalPages}
+            {/* Scroll loading status (replaces the old page buttons) */}
+            {!isLoading.refreshLoading && (
+                <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 10, marginTop: 8, minHeight: 24, fontSize: '0.8rem', color: '#6b7280', textAlign: 'center', flexWrap: 'wrap' }}>
+                    {loadingMore && (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, color: '#0d9488', fontWeight: 600 }}>
+                            <Loader size={16} className="animate-spin" /> Loading more jobs...
                         </span>
-                        <button
-                            onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-                            disabled={currentPage === totalPages}
-                            className="relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
-                        >
-                            Next
-                        </button>
-                    </div>
+                    )}
+                    {!loadingMore && loadError && (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10, color: '#b91c1c' }}>
+                            {loadError}
+                            <button
+                                onClick={retryLoad}
+                                style={{ background: '#0d9488', color: '#ffffff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600, padding: '5px 12px' }}
+                            >
+                                Retry
+                            </button>
+                        </span>
+                    )}
+                    {!loadingMore && !loadError && capReached && (
+                        <span style={{ color: '#b45309', fontWeight: 800 }}>
+                            Showing the first {filteredData.length} jobs. More data exists: use the column filters to narrow it down.
+                        </span>
+                    )}
+                    {!loadingMore && !loadError && !capReached && hasMore && (
+                        <span style={{ opacity: 0.7 }}>
+                            {filteredData.length} jobs loaded. Scroll down to load more.
+                        </span>
+                    )}
+                    {!loadingMore && !loadError && !hasMore && filteredData.length > 0 && (
+                        <span style={{ opacity: 0.7 }}>
+                            All {filteredData.length} jobs loaded
+                        </span>
+                    )}
                 </div>
             )}
         </DashboardLayout>

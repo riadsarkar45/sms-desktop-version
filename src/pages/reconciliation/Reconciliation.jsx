@@ -188,7 +188,67 @@ const rawNumOrDash = (v) => {
     return isNaN(n) ? String(v) : n;
 };
 
-const FILTER_DROPDOWN_WIDTH = 220;
+const FILTER_DROPDOWN_WIDTH = 180;
+const FILTER_DROPDOWN_GAP = 8;        // space between the filter icon and the popup
+const FILTER_DROPDOWN_MARGIN = 8;     // minimum space between the popup and the screen edge
+
+/* ===== SCROLL LOADING + AUTO-FIT CONFIG (same system as the Summary page) ===== */
+const JOB_PAGE = 30;                  // jobs added every time the user scrolls near the end
+const LOAD_MORE_DISTANCE = 600;       // start loading when less than this many px are left below
+const MIN_TABLE_HEIGHT = 300;         // only a safety minimum - the real height is calculated from the screen
+const BOTTOM_RESERVE = 60;            // space kept free under the table (page padding + the status line)
+const FIT_DEBUG = false;              // true = prints the measured numbers in the browser console (F12)
+
+// The ERP has its own zoom (67% / 100% ...). With CSS zoom / scale the real screen pixels are NOT the same as the CSS
+// pixels of the page, so sizes and positions must be corrected by this factor. 1 = no zoom.
+const getZoomScale = (el) => {
+    if (!el) return 1;
+    const rect = el.getBoundingClientRect();
+    const w = el.offsetWidth;
+    if (!w || !rect.width) return 1;
+    const scale = rect.width / w;
+    return scale > 0.2 && scale < 5 ? scale : 1;
+};
+
+// Puts a fixed popup centered right under the clicked button (or above it when there is no room below).
+// It does NOT guess the zoom: it measures where the popup REALLY is on the screen, moves it by the difference and
+// measures again. This way the popup lands on the clicked icon with any ERP zoom (67% / 100% ...), with a
+// zoomed / transformed layout wrapper, and with the page or the table scrolled.
+const positionPopupUnderButton = (btn, pop) => {
+    if (!btn || !pop) return;
+    for (let i = 0; i < 5; i++) {
+        const b = btn.getBoundingClientRect();
+        const p = pop.getBoundingClientRect();
+        if (!p.width || !p.height) return;
+
+        const vw = (window.visualViewport && window.visualViewport.width) || window.innerWidth;
+        const vh = (window.visualViewport && window.visualViewport.height) || window.innerHeight;
+
+        // where the popup should be, in screen pixels
+        let wantLeft = b.left + b.width / 2 - p.width / 2;
+        wantLeft = Math.max(FILTER_DROPDOWN_MARGIN, Math.min(wantLeft, vw - p.width - FILTER_DROPDOWN_MARGIN));
+
+        let wantTop = b.bottom + FILTER_DROPDOWN_GAP;
+        if (wantTop + p.height > vh - FILTER_DROPDOWN_MARGIN) {
+            const above = b.top - p.height - FILTER_DROPDOWN_GAP;
+            wantTop = above > FILTER_DROPDOWN_MARGIN ? above : Math.max(FILTER_DROPDOWN_MARGIN, vh - p.height - FILTER_DROPDOWN_MARGIN);
+        }
+
+        const dx = wantLeft - p.left;
+        const dy = wantTop - p.top;
+        if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) break;
+
+        // screen pixels -> CSS pixels of the popup (only a first guess, the next loop corrects any rest)
+        const ratio = pop.offsetWidth ? p.width / pop.offsetWidth : 1;
+        const s = ratio > 0.2 && ratio < 5 ? ratio : 1;
+        const curLeft = parseFloat(pop.style.left) || 0;
+        const curTop = parseFloat(pop.style.top) || 0;
+        pop.style.left = `${curLeft + dx / s}px`;
+        pop.style.top = `${curTop + dy / s}px`;
+    }
+    pop.style.visibility = "visible";
+};
+/* ===== END SCROLL LOADING + AUTO-FIT CONFIG ===== */
 
 const Reconciliation = () => {
     const axiosPrivate = useAxiosPrivate();
@@ -205,7 +265,6 @@ const Reconciliation = () => {
 
     const filterButtonRefs = useRef({});
     const filterDropdownRef = useRef(null);
-    const [dropdownPos, setDropdownPos] = useState(null);
 
     const [monthFilter, setMonthFilter] = useState("ALL");
     const [monthFilterOpen, setMonthFilterOpen] = useState(false);
@@ -224,6 +283,16 @@ const Reconciliation = () => {
     const { sections } = UseUserRoles();
     const wrapperRef = useRef(null);
     const cellRefs = useRef(new Map());
+
+    /* ===== SCROLL LOADING + AUTO-FIT STATE ===== */
+    const topRef = useRef(null);                       // buttons + active filters, watched for size changes
+    const [fit, setFit] = useState({ height: 560 });   // height of the table box, calculated from the screen
+    const [visibleCount, setVisibleCount] = useState(JOB_PAGE);
+    const [loadingMore, setLoadingMore] = useState(false);
+    const loadingMoreRef = useRef(false);
+    const hasMoreRowsRef = useRef(false);
+    const loadMoreTimerRef = useRef(null);
+    /* =========================================== */
 
     const WRAPPED_COL_WIDTH = 120;
     const wrapClass = "whitespace-normal break-words";
@@ -423,6 +492,104 @@ const Reconciliation = () => {
         }, []);
     }, [reportData, activeFilters, monthFilter, getEffectiveDateRaw, getEffectiveManuUnit, getDateValueForFilter]);
 
+    /* ===== SCROLL LOADING: only the first jobs are drawn, more are added while the user scrolls down ===== */
+    // The table draws only these jobs. Totals, footer and Excel export still use ALL the filtered jobs (processedReportData).
+    const displayedData = useMemo(() => processedReportData.slice(0, visibleCount), [processedReportData, visibleCount]);
+    const hasMoreRows = visibleCount < processedReportData.length;
+    hasMoreRowsRef.current = hasMoreRows;
+
+    const maybeLoadMore = useCallback(() => {
+        const el = wrapperRef.current;
+        if (!el || loadingMoreRef.current || !hasMoreRowsRef.current) return;
+        // start loading when less than ~LOAD_MORE_DISTANCE px are left below the visible area
+        if (el.scrollHeight - el.scrollTop - el.clientHeight > LOAD_MORE_DISTANCE) return;
+        loadingMoreRef.current = true;
+        setLoadingMore(true);
+        loadMoreTimerRef.current = setTimeout(() => {
+            loadMoreTimerRef.current = null;
+            loadingMoreRef.current = false;
+            setVisibleCount((c) => c + JOB_PAGE);
+            setLoadingMore(false);
+        }, 120);
+    }, []);
+
+    // content shorter than the box (or more rows arrived / the screen got taller): keep loading until it is filled
+    useEffect(() => {
+        maybeLoadMore();
+    }, [visibleCount, processedReportData.length, fit.height, isDataLoading, maybeLoadMore]);
+
+    // a column filter / the month changed: start again from the first jobs, back at the top of the table
+    useEffect(() => {
+        setVisibleCount(JOB_PAGE);
+        if (wrapperRef.current) wrapperRef.current.scrollTop = 0;
+    }, [activeFilters, monthFilter]);
+
+    // stop the pending "load more" when the page is left
+    useEffect(() => () => {
+        if (loadMoreTimerRef.current) clearTimeout(loadMoreTimerRef.current);
+    }, []);
+    /* =================================================================================================== */
+
+    /* ===== AUTO-FIT MEASURING (same logic as the Summary page) ===== */
+    const measureFit = useCallback(() => {
+        const el = wrapperRef.current;
+        if (!el) return;
+        const viewH = (window.visualViewport && window.visualViewport.height) || window.innerHeight;
+        const scale = getZoomScale(el);
+        const rect = el.getBoundingClientRect();
+
+        // table top measured from the very top of the content, no matter how far the page / the ERP panel is scrolled
+        let scrolled = window.scrollY || 0;
+        let node = el.parentElement;
+        while (node && node !== document.body && node !== document.documentElement) {
+            if (node.scrollTop) scrolled += node.scrollTop * scale;
+            node = node.parentElement;
+        }
+        const visualTop = rect.top + scrolled;
+
+        const height = Math.max(MIN_TABLE_HEIGHT, Math.floor((viewH - visualTop) / scale - BOTTOM_RESERVE));
+        if (FIT_DEBUG) console.log('[Reconciliation fit]', { viewH, scale, visualTop, reserve: BOTTOM_RESERVE, height });
+        setFit((prev) => (prev.height === height ? prev : { height }));
+    }, []);
+
+    useLayoutEffect(() => {
+        measureFit();
+        // the ERP shell / fonts / images can still move things after the first paint: measure again a bit later
+        const t1 = setTimeout(measureFit, 100);
+        const t2 = setTimeout(measureFit, 500);
+        const t3 = setTimeout(measureFit, 1500);
+        window.addEventListener('resize', measureFit);
+        window.addEventListener('load', measureFit);
+        if (window.visualViewport) window.visualViewport.addEventListener('resize', measureFit);
+        // the ERP zoom control changes a style / class on <html> or <body> without resizing anything: catch that too
+        let mo = null;
+        if (typeof MutationObserver !== 'undefined') {
+            mo = new MutationObserver(() => measureFit());
+            mo.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'class'] });
+            mo.observe(document.body, { attributes: true, attributeFilter: ['style', 'class'] });
+        }
+        // safety net: cheap re-check (state only changes when the number really changes)
+        const poll = setInterval(measureFit, 800);
+        let ro = null;
+        if (typeof ResizeObserver !== 'undefined') {
+            ro = new ResizeObserver(() => measureFit());
+            if (topRef.current) ro.observe(topRef.current);
+            if (wrapperRef.current) ro.observe(wrapperRef.current);
+            ro.observe(document.documentElement);
+            ro.observe(document.body);
+        }
+        return () => {
+            clearTimeout(t1); clearTimeout(t2); clearTimeout(t3);
+            clearInterval(poll);
+            if (mo) mo.disconnect();
+            window.removeEventListener('resize', measureFit);
+            window.removeEventListener('load', measureFit);
+            if (window.visualViewport) window.visualViewport.removeEventListener('resize', measureFit);
+            if (ro) ro.disconnect();
+        };
+    }, [measureFit]);
+    /* =============================================================== */
+
     const openFilterDropdown = async (colIndex) => {
         if (openFilterCol === colIndex) { setOpenFilterCol(null); return; }
         setOpenFilterCol(colIndex);
@@ -549,36 +716,28 @@ const Reconciliation = () => {
 
     const getSubRowCount = (job) => Math.max((job?.rows || []).length, (job?.compBreakdown || []).length, 1);
 
-    const updateFilterDropdownPos = useCallback(() => {
+    // The popup opens centered under the clicked column icon. Its position is measured on the real screen
+    // (see positionPopupUnderButton), so it lands on the icon with any ERP zoom and any scroll position.
+    // It is placed again whenever its content (and so its height) changes.
+    const placeFilterDropdown = useCallback(() => {
         if (openFilterCol === null) return;
-        const btn = filterButtonRefs.current[openFilterCol];
-        if (!btn) return;
-        const rect = btn.getBoundingClientRect();
-        const width = FILTER_DROPDOWN_WIDTH;
-
-        let left = rect.left + rect.width / 2 - width / 2;
-        left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
-
-        const estimatedHeight = 420;
-        let top = rect.bottom + 8;
-        if (top + estimatedHeight > window.innerHeight - 8) {
-            const aboveTop = rect.top - estimatedHeight - 8;
-            top = aboveTop > 8 ? aboveTop : Math.max(8, window.innerHeight - estimatedHeight - 8);
-        }
-        setDropdownPos({ top, left, width });
+        positionPopupUnderButton(filterButtonRefs.current[openFilterCol], filterDropdownRef.current);
     }, [openFilterCol]);
 
     useLayoutEffect(() => {
-        if (openFilterCol === null) { setDropdownPos(null); return; }
-        updateFilterDropdownPos();
-        const handler = () => updateFilterDropdownPos();
-        window.addEventListener('scroll', handler, true);
-        window.addEventListener('resize', handler);
+        if (openFilterCol === null) return;
+        placeFilterDropdown();
+    }, [openFilterCol, dropdownOptions, searchTerm, placeFilterDropdown]);
+
+    useLayoutEffect(() => {
+        if (openFilterCol === null) return;
+        window.addEventListener('scroll', placeFilterDropdown, true);
+        window.addEventListener('resize', placeFilterDropdown);
         return () => {
-            window.removeEventListener('scroll', handler, true);
-            window.removeEventListener('resize', handler);
+            window.removeEventListener('scroll', placeFilterDropdown, true);
+            window.removeEventListener('resize', placeFilterDropdown);
         };
-    }, [openFilterCol, updateFilterDropdownPos]);
+    }, [openFilterCol, placeFilterDropdown]);
 
     useEffect(() => {
         if (openFilterCol === null) return;
@@ -597,10 +756,11 @@ const Reconciliation = () => {
         };
     }, [openFilterCol]);
 
+    // keyboard navigation works on the jobs that are drawn (more are added while scrolling)
     const { flatRows, rowIndexMap } = useMemo(() => {
         const rows = [];
         const map = new Map();
-        processedReportData.forEach((job) => {
+        displayedData.forEach((job) => {
             const subRowCount = getSubRowCount(job);
             for (let i = 0; i < subRowCount; i++) {
                 map.set(`${job.jobNo}-${i}`, rows.length);
@@ -608,7 +768,7 @@ const Reconciliation = () => {
             }
         });
         return { flatRows: rows, rowIndexMap: map };
-    }, [processedReportData]);
+    }, [displayedData]);
 
     useEffect(() => {
         if (!selectedCell) return;
@@ -1334,11 +1494,13 @@ const Reconciliation = () => {
     };
 
     const renderFilterDropdown = () => {
-        if (openFilterCol === null || !dropdownPos) return null;
+        if (openFilterCol === null) return null;
         const colMeta = FILTERABLE_COLS[openFilterCol];
         if (!colMeta) return null;
 
-        const availableHeight = Math.max(260, Math.min(430, window.innerHeight - dropdownPos.top - 16));
+        // The popup is drawn hidden at the top-left first; placeFilterDropdown() then moves it under the clicked icon
+        // and makes it visible. Max height is in screen-independent CSS px and is corrected by the placement.
+        const availableHeight = Math.max(260, Math.min(430, window.innerHeight - 16));
 
         return createPortal(
             <div
@@ -1346,22 +1508,23 @@ const Reconciliation = () => {
                 className="bg-white rounded-md border-2 border-[#47637a] shadow-2xl overflow-hidden text-left normal-case font-sans text-sm flex flex-col"
                 style={{
                     position: 'fixed',
-                    top: dropdownPos.top,
-                    left: dropdownPos.left,
-                    width: dropdownPos.width,
+                    top: 0,
+                    left: 0,
+                    width: FILTER_DROPDOWN_WIDTH,
                     zIndex: 99999,
                     maxHeight: availableHeight,
+                    visibility: 'hidden',
                 }}
             >
                 <div className="p-2 border-b border-[#47637a]">
                     <div className="relative">
-                        <Search className="absolute left-2.5 top-2 h-4 w-4 text-gray-400" />
+                        <Search className="absolute left-2.5 top-2 h-3 w-3 text-gray-400" />
                         <input
                             type="text"
                             placeholder="Search"
                             value={searchTerm}
                             onChange={(e) => setSearchTerm(e.target.value)}
-                            className="w-full text-sm border border-[#47637a] rounded pl-8 pr-3 py-1.5 outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-200"
+                            className="w-full text-[10px] border border-[#47637a] rounded pl-8 pr-3 py-1.5 outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-200"
                             autoFocus
                         />
                     </div>
@@ -1372,14 +1535,14 @@ const Reconciliation = () => {
                             type="checkbox"
                             checked={allChecked}
                             onChange={toggleAll}
-                            className="h-4 w-4 rounded border-[#47637a] text-blue-600 focus:ring-blue-600 cursor-pointer"
+                            className="h-3 w-3 rounded border-[#47637a] text-blue-600 focus:ring-blue-600 cursor-pointer"
                         />
-                        <span className="text-sm text-gray-700 font-medium">(Select All)</span>
+                        <span className="text-[12px] text-gray-700 font-medium">(Select All)</span>
                     </label>
                 </div>
                 <div className="max-h-64 overflow-y-auto py-1 flex-1">
                     {visibleOptions.length === 0 ? (
-                        <div className="px-3 py-4 text-xs text-gray-500 text-center italic">No items match your search</div>
+                        <div className="px-1.5 py-2 text-xs text-gray-500 text-center italic">No items match your search</div>
                     ) : (
                         visibleOptions.map((val, idx) => (
                             <label key={`${val}-${idx}`} className="flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-blue-50 select-none">
@@ -1387,9 +1550,9 @@ const Reconciliation = () => {
                                     type="checkbox"
                                     checked={tempSelected.has(val)}
                                     onChange={() => toggleValue(val)}
-                                    className="h-4 w-4 rounded border-[#47637a] text-blue-600 focus:ring-blue-600 cursor-pointer"
+                                    className="h-3 w-3 rounded border-[#47637a] text-blue-600 focus:ring-blue-600 cursor-pointer"
                                 />
-                                <span className="text-sm text-gray-800 truncate">
+                                <span className="text-[10px] text-gray-800 truncate">
                                     {normalizeFilterVal(val) === "" ? "(Blanks)" : val}
                                 </span>
                             </label>
@@ -1400,14 +1563,14 @@ const Reconciliation = () => {
                     <button
                         type="button"
                         onClick={() => setOpenFilterCol(null)}
-                        className="px-3 py-1.5 text-sm font-semibold text-gray-700 bg-white border border-[#47637a] rounded hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:ring-offset-1 transition-colors"
+                        className="px-1.5 py-1.4 text-[12px] font-bold text-gray-700 bg-gray-200 border border-[#47637a] rounded hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:ring-offset-1 transition-colors"
                     >
                         Clear
                     </button>
                     <button
                         type="button"
                         onClick={applyFilter}
-                        className="px-4 py-1.5 text-sm font-bold text-white bg-blue-700 border border-[#47637a] rounded hover:bg-blue-950 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:ring-offset-1 transition-colors"
+                        className="px-1.5 py-1.4 text-[12px] font-bold text-gray-700 bg-gray-200 border border-[#47637a] rounded hover:bg-blue-950 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:ring-offset-1 transition-colors"
                     >
                         Apply
                     </button>
@@ -1419,127 +1582,133 @@ const Reconciliation = () => {
 
     return (
         <div className="min-h-screen w-full p-1 md:p-4 font-sans bg-stone-50">
-            <div className="mb-2 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-                <div className="flex items-center gap-3 flex-wrap">
-                    <button onClick={fetchFilteredData} disabled={isLoading} className="inline-flex items-center gap-2 px-4 py-2 bg-[#47637a] text-white border border-[#47637a] rounded-lg shadow-sm text-sm font-medium hover:bg-blue-950 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-                        <RefreshCcw size={16} className={isLoading ? "animate-spin" : ""} />
-                        Refresh Data
-                    </button>
-                    {
-                        sections?.styleRequirements?.balanceSheet && (
-                            <Link to={"/dashboard/balance-sheet"}>
-                                <button className="inline-flex items-center gap-2 px-4 py-2 bg-[#47637a] text-white border border-[#47637a] rounded-lg shadow-sm text-sm font-medium hover:bg-blue-950 transition-colors disabled:opacity-50">
-                                    Balance Sheet
-                                </button>
-                            </Link>
-                        )
-                    }
+            {/* Everything above the table: watched for size changes so the table box always re-fits the screen */}
+            <div ref={topRef}>
+                <div className="mb-2 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                    <div className="flex items-center gap-3 flex-wrap">
+                        <button onClick={fetchFilteredData} disabled={isLoading} className="inline-flex items-center gap-2 px-4 py-2 bg-[#47637a] text-white border border-[#47637a] rounded-lg shadow-sm text-sm font-medium hover:bg-blue-950 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                            <RefreshCcw size={16} className={isLoading ? "animate-spin" : ""} />
+                            Refresh Data
+                        </button>
+                        {
+                            sections?.styleRequirements?.balanceSheet && (
+                                <Link to={"/dashboard/balance-sheet"}>
+                                    <button className="inline-flex items-center gap-2 px-4 py-2 bg-[#47637a] text-white border border-[#47637a] rounded-lg shadow-sm text-sm font-medium hover:bg-blue-950 transition-colors disabled:opacity-50">
+                                        Balance Sheet
+                                    </button>
+                                </Link>
+                            )
+                        }
 
-                    <button
-                        type="button"
-                        onClick={(e) => { e.stopPropagation(); exportExcel(); }}
-                        disabled={isExporting || processedReportData.length === 0}
-                        className="inline-flex items-center gap-2 px-4 py-2 bg-[#47637a] text-white border border-[#47637a] rounded-lg shadow-sm text-sm font-medium hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                        {isExporting ? (
-                            <>
-                                <RefreshCcw size={16} className="animate-spin" />
-                                Exporting...
-                            </>
-                        ) : (
-                            <>
-                                <Download size={12} />
-                                Export Excel
-                            </>
-                        )}
-                    </button>
-
-                    <div className="relative">
                         <button
                             type="button"
-                            onClick={() => setMonthFilterOpen(o => !o)}
-                            className={`inline-flex items-center gap-2 px-4 py-2 border border-[#47637a] rounded-lg shadow-sm text-sm font-medium transition-colors ${monthFilter !== "ALL" ? "bg-blue-50 text-blue-900" : "bg-white text-slate-700 hover:bg-slate-50"}`}
+                            onClick={(e) => { e.stopPropagation(); exportExcel(); }}
+                            disabled={isExporting || processedReportData.length === 0}
+                            className="inline-flex items-center gap-2 px-4 py-2 bg-[#47637a] text-white border border-[#47637a] rounded-lg shadow-sm text-sm font-medium hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                            <ListFilter size={16} />
-                            {monthFilter === "ALL" ? "All Months" : formatMonthLabel(monthFilter)}
+                            {isExporting ? (
+                                <>
+                                    <RefreshCcw size={16} className="animate-spin" />
+                                    Exporting...
+                                </>
+                            ) : (
+                                <>
+                                    <Download size={12} />
+                                    Export Excel
+                                </>
+                            )}
                         </button>
-                        {monthFilterOpen && (
-                            <div className="absolute top-full mt-2 left-0 w-56 bg-white rounded-lg shadow-xl ring-1 ring-black/20 z-[100] overflow-hidden" onClick={(e) => e.stopPropagation()}>
-                                <div className="max-h-64 overflow-y-auto py-1">
-                                    <button
-                                        type="button"
-                                        onClick={() => { setMonthFilter("ALL"); setMonthFilterOpen(false); }}
-                                        className={`w-full text-left px-4 py-2 text-sm hover:bg-blue-50 transition-colors ${monthFilter === "ALL" ? "bg-blue-50 text-blue-900 font-semibold" : "text-slate-700"}`}
-                                    >
-                                        All Months
-                                    </button>
-                                    {availableMonths.length === 0 && (
-                                        <div className="px-4 py-3 text-xs text-slate-400 text-center">No reconciliation dates yet</div>
-                                    )}
-                                    {availableMonths.map(key => (
-                                        <button
-                                            key={key}
-                                            type="button"
-                                            onClick={() => { setMonthFilter(key); setMonthFilterOpen(false); }}
-                                            className={`w-full text-left px-4 py-2 text-sm hover:bg-blue-50 transition-colors ${monthFilter === key ? "bg-blue-50 text-blue-900 font-semibold" : "text-slate-700"}`}
-                                        >
-                                            {formatMonthLabel(key)}
-                                        </button>
-                                    ))}
-                                </div>
-                            </div>
-                        )}
-                    </div>
 
-                    {sections?.styleRequirements?.reconciliationSubmission &&
-                        (selectedJobs?.size ?? 0) > 0 && (
+                        <div className="relative">
                             <button
-                                onClick={handleGlobalSubmit}
-                                disabled={savingJob}
-                                className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white border border-[#47637a] rounded-lg shadow-sm text-sm font-medium hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                type="button"
+                                onClick={() => setMonthFilterOpen(o => !o)}
+                                className={`inline-flex items-center gap-2 px-4 py-2 border border-[#47637a] rounded-lg shadow-sm text-sm font-medium transition-colors ${monthFilter !== "ALL" ? "bg-blue-50 text-blue-900" : "bg-white text-slate-700 hover:bg-slate-50"}`}
                             >
-                                <CloudCog size={16} />
-                                Submit Reconciliation ({selectedJobs?.size ?? 0})
+                                <ListFilter size={16} />
+                                {monthFilter === "ALL" ? "All Months" : formatMonthLabel(monthFilter)}
                             </button>
-                        )
-                    }
-                </div>
-            </div>
+                            {monthFilterOpen && (
+                                <div className="absolute top-full mt-2 left-0 w-56 bg-white rounded-lg shadow-xl ring-1 ring-black/20 z-[100] overflow-hidden" onClick={(e) => e.stopPropagation()}>
+                                    <div className="max-h-64 overflow-y-auto py-1">
+                                        <button
+                                            type="button"
+                                            onClick={() => { setMonthFilter("ALL"); setMonthFilterOpen(false); }}
+                                            className={`w-full text-left px-4 py-2 text-sm hover:bg-blue-50 transition-colors ${monthFilter === "ALL" ? "bg-blue-50 text-blue-900 font-semibold" : "text-slate-700"}`}
+                                        >
+                                            All Months
+                                        </button>
+                                        {availableMonths.length === 0 && (
+                                            <div className="px-4 py-3 text-xs text-slate-400 text-center">No reconciliation dates yet</div>
+                                        )}
+                                        {availableMonths.map(key => (
+                                            <button
+                                                key={key}
+                                                type="button"
+                                                onClick={() => { setMonthFilter(key); setMonthFilterOpen(false); }}
+                                                className={`w-full text-left px-4 py-2 text-sm hover:bg-blue-50 transition-colors ${monthFilter === key ? "bg-blue-50 text-blue-900 font-semibold" : "text-slate-700"}`}
+                                            >
+                                                {formatMonthLabel(key)}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
 
-            {hasAnyFilters && (
-                <div className="mb-3 flex flex-wrap items-center gap-2">
-                    <span className="text-xs font-semibold text-slate-600 uppercase tracking-wider mr-2">Active Filters:</span>
-                    {monthFilter !== "ALL" && (
-                        <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-blue-50 text-blue-900 rounded-full text-xs font-medium border border-[#47637a]">
-                            MONTH: <span className="font-bold">{formatMonthLabel(monthFilter)}</span>
-                            <button onClick={() => setMonthFilter("ALL")} className="ml-1 hover:text-blue-950 transition-colors">
-                                <X size={14} />
-                            </button>
-                        </span>
-                    )}
-                    {activeFilterEntries.map(([key, values]) => {
-                        const colDef = Object.values(FILTERABLE_COLS).find(c => c.key === key);
-                        return (
-                            <span key={key} className="inline-flex items-center gap-1.5 px-3 py-1 bg-blue-50 text-blue-900 rounded-full text-xs font-medium border border-[#47637a]">
-                                {colDef?.label}: <span className="font-bold">{values.length}</span>
-                                <button onClick={() => setActiveFilters(prev => { const next = { ...prev }; delete next[key]; return next; })} className="ml-1 hover:text-blue-950 transition-colors">
+                        {sections?.styleRequirements?.reconciliationSubmission &&
+                            (selectedJobs?.size ?? 0) > 0 && (
+                                <button
+                                    onClick={handleGlobalSubmit}
+                                    disabled={savingJob}
+                                    className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white border border-[#47637a] rounded-lg shadow-sm text-sm font-medium hover:bg-emerald-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    <CloudCog size={16} />
+                                    Submit Reconciliation ({selectedJobs?.size ?? 0})
+                                </button>
+                            )
+                        }
+                    </div>
+                </div>
+
+                {hasAnyFilters && (
+                    <div className="mb-3 flex flex-wrap items-center gap-2">
+                        <span className="text-xs font-semibold text-slate-600 uppercase tracking-wider mr-2">Active Filters:</span>
+                        {monthFilter !== "ALL" && (
+                            <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-blue-50 text-blue-900 rounded-full text-xs font-medium border border-[#47637a]">
+                                MONTH: <span className="font-bold">{formatMonthLabel(monthFilter)}</span>
+                                <button onClick={() => setMonthFilter("ALL")} className="ml-1 hover:text-blue-950 transition-colors">
                                     <X size={14} />
                                 </button>
                             </span>
-                        );
-                    })}
-                    <button onClick={() => { setActiveFilters({}); setMonthFilter("ALL"); }} className="text-xs text-slate-500 hover:text-rose-600 underline ml-2 transition-colors">
-                        Clear all
-                    </button>
-                </div>
-            )}
+                        )}
+                        {activeFilterEntries.map(([key, values]) => {
+                            const colDef = Object.values(FILTERABLE_COLS).find(c => c.key === key);
+                            return (
+                                <span key={key} className="inline-flex items-center gap-1.5 px-3 py-1 bg-blue-50 text-blue-900 rounded-full text-xs font-medium border border-[#47637a]">
+                                    {colDef?.label}: <span className="font-bold">{values.length}</span>
+                                    <button onClick={() => setActiveFilters(prev => { const next = { ...prev }; delete next[key]; return next; })} className="ml-1 hover:text-blue-950 transition-colors">
+                                        <X size={14} />
+                                    </button>
+                                </span>
+                            );
+                        })}
+                        <button onClick={() => { setActiveFilters({}); setMonthFilter("ALL"); }} className="text-xs text-slate-500 hover:text-rose-600 underline ml-2 transition-colors">
+                            Clear all
+                        </button>
+                    </div>
+                )}
+            </div>
 
             <div className="w-full bg-white rounded-xl border-2 border-[#47637a] shadow-sm overflow-hidden">
+                {/* The box height is calculated from the screen: it fills everything under the buttons */}
                 <div
-                    className="w-full overflow-auto max-h-[calc(100vh-190px)] focus:outline-none"
+                    className="w-full overflow-auto focus:outline-none"
+                    style={{ height: fit.height, boxSizing: 'border-box' }}
                     ref={wrapperRef}
                     tabIndex={0}
                     onKeyDown={handleTableKeyDown}
+                    onScroll={maybeLoadMore}
                 >
                     <table className="w-full" style={{ borderCollapse: "separate", borderSpacing: 0, tableLayout: "fixed" }}>
                         <thead className="sticky top-0 z-50">
@@ -1589,7 +1758,7 @@ const Reconciliation = () => {
                                                 )}
 
                                                 {!isFilterable && showFilterIcon && (
-                                                    <Filter size={14} strokeWidth={2.5} className="text-blue-400/50" />
+                                                    <Filter size={16} strokeWidth={3.5} className="text-blue-400/50" />
                                                 )}
                                             </div>
                                         </th>
@@ -1613,7 +1782,7 @@ const Reconciliation = () => {
                                 <tr><td colSpan={YARN_TABLE_HEADERS.length} className="px-4 py-20 text-center align-middle text-sm text-slate-500 border-b border-[#47637a]">No records match your current filters.</td></tr>
                             )}
 
-                            {!isLoading && processedReportData.map((job) => {
+                            {!isLoading && displayedData.map((job) => {
                                 const jobNo = job.jobNo;
                                 const comps = job?.rows || [];
                                 const compBreakDown = job.compBreakdown || [];
@@ -2044,6 +2213,23 @@ const Reconciliation = () => {
                         )}
                     </table>
                 </div>
+            </div>
+
+            {/* Scroll loading status */}
+            <div className="flex flex-wrap items-center justify-center gap-2.5 mt-2 min-h-6 text-xs text-slate-500 text-center">
+                {!isLoading && loadingMore && (
+                    <span className="inline-flex items-center gap-2 font-semibold text-blue-900">
+                        <RefreshCcw size={14} className="animate-spin" /> Loading more...
+                    </span>
+                )}
+                {!isLoading && !loadingMore && hasMoreRows && (
+                    <span className="opacity-70">
+                        {displayedData.length} of {processedReportData.length} jobs loaded. Scroll down to load more.
+                    </span>
+                )}
+                {!isLoading && !loadingMore && !hasMoreRows && processedReportData.length > 0 && (
+                    <span className="opacity-70">All {processedReportData.length} jobs loaded</span>
+                )}
             </div>
 
             {renderFilterDropdown()}

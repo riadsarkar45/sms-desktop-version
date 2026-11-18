@@ -1,9 +1,34 @@
 import { useMemo } from "react";
+import WorkOrderDateCell from "./WorkOrderDateCell";
 
-const YarnDyeOrders = ({ orders, isEdit, getDataForCancellation, updatedFields, handleOnChange, handleInlineEdit, handleEditRowData }) => {
+const YarnDyeOrders = ({
+    orders,
+    isEdit,
+    getDataForCancellation,
+    updatedFields,
+    handleOnChange,
+    handleInlineEdit,
+    handleEditRowData,
+    FROZEN_COUNT = 9,
+    currentFrozenWidths = [],
+    currentFrozenLefts = [],
+    handlePreview,
+    getRevisionCount
+}) => {
 
     const cellClass = "cursor-pointer px-3 py-1.5";
     const compCellClass = "hover:bg-red-500/10 hover:text-red-500 cursor-pointer px-3 py-1.5";
+
+    // Sticky (frozen) style for the first FROZEN_COUNT columns of the body
+    const stickyStyle = (colIndex) => ({
+        position: "sticky",
+        left: `${currentFrozenLefts[colIndex] ?? 0}px`,
+        zIndex: 3,
+        backgroundColor: "#ffffff",
+        width: currentFrozenWidths[colIndex] ? `${currentFrozenWidths[colIndex]}px` : undefined,
+        minWidth: currentFrozenWidths[colIndex] ? `${currentFrozenWidths[colIndex]}px` : undefined,
+        boxShadow: colIndex === FROZEN_COUNT - 1 ? "2px 0 5px -1px rgba(0,0,0,0.18)" : "none",
+    });
 
     // ---- FOOTER TOTALS ----
     const allCompositions =
@@ -86,16 +111,29 @@ const YarnDyeOrders = ({ orders, isEdit, getDataForCancellation, updatedFields, 
                     return (
                         <tr key={rowIndex} className="border-b border-gray-200">
 
+                            {/* WORK ORDER DATE (new, frozen, per work order) */}
+                            {isFirstOfWo && (
+                                <td className="border border-gray-200 align-top" style={stickyStyle(0)} rowSpan={woRowSpan}>
+                                    <WorkOrderDateCell
+                                        job={job}
+                                        wo={wo}
+                                        onPreview={handlePreview}
+                                        revisionCount={getRevisionCount ? getRevisionCount(wo) : 0}
+                                        className={cellClass}
+                                    />
+                                </td>
+                            )}
+
                             {/* MONTH (per work order) */}
                             {isFirstOfWo && (
-                                <td className="border border-gray-200 align-top" rowSpan={woRowSpan}>
+                                <td className="border border-gray-200 align-top" style={stickyStyle(1)} rowSpan={woRowSpan}>
                                     <div className={cellClass}>{wo?.month}</div>
                                 </td>
                             )}
 
                             {/* FACTORY NAME (per work order) */}
                             {isFirstOfWo && (
-                                <td className="border border-gray-200 align-top" rowSpan={woRowSpan}>
+                                <td className="border border-gray-200 align-top" style={stickyStyle(2)} rowSpan={woRowSpan}>
                                     {!wo || wo.factoryName === "NULL" ? (
                                         <div className={`${cellClass} text-gray-500`}>-</div>
                                     ) : (
@@ -112,21 +150,21 @@ const YarnDyeOrders = ({ orders, isEdit, getDataForCancellation, updatedFields, 
 
                             {/* WORK ORDER NO (per work order) */}
                             {isFirstOfWo && (
-                                <td className="border border-gray-200 align-top" rowSpan={woRowSpan}>
+                                <td className="border border-gray-200 align-top" style={stickyStyle(3)} rowSpan={woRowSpan}>
                                     <div className={cellClass}>{wo?.workOrderNo}</div>
                                 </td>
                             )}
 
                             {/* BUYER NAME (per work order) */}
                             {isFirstOfWo && (
-                                <td className="border border-gray-200 align-top" rowSpan={woRowSpan}>
+                                <td className="border border-gray-200 align-top" style={stickyStyle(4)} rowSpan={woRowSpan}>
                                     <div className={cellClass}>{wo?.styleRequirement?.buyerName || "-"}</div>
                                 </td>
                             )}
 
                             {/* JOB NO (per job) */}
                             {isFirstOfJob && (
-                                <td className="border border-gray-200 px-3 py-1.5 text-sm align-top" rowSpan={jobRowSpan}>
+                                <td className="border border-gray-200 px-3 py-1.5 text-sm align-top" style={stickyStyle(5)} rowSpan={jobRowSpan}>
                                     <span onClick={() =>getDataForCancellation({
                                         jobNo: job.jobNo,
                                         isOpen: true,
@@ -136,13 +174,13 @@ const YarnDyeOrders = ({ orders, isEdit, getDataForCancellation, updatedFields, 
 
                             {/* STYLE (per work order) */}
                             {isFirstOfWo && (
-                                <td className="border border-gray-200 align-top" rowSpan={woRowSpan}>
+                                <td className="border border-gray-200 align-top" style={stickyStyle(6)} rowSpan={woRowSpan}>
                                     <div className={cellClass}>{wo?.styleNo}</div>
                                 </td>
                             )}
 
                             {/* BOOKING COLOR (per composition; may itself stack multiple yarnJobs, which just grows this one row) */}
-                            <td className="border border-gray-200 align-top">
+                            <td className="border border-gray-200 align-top" style={stickyStyle(7)}>
                                 <div className={compCellClass}>
                                     {yarnJobs.length > 0
                                         ? yarnJobs.map((y, yi) => (
@@ -154,7 +192,7 @@ const YarnDyeOrders = ({ orders, isEdit, getDataForCancellation, updatedFields, 
                             </td>
 
                             {/* COMPOSITION (per composition) */}
-                            <td className="border border-gray-200 align-top">
+                            <td className="border border-gray-200 align-top" style={stickyStyle(8)}>
                                 <div className={compCellClass}>{comp?.composition}</div>
                             </td>
 
@@ -221,7 +259,7 @@ const YarnDyeOrders = ({ orders, isEdit, getDataForCancellation, updatedFields, 
             {/* FOOTER TOTALS ROW */}
             <tfoot>
                 <tr className="border-t-2 border-gray-300 bg-gray-50 font-semibold">
-                    <td colSpan={6} className="border border-gray-200 px-3 py-1.5 text-right text-sm">
+                    <td colSpan={7} className="border border-gray-200 px-3 py-1.5 text-right text-sm">
                         TOTAL
                     </td>
                     <td className="border border-gray-200 px-3 py-1.5"></td>

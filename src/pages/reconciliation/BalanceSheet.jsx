@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import useAxiosPrivate from "../../hooks/UseAxiosPrivate";
 import { useSocket } from "../../hooks/socketProvider/SocketContext";
 
@@ -75,6 +76,67 @@ const GROUP_HEADER_ROW_HEIGHT = 33;
 // browsers, box-shadow does not.
 const FROZEN_DIVIDER_SHADOW = "inset -1px 0 0 0 #64748b";
 
+/* ===== SCROLL LOADING + AUTO-FIT CONFIG (same system as the Summary page) ===== */
+const JOB_PAGE = 20;                  // jobs added every time the user scrolls near the end
+const LOAD_MORE_DISTANCE = 400;       // start loading when less than this many px are left below
+const MIN_TABLE_HEIGHT = 300;         // only a safety minimum - the real height is calculated from the screen
+const BOTTOM_RESERVE = 60;            // space kept free under the table (page padding + the status line)
+const FIT_DEBUG = false;              // true = prints the measured numbers in the browser console (F12)
+const FILTER_POPUP_WIDTH = 192;
+const FILTER_POPUP_GAP = 6;           // space between the filter icon and the popup
+const FILTER_POPUP_MARGIN = 8;        // minimum space between the popup and the screen edge
+
+// The ERP has its own zoom (67% / 100% ...). With CSS zoom / scale the real screen pixels are NOT the same as the CSS
+// pixels of the page, so sizes and positions must be corrected by this factor. 1 = no zoom.
+const getZoomScale = (el) => {
+    if (!el) return 1;
+    const rect = el.getBoundingClientRect();
+    const w = el.offsetWidth;
+    if (!w || !rect.width) return 1;
+    const scale = rect.width / w;
+    return scale > 0.2 && scale < 5 ? scale : 1;
+};
+
+// Puts a fixed popup centered right under the clicked button (or above it when there is no room below).
+// It does NOT guess the zoom: it measures where the popup REALLY is on the screen, moves it by the difference and
+// measures again. This way the popup lands on the clicked icon with any ERP zoom (67% / 100% ...), with a
+// zoomed / transformed layout wrapper, and with the page or the table scrolled.
+const positionPopupUnderButton = (btn, pop) => {
+    if (!btn || !pop) return;
+    for (let i = 0; i < 5; i++) {
+        const b = btn.getBoundingClientRect();
+        const p = pop.getBoundingClientRect();
+        if (!p.width || !p.height) return;
+
+        const vw = (window.visualViewport && window.visualViewport.width) || window.innerWidth;
+        const vh = (window.visualViewport && window.visualViewport.height) || window.innerHeight;
+
+        // where the popup should be, in screen pixels
+        let wantLeft = b.left + b.width / 2 - p.width / 2;
+        wantLeft = Math.max(FILTER_POPUP_MARGIN, Math.min(wantLeft, vw - p.width - FILTER_POPUP_MARGIN));
+
+        let wantTop = b.bottom + FILTER_POPUP_GAP;
+        if (wantTop + p.height > vh - FILTER_POPUP_MARGIN) {
+            const above = b.top - p.height - FILTER_POPUP_GAP;
+            wantTop = above > FILTER_POPUP_MARGIN ? above : Math.max(FILTER_POPUP_MARGIN, vh - p.height - FILTER_POPUP_MARGIN);
+        }
+
+        const dx = wantLeft - p.left;
+        const dy = wantTop - p.top;
+        if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) break;
+
+        // screen pixels -> CSS pixels of the popup (only a first guess, the next loop corrects any rest)
+        const ratio = pop.offsetWidth ? p.width / pop.offsetWidth : 1;
+        const s = ratio > 0.2 && ratio < 5 ? ratio : 1;
+        const curLeft = parseFloat(pop.style.left) || 0;
+        const curTop = parseFloat(pop.style.top) || 0;
+        pop.style.left = `${curLeft + dx / s}px`;
+        pop.style.top = `${curTop + dy / s}px`;
+    }
+    pop.style.visibility = "visible";
+};
+/* ===== END SCROLL LOADING + AUTO-FIT CONFIG ===== */
+
 // --- Lazy ExcelJS loader from CDN (avoids Vite resolution + npm install) ---
 const EXCELJS_CDN = "https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js";
 let excelJsPromise = null;
@@ -96,18 +158,52 @@ const loadExcelJS = () => {
 };
 
 // --- Filter Component ---
-const ExcelFilter = ({ colId, allJobs, excluded, setExcluded, openCol, setOpenCol, align = "left", valueGetter }) => {
+// The popup opens centered under the clicked icon (fixed position, measured on the real screen so any ERP zoom works).
+// The list of values is built ONLY while the popup is open (21 filters x all jobs on every render was the main slowdown).
+const ExcelFilter = ({ colId, allJobs, excluded, setExcluded, openCol, setOpenCol, valueGetter }) => {
     const isOpen = openCol === colId;
     const isActive = excluded.size > 0;
 
+    const btnRef = useRef(null);
+    const popRef = useRef(null);
+
     const uniqueValues = useMemo(() => {
+        if (!isOpen) return [];
         const set = new Set();
         allJobs.forEach((j) => {
             const values = valueGetter ? valueGetter(j) : [];
             values.forEach((v) => { if (v !== "" && v != null) set.add(String(v)); });
         });
         return Array.from(set).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-    }, [allJobs, colId, valueGetter]);
+    }, [isOpen, allJobs, valueGetter]);
+
+    const place = useCallback(() => {
+        positionPopupUnderButton(btnRef.current, popRef.current);
+    }, []);
+
+    // place the popup right after it is drawn (and again when the list of values changes its height)
+    useLayoutEffect(() => {
+        if (!isOpen) return;
+        place();
+    }, [isOpen, uniqueValues, place]);
+
+    // keep it on the icon while the page / the table is scrolled or the window is resized
+    useLayoutEffect(() => {
+        if (!isOpen) return;
+        window.addEventListener("scroll", place, true);
+        window.addEventListener("resize", place);
+        return () => {
+            window.removeEventListener("scroll", place, true);
+            window.removeEventListener("resize", place);
+        };
+    }, [isOpen, place]);
+
+    useEffect(() => {
+        if (!isOpen) return;
+        const handleKey = (e) => { if (e.key === "Escape") setOpenCol(null); };
+        document.addEventListener("keydown", handleKey);
+        return () => document.removeEventListener("keydown", handleKey);
+    }, [isOpen, setOpenCol]);
 
     const toggleValue = (val) => {
         const next = new Set(excluded);
@@ -120,6 +216,7 @@ const ExcelFilter = ({ colId, allJobs, excluded, setExcluded, openCol, setOpenCo
     return (
         <span className="relative inline-block">
             <button
+                ref={btnRef}
                 type="button"
                 onClick={(e) => { e.stopPropagation(); setOpenCol(isOpen ? null : colId); }}
                 className={`ml-1 inline-flex items-center justify-center w-4 h-4 rounded shrink-0 transition-colors ${isActive ? "bg-amber-400 text-[#dfebf0]" : "bg-white/20 text-white hover:bg-white/30"}`}
@@ -130,10 +227,20 @@ const ExcelFilter = ({ colId, allJobs, excluded, setExcluded, openCol, setOpenCo
                 </svg>
             </button>
 
-            {isOpen && (
+            {isOpen && createPortal(
                 <div
+                    ref={popRef}
                     onClick={(e) => e.stopPropagation()}
-                    className={`absolute z-50 top-6 ${align === "right" ? "right-0" : "left-0"} w-48 bg-white border border-slate-300 rounded-md shadow-lg p-2 normal-case font-normal text-slate-700`}
+                    className="bg-white border border-slate-300 rounded-md shadow-lg p-2 normal-case font-normal text-slate-700"
+                    style={{
+                        // left / top / visibility are set by positionPopupUnderButton (hidden until it is on the icon)
+                        position: "fixed",
+                        left: 0,
+                        top: 0,
+                        width: FILTER_POPUP_WIDTH,
+                        zIndex: 99999,
+                        visibility: "hidden",
+                    }}
                 >
                     <label className="flex items-center gap-2 px-1 py-1 text-xs font-medium border-b border-slate-200 mb-1 cursor-pointer hover:bg-slate-50 rounded">
                         <input type="checkbox" checked={excluded.size === 0} onChange={toggleAll} className="rounded border-slate-300 text-[#dfebf0] focus:ring-[#dfebf0]" />
@@ -152,7 +259,8 @@ const ExcelFilter = ({ colId, allJobs, excluded, setExcluded, openCol, setOpenCo
                         <button onClick={() => setExcluded(colId, new Set())} className="text-[11px] text-slate-500 hover:text-slate-800 font-medium">Clear</button>
                         <button onClick={() => setOpenCol(null)} className="text-[11px] font-bold text-[#dfebf0] hover:underline">OK</button>
                     </div>
-                </div>
+                </div>,
+                document.body
             )}
         </span>
     );
@@ -179,18 +287,28 @@ const BalanceSheet = () => {
     const [hasUnsavedRemarks, setHasUnsavedRemarks] = useState(false);
     const [wrapText, setWrapText] = useState(false);
     const [editingCell, setEditingCell] = useState(null);
-    const [currentPage, setCurrentPage] = useState(1);
     const [isLoading, setIsLoading] = useState(true);
     const [isExporting, setIsExporting] = useState(false);
+    const [refreshKey, setRefreshKey] = useState(0);
 
     // --- Loading progress state ---
     const [loadingProgress, setLoadingProgress] = useState(0);
     const [loadingMessage, setLoadingMessage] = useState("Initializing...");
 
+    /* ===== SCROLL LOADING + AUTO-FIT STATE ===== */
+    const scrollRef = useRef(null);                    // the table box
+    const topRef = useRef(null);                       // title + toolbar, watched for size changes
+    const [fit, setFit] = useState({ height: 560 });   // height of the table box, calculated from the screen
+    const [visibleCount, setVisibleCount] = useState(JOB_PAGE);
+    const [loadingMore, setLoadingMore] = useState(false);
+    const loadingMoreRef = useRef(false);
+    const hasMoreJobsRef = useRef(false);
+    const loadMoreTimerRef = useRef(null);
+    /* =========================================== */
+
     const socket = useSocket();
 
     const axiosSecure = useAxiosPrivate();
-    const ITEMS_PER_PAGE = 15;
 
     const setExcludedFor = (colId, set) => setColFilters((prev) => ({ ...prev, [colId]: set }));
 
@@ -206,6 +324,16 @@ const BalanceSheet = () => {
 
     const handleDoubleClick = (jobIdx) => {
         setEditingCell(jobIdx);
+    };
+
+    // Refresh = load the report again from the server. The search and the column filters stay as they are.
+    const handleRefresh = () => {
+        if (isLoading) return;
+        setHasUnsavedRemarks(false);
+        setEditingCell(null);
+        setOpenCol(null);
+        setVisibleCount(JOB_PAGE);
+        setRefreshKey((k) => k + 1);
     };
 
     const hasFilters = search || Object.values(colFilters).some((s) => s && s.size > 0);
@@ -282,17 +410,104 @@ const BalanceSheet = () => {
         }).filter(Boolean);
     }, [jobs, search, colFilters]);
 
-    const displayedJobs = useMemo(() => {
-        if (hasFilters) return filteredJobs;
-        const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
-        return filteredJobs.slice(startIndex, startIndex + ITEMS_PER_PAGE);
-    }, [filteredJobs, currentPage, hasFilters]);
+    // The table draws only these jobs (more are added while the user scrolls down).
+    // Totals and the Excel export still use ALL the filtered jobs.
+    const displayedJobs = useMemo(() => filteredJobs.slice(0, visibleCount), [filteredJobs, visibleCount]);
+    const hasMoreJobs = visibleCount < filteredJobs.length;
+    hasMoreJobsRef.current = hasMoreJobs;
 
-    const totalPages = Math.ceil(filteredJobs.length / ITEMS_PER_PAGE) || 1;
-    const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
-    const endIndex = Math.min(startIndex + ITEMS_PER_PAGE, filteredJobs.length);
+    /* ===== SCROLL LOADING ===== */
+    const maybeLoadMore = useCallback(() => {
+        const el = scrollRef.current;
+        if (!el || loadingMoreRef.current || !hasMoreJobsRef.current) return;
+        // start loading when less than ~LOAD_MORE_DISTANCE px are left below the visible area
+        if (el.scrollHeight - el.scrollTop - el.clientHeight > LOAD_MORE_DISTANCE) return;
+        loadingMoreRef.current = true;
+        setLoadingMore(true);
+        loadMoreTimerRef.current = setTimeout(() => {
+            loadMoreTimerRef.current = null;
+            loadingMoreRef.current = false;
+            setVisibleCount((c) => c + JOB_PAGE);
+            setLoadingMore(false);
+        }, 120);
+    }, []);
 
-    useEffect(() => { setCurrentPage(1); }, [search, colFilters]);
+    // content shorter than the box (or more jobs arrived / the screen got taller): keep loading until it is filled
+    useEffect(() => {
+        maybeLoadMore();
+    }, [visibleCount, filteredJobs.length, fit.height, isLoading, maybeLoadMore]);
+
+    // search / column filter changed: start again from the first jobs, back at the top of the table
+    useEffect(() => {
+        setVisibleCount(JOB_PAGE);
+        if (scrollRef.current) scrollRef.current.scrollTop = 0;
+    }, [search, colFilters]);
+
+    // stop the pending "load more" when the page is left
+    useEffect(() => () => {
+        if (loadMoreTimerRef.current) clearTimeout(loadMoreTimerRef.current);
+    }, []);
+    /* ========================== */
+
+    /* ===== AUTO-FIT MEASURING (same logic as the Summary page) ===== */
+    const measureFit = useCallback(() => {
+        const el = scrollRef.current;
+        if (!el) return;
+        const viewH = (window.visualViewport && window.visualViewport.height) || window.innerHeight;
+        const scale = getZoomScale(el);
+        const rect = el.getBoundingClientRect();
+
+        // table top measured from the very top of the content, no matter how far the page / the ERP panel is scrolled
+        let scrolled = window.scrollY || 0;
+        let node = el.parentElement;
+        while (node && node !== document.body && node !== document.documentElement) {
+            if (node.scrollTop) scrolled += node.scrollTop * scale;
+            node = node.parentElement;
+        }
+        const visualTop = rect.top + scrolled;
+
+        const height = Math.max(MIN_TABLE_HEIGHT, Math.floor((viewH - visualTop) / scale - BOTTOM_RESERVE));
+        if (FIT_DEBUG) console.log('[BalanceSheet fit]', { viewH, scale, visualTop, reserve: BOTTOM_RESERVE, height });
+        setFit((prev) => (prev.height === height ? prev : { height }));
+    }, []);
+
+    useLayoutEffect(() => {
+        measureFit();
+        // the ERP shell / fonts / images can still move things after the first paint: measure again a bit later
+        const t1 = setTimeout(measureFit, 100);
+        const t2 = setTimeout(measureFit, 500);
+        const t3 = setTimeout(measureFit, 1500);
+        window.addEventListener('resize', measureFit);
+        window.addEventListener('load', measureFit);
+        if (window.visualViewport) window.visualViewport.addEventListener('resize', measureFit);
+        // the ERP zoom control changes a style / class on <html> or <body> without resizing anything: catch that too
+        let mo = null;
+        if (typeof MutationObserver !== 'undefined') {
+            mo = new MutationObserver(() => measureFit());
+            mo.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'class'] });
+            mo.observe(document.body, { attributes: true, attributeFilter: ['style', 'class'] });
+        }
+        // safety net: cheap re-check (state only changes when the number really changes)
+        const poll = setInterval(measureFit, 800);
+        let ro = null;
+        if (typeof ResizeObserver !== 'undefined') {
+            ro = new ResizeObserver(() => measureFit());
+            if (topRef.current) ro.observe(topRef.current);
+            if (scrollRef.current) ro.observe(scrollRef.current);
+            ro.observe(document.documentElement);
+            ro.observe(document.body);
+        }
+        return () => {
+            clearTimeout(t1); clearTimeout(t2); clearTimeout(t3);
+            clearInterval(poll);
+            if (mo) mo.disconnect();
+            window.removeEventListener('resize', measureFit);
+            window.removeEventListener('load', measureFit);
+            if (window.visualViewport) window.visualViewport.removeEventListener('resize', measureFit);
+            if (ro) ro.disconnect();
+        };
+    }, [measureFit]);
+    /* =============================================================== */
 
     const totals = useMemo(() => {
         const t = {
@@ -329,7 +544,6 @@ const BalanceSheet = () => {
         setSearch("");
         setColFilters({});
         setOpenCol(null);
-        setCurrentPage(1);
     };
 
     // ---------- EXCEL EXPORT (borders + merges via CDN-loaded ExcelJS) ----------
@@ -617,6 +831,7 @@ const BalanceSheet = () => {
     };
 
     // --- Fetch data with Socket.IO progress tracking ---
+    // Runs on the first load and again every time Refresh is pressed (refreshKey).
     useEffect(() => {
         if (!socket) {
             console.error("[BalanceSheet] Socket is not available.");
@@ -890,91 +1105,113 @@ const BalanceSheet = () => {
                 socket.emit("leaveRoom", requestId);
             }
         };
-    }, [axiosSecure, socket]);
+    }, [axiosSecure, socket, refreshKey]);
 
 
     return (
-        <div className="p-5 bg-slate-50 h-screen flex flex-col overflow-hidden" onClick={() => setOpenCol(null)}>
-            <div className="flex items-center justify-between mb-4 flex-wrap gap-3 flex-shrink-0">
-                <div>
-                    <h2 className="text-lg font-bold text-slate-800">Yarn, Dyeing &amp; AOP Balance Sheet</h2>
-                    <p className="text-xs text-slate-500 mt-1">Figures in kg unless noted · <span className="font-semibold text-slate-700">{filteredJobs.length}</span> of <span className="font-semibold text-slate-700">{jobs.length}</span> jobs shown</p>
-                </div>
-
-                <div className="flex items-center gap-2 flex-wrap">
-                    <div className="relative">
-                        <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z" />
-                        </svg>
-                        <input
-                            type="text"
-                            value={search}
-                            onChange={(e) => setSearch(e.target.value)}
-                            onClick={(e) => e.stopPropagation()}
-                            placeholder="Search job no. or factory..."
-                            className="pl-8 pr-3 py-1.5 text-sm border border-slate-300 rounded-md w-64 outline-none focus:border-[#dfebf0] focus:ring-1 focus:ring-[#dfebf0]/20 bg-white transition-all"
-                        />
+        <div className="p-5 bg-slate-50 w-full" onClick={() => setOpenCol(null)}>
+            {/* Everything above the table: watched for size changes so the table box always re-fits the screen */}
+            <div ref={topRef}>
+                <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+                    <div>
+                        <h2 className="text-lg font-bold text-slate-800">Yarn, Dyeing &amp; AOP Balance Sheet</h2>
+                        <p className="text-xs text-slate-500 mt-1">Figures in kg unless noted · <span className="font-semibold text-slate-700">{filteredJobs.length}</span> of <span className="font-semibold text-slate-700">{jobs.length}</span> jobs shown</p>
                     </div>
 
-                    <button
-                        onClick={() => setWrapText(!wrapText)}
-                        className={`flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-md border transition-all ${wrapText ? "bg-slate-700 text-white border-slate-700 shadow-sm" : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50"}`}
-                    >
-                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16m-7 6h7" />
-                        </svg>
-                        Wrap Text
-                    </button>
+                    <div className="flex items-center gap-2 flex-wrap">
+                        <div className="relative">
+                            <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z" />
+                            </svg>
+                            <input
+                                type="text"
+                                value={search}
+                                onChange={(e) => setSearch(e.target.value)}
+                                onClick={(e) => e.stopPropagation()}
+                                placeholder="Search job no. or factory..."
+                                className="pl-8 pr-3 py-1.5 text-sm border border-slate-300 rounded-md w-64 outline-none focus:border-[#dfebf0] focus:ring-1 focus:ring-[#dfebf0]/20 bg-white transition-all"
+                            />
+                        </div>
 
-                    {hasFilters && (
-                        <button onClick={(e) => { e.stopPropagation(); clearAll(); }} className="text-xs font-semibold text-rose-600 hover:text-rose-700 hover:bg-rose-50 px-3 py-1.5 rounded-md transition-colors">
-                            Clear Filters
+                        <button
+                            onClick={() => setWrapText(!wrapText)}
+                            className={`flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-md border transition-all ${wrapText ? "bg-slate-700 text-white border-slate-700 shadow-sm" : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50"}`}
+                        >
+                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16m-7 6h7" />
+                            </svg>
+                            Wrap Text
                         </button>
-                    )}
 
-                    <button
-                        onClick={(e) => { e.stopPropagation(); exportExcel(); }}
-                        disabled={isExporting || filteredJobs.length === 0}
-                        className="flex items-center gap-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded-md shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                        {isExporting ? (
-                            <>
-                                <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                                Exporting...
-                            </>
-                        ) : (
-                            <>
-                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" />
-                                </svg>
-                                Export Excel
-                            </>
+                        {hasFilters && (
+                            <button onClick={(e) => { e.stopPropagation(); clearAll(); }} className="text-xs font-semibold text-rose-600 hover:text-rose-700 hover:bg-rose-50 px-3 py-1.5 rounded-md transition-colors">
+                                Clear Filters
+                            </button>
                         )}
-                    </button>
+
+                        {/* Refresh: loads the report again, search and column filters are kept */}
+                        <button
+                            onClick={(e) => { e.stopPropagation(); handleRefresh(); }}
+                            disabled={isLoading}
+                            title="Reload from the server"
+                            className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 px-3 py-1.5 rounded-md shadow-sm transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                        >
+                            <svg className={`w-3.5 h-3.5 ${isLoading ? "animate-spin" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                            </svg>
+                            Refresh
+                        </button>
+
+                        <button
+                            onClick={(e) => { e.stopPropagation(); exportExcel(); }}
+                            disabled={isExporting || filteredJobs.length === 0}
+                            className="flex items-center gap-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded-md shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                            {isExporting ? (
+                                <>
+                                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                                    Exporting...
+                                </>
+                            ) : (
+                                <>
+                                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" />
+                                    </svg>
+                                    Export Excel
+                                </>
+                            )}
+                        </button>
+                    </div>
                 </div>
+
+                {hasUnsavedRemarks && (
+                    <div className="mb-3 flex items-center justify-between bg-amber-50 border border-amber-200 rounded-lg px-4 py-2.5 shadow-sm">
+                        <div className="flex items-center gap-2">
+                            <svg className="w-4 h-4 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                            </svg>
+                            <span className="text-sm font-medium text-amber-800">You have unsaved changes in the remarks.</span>
+                        </div>
+                        <button
+                            onClick={handleSaveRemarks}
+                            className="flex items-center gap-1.5 text-xs font-semibold text-white bg-amber-600 hover:bg-amber-700 px-3 py-1.5 rounded-md transition-colors shadow-sm"
+                        >
+                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                            </svg>
+                            Save Changes
+                        </button>
+                    </div>
+                )}
             </div>
 
-            {hasUnsavedRemarks && (
-                <div className="mb-3 flex items-center justify-between bg-amber-50 border border-amber-200 rounded-lg px-4 py-2.5 shadow-sm flex-shrink-0">
-                    <div className="flex items-center gap-2">
-                        <svg className="w-4 h-4 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                        </svg>
-                        <span className="text-sm font-medium text-amber-800">You have unsaved changes in the remarks.</span>
-                    </div>
-                    <button
-                        onClick={handleSaveRemarks}
-                        className="flex items-center gap-1.5 text-xs font-semibold text-white bg-amber-600 hover:bg-amber-700 px-3 py-1.5 rounded-md transition-colors shadow-sm"
-                    >
-                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                        </svg>
-                        Save Changes
-                    </button>
-                </div>
-            )}
-
-            <div className="overflow-auto border border-[#b4bcc2] rounded-2xl shadow-sm bg-white relative flex-1 min-h-0">
+            {/* The box height is calculated from the screen: it fills everything under the toolbar */}
+            <div
+                ref={scrollRef}
+                onScroll={maybeLoadMore}
+                className="overflow-auto border border-[#b4bcc2] rounded-2xl shadow-sm bg-white relative"
+                style={{ height: fit.height, boxSizing: 'border-box' }}
+            >
                 {/* Loading overlay with real-time progress bar */}
                 {isLoading && (
                     <div className="absolute inset-0 bg-white/90 z-50 flex items-center justify-center">
@@ -1042,7 +1279,7 @@ const BalanceSheet = () => {
                             >
                                 <div className="flex items-center justify-center gap-1">
                                     REMARKS
-                                    <ExcelFilter colId="remarks" allJobs={jobs} excluded={colFilters.remarks || new Set()} setExcluded={setExcludedFor} openCol={openCol} setOpenCol={setOpenCol} align="right" valueGetter={getColValueGetter('remarks')} />
+                                    <ExcelFilter colId="remarks" allJobs={jobs} excluded={colFilters.remarks || new Set()} setExcluded={setExcludedFor} openCol={openCol} setOpenCol={setOpenCol} valueGetter={getColValueGetter('remarks')} />
                                 </div>
                             </th>
                         </tr>
@@ -1184,20 +1421,23 @@ const BalanceSheet = () => {
                 </table>
             </div>
 
-            {!hasFilters && filteredJobs.length > 0 && (
-                <div className="flex items-center justify-between mt-4 px-1 flex-shrink-0">
-                    <div className="text-xs text-slate-500">
-                        Showing <span className="font-semibold text-slate-700">{startIndex + 1}</span> to <span className="font-semibold text-slate-700">{endIndex}</span> of <span className="font-semibold text-slate-700">{filteredJobs.length}</span> jobs
-                    </div>
-                    <div className="flex items-center gap-1">
-                        <button onClick={() => setCurrentPage(1)} disabled={currentPage === 1} className="px-2.5 py-1.5 text-xs font-medium border border-slate-300 rounded-md bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">« First</button>
-                        <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="px-2.5 py-1.5 text-xs font-medium border border-slate-300 rounded-md bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">‹ Prev</button>
-                        <span className="text-xs font-medium text-slate-700 px-3 py-1.5 bg-slate-100 rounded-md border border-slate-200">Page {currentPage} of {totalPages}</span>
-                        <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="px-2.5 py-1.5 text-xs font-medium border border-slate-300 rounded-md bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">Next ›</button>
-                        <button onClick={() => setCurrentPage(totalPages)} disabled={currentPage === totalPages} className="px-2.5 py-1.5 text-xs font-medium border border-slate-300 rounded-md bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">Last »</button>
-                    </div>
-                </div>
-            )}
+            {/* Scroll loading status */}
+            <div className="flex flex-wrap items-center justify-center gap-2.5 mt-2 min-h-6 text-xs text-slate-500 text-center">
+                {!isLoading && loadingMore && (
+                    <span className="inline-flex items-center gap-2 font-semibold text-slate-700">
+                        <div className="w-3.5 h-3.5 border-2 border-slate-600 border-t-transparent rounded-full animate-spin"></div>
+                        Loading more...
+                    </span>
+                )}
+                {!isLoading && !loadingMore && hasMoreJobs && (
+                    <span className="opacity-70">
+                        {displayedJobs.length} of {filteredJobs.length} jobs loaded. Scroll down to load more.
+                    </span>
+                )}
+                {!isLoading && !loadingMore && !hasMoreJobs && filteredJobs.length > 0 && (
+                    <span className="opacity-70">All {filteredJobs.length} jobs loaded</span>
+                )}
+            </div>
         </div>
     );
 };

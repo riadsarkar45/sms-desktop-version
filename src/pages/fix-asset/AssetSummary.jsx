@@ -14,6 +14,7 @@ import {
     CheckCircle,
     AlertCircle,
     Loader2,
+    RefreshCcw,
 } from 'lucide-react'
 import useAxiosPrivate from '../../hooks/UseAxiosPrivate'
 import { useAuth } from '../../auth/AuthContext'
@@ -22,16 +23,17 @@ import { useAuth } from '../../auth/AuthContext'
 /*  Custom Toast Notification Component                                */
 /* ------------------------------------------------------------------ */
 const Toast = ({ notice, onClose }) => {
-    if (!notice) return null
-    
+    // hook must run before any early return
     useEffect(() => {
-        if (notice.kind !== 'loading') {
+        if (notice && notice.kind !== 'loading') {
             const timer = setTimeout(() => {
                 onClose()
             }, 4000)
             return () => clearTimeout(timer)
         }
     }, [notice, onClose])
+
+    if (!notice) return null
 
     const bgColors = {
         success: 'bg-green-50 border-green-500 text-green-800',
@@ -80,10 +82,25 @@ const cellValue = (row, key) => String(row[key] ?? '').trim()
 const rowMatches = (row, filters, skipKey) =>
     Object.keys(filters).every((key) => key === skipKey || filters[key].has(cellValue(row, key)))
 
-const clampPosition = (x, y, width, height) => ({
-    x: Math.min(Math.max(8, x), Math.max(8, window.innerWidth - width - 8)),
-    y: Math.min(Math.max(8, y), Math.max(8, window.innerHeight - height - 8)),
-})
+// The ERP has its own zoom (67% / 100% ...). An element that lives inside the zoomed area is drawn bigger / smaller than its
+// CSS size, so every "position: fixed" popup must convert screen pixels to its own CSS pixels with this factor. 1 = no zoom.
+const getElScale = (el) => {
+    if (!el) return 1
+    const w = el.offsetWidth
+    const rw = el.getBoundingClientRect().width
+    if (!w || !rw) return 1
+    const s = rw / w
+    return s > 0.2 && s < 5 ? s : 1
+}
+
+const clampPosition = (x, y, width, height, scale = 1) => {
+    const vw = window.innerWidth / scale
+    const vh = window.innerHeight / scale
+    return {
+        x: Math.min(Math.max(8, x), Math.max(8, vw - width - 8)),
+        y: Math.min(Math.max(8, y), Math.max(8, vh - height - 8)),
+    }
+}
 
 const useMediaQuery = (query) => {
     const [matches, setMatches] = useState(() => window.matchMedia(query).matches)
@@ -96,6 +113,109 @@ const useMediaQuery = (query) => {
     }, [query])
     return matches
 }
+
+// A row coming from the server -> the shape used by the table.
+// `seq` is only used to give a row an id when the server did not send one.
+const normalizeAsset = (item, seq) => {
+    // Properly normalize the source field: check source first, then category as fallback
+    const sourceRaw = String(item.source || '').trim().toUpperCase()
+    const categoryRaw = String(item.category || '').trim().toUpperCase()
+
+    let normalizedSource = 'Own' // Default
+    if (sourceRaw === 'OWN') normalizedSource = 'Own'
+    else if (sourceRaw === 'RENTAL') normalizedSource = 'Rental'
+    else if (categoryRaw === 'OWN') normalizedSource = 'Own'
+    else if (categoryRaw === 'RENTAL') normalizedSource = 'Rental'
+
+    return {
+        ...item,
+        id: item.id || `row-${seq}`,
+        factoryName: item.factoryName || item['factory name'] || '_',
+        source: normalizedSource,
+        assetType: item.assetType || '_',
+        category: item.category || '_',
+        description: item.description || '_',
+        code: item.code || item.assetCode || '_',
+        pricePerPcs: item.pricePerPcs !== undefined ? item.pricePerPcs : (item.priceValue !== undefined ? item.priceValue : 0),
+        remarks: item.remarks || '',
+        openingQty: Number(item.openingQty || 0),
+        additionsQty: Number(item.additionsQty || 0),
+        disposedQty: Number(item.disposedQty || 0),
+        sentQty: Number(item.sentQty || 0),
+        receivedQty: Number(item.receivedQty || 0),
+    }
+}
+
+// asset -> table row (price, carrying qty, total value, edited remarks)
+const toRow = (asset, remarkEdits) => {
+    const pricePerPcs = Number(asset.pricePerPcs || 0)
+    const carryingQty = getCarryingQty(asset)
+    const remarks = remarkEdits[asset.id] !== undefined ? remarkEdits[asset.id] : (asset.remarks ?? '')
+    return { ...asset, pricePerPcs, remarks, carryingQty, totalValue: carryingQty * pricePerPcs }
+}
+
+const matchesBase = (r, sourceFilter, term) => {
+    if (sourceFilter !== 'All' && r.source !== sourceFilter) return false
+    if (!term) return true
+    return [r.assetType, r.category, r.description, r.code, r.remarks].join(' ').toLowerCase().includes(term)
+}
+
+/* ===== SCROLL LOADING + AUTO-FIT CONFIG (same system as the Knitting page) ===== */
+// Rows are loaded page by page while the user scrolls down.
+const PAGE_LIMIT = 100                // rows per request while scrolling
+const MAX_LOADED_ROWS = 5000          // HARD LIMIT of rows kept in the browser (use filters to narrow the data)
+const EXPORT_PAGE_LIMIT = 500         // export pulls the data in bigger chunks
+const EXPORT_MAX_ROWS = 60000
+
+// The table box always fills the rest of the screen: bigger screen = taller table, smaller screen = shorter table.
+const MIN_TABLE_HEIGHT = 300          // only a safety minimum - the real height is calculated from the screen
+const ROW_H = 44                      // fixed row height (needed for windowed rendering)
+const HEADER_H = 64
+const FOOTER_H = 40
+const OVERSCAN = 8                    // extra rows rendered above / below the visible area
+const BOTTOM_RESERVE = 60             // space kept free under the table (page padding + the loading status line)
+const FIT_DEBUG = false               // true = prints the measured numbers in the browser console (F12)
+
+// The ERP has its own zoom (67% / 100% ...). With CSS zoom / scale the real screen pixels are NOT the same as the CSS
+// pixels of the page, so the height must be corrected by this factor. 1 = no zoom.
+const getZoomScale = (el) => {
+    const rect = el.getBoundingClientRect()
+    const w = el.offsetWidth
+    if (!w || !rect.width) return 1
+    const scale = rect.width / w
+    return scale > 0.2 && scale < 5 ? scale : 1
+}
+
+// Accepts the axios response (or its body) and returns { items, nextCursor, hasMore }
+// A plain array (server without paging) is fine too: everything arrives in one page.
+const unwrapPage = (res) => {
+    const body = res?.data !== undefined && !Array.isArray(res) ? res.data : res
+    if (Array.isArray(body)) return { items: body, nextCursor: null, hasMore: false }
+    if (Array.isArray(body?.data)) {
+        return { items: body.data, nextCursor: body.nextCursor ?? null, hasMore: !!body.hasMore }
+    }
+    if (Array.isArray(body?.data?.data)) {
+        return { items: body.data.data, nextCursor: body.data.nextCursor ?? null, hasMore: !!body.data.hasMore }
+    }
+    return { items: [], nextCursor: null, hasMore: false }
+}
+
+const buildListParams = (cursor, limit = PAGE_LIMIT) => {
+    const params = { limit }
+    if (cursor !== null && cursor !== undefined) params.cursor = cursor
+    return params
+}
+
+// Text clamp inside a fixed-height row (2 lines, full text on hover)
+const CLAMP_STYLE = {
+    display: '-webkit-box',
+    WebkitLineClamp: 2,
+    WebkitBoxOrient: 'vertical',
+    overflow: 'hidden',
+    wordBreak: 'break-word',
+    lineHeight: 1.2,
+}
+/* ===== END SCROLL LOADING + AUTO-FIT CONFIG ===== */
 
 /* ===== XLSX EXPORT START ===== */
 
@@ -419,7 +539,7 @@ const SOURCE_FILTERS = ['All', 'Own', 'Rental']
 
 const COLUMNS = [
     { key: 'sl', label: 'Sl', width: 56, kind: 'select', filterable: false },
-    { key: 'factoryName', label: 'FACTORY NAME', width: 120, filterable: true },    
+    { key: 'factoryName', label: 'FACTORY NAME', width: 120, filterable: true },
     { key: 'source', label: 'Source', width: 100, kind: 'badge' },
     { key: 'assetType', label: 'Assets Type', width: 120 },
     { key: 'category', label: 'Assets Category', width: 130 },
@@ -436,6 +556,15 @@ const COLUMNS = [
 ]
 
 const FOOTER_SUM_KEYS = ['openingQty', 'additionsQty', 'disposedQty', 'sentQty', 'receivedQty', 'carryingQty']
+
+const computeTotals = (list) => {
+    const result = FOOTER_SUM_KEYS.reduce((acc, key) => {
+        acc[key] = sumBy(list, (r) => r[key])
+        return acc
+    }, {})
+    result.totalValue = sumBy(list, (r) => r.totalValue)
+    return result
+}
 
 const FROZEN_UNTIL = 'code'
 const FROZEN_COUNT = COLUMNS.findIndex((c) => c.key === FROZEN_UNTIL) + 1
@@ -468,18 +597,20 @@ const DraggableModal = ({
     useLayoutEffect(() => {
         const el = modalRef.current
         if (!el) return
+        const s = getElScale(el)
         const w = el.offsetWidth
         const h = el.offsetHeight
-        const x = initialPosition ? initialPosition.x : (window.innerWidth - w) / 2
-        const y = initialPosition ? initialPosition.y : (window.innerHeight - h) / 2
-        setPos(clampPosition(x, y, w, h))
+        const x = initialPosition ? initialPosition.x / s : (window.innerWidth / s - w) / 2
+        const y = initialPosition ? initialPosition.y / s : (window.innerHeight / s - h) / 2
+        setPos(clampPosition(x, y, w, h, s))
     }, [])
 
     useEffect(() => {
         const handleResize = () => {
             const el = modalRef.current
             if (!el) return
-            setPos((prev) => (prev ? clampPosition(prev.x, prev.y, el.offsetWidth, el.offsetHeight) : prev))
+            const s = getElScale(el)
+            setPos((prev) => (prev ? clampPosition(prev.x, prev.y, el.offsetWidth, el.offsetHeight, s) : prev))
         }
         window.addEventListener('resize', handleResize)
         return () => window.removeEventListener('resize', handleResize)
@@ -497,7 +628,8 @@ const DraggableModal = ({
         if (!pos) return
         if (e.button !== undefined && e.button !== 0) return
         if (e.target.closest('button')) return
-        dragRef.current = { offsetX: e.clientX - pos.x, offsetY: e.clientY - pos.y }
+        const s = getElScale(modalRef.current)
+        dragRef.current = { offsetX: e.clientX / s - pos.x, offsetY: e.clientY / s - pos.y }
         e.currentTarget.setPointerCapture(e.pointerId)
         setIsDragging(true)
     }
@@ -506,7 +638,8 @@ const DraggableModal = ({
         const drag = dragRef.current
         const el = modalRef.current
         if (!drag || !el) return
-        setPos(clampPosition(e.clientX - drag.offsetX, e.clientY - drag.offsetY, el.offsetWidth, el.offsetHeight))
+        const s = getElScale(el)
+        setPos(clampPosition(e.clientX / s - drag.offsetX, e.clientY / s - drag.offsetY, el.offsetWidth, el.offsetHeight, s))
     }
 
     const endDrag = (e) => {
@@ -546,9 +679,8 @@ const DraggableModal = ({
                     onPointerMove={handlePointerMove}
                     onPointerUp={endDrag}
                     onPointerCancel={endDrag}
-                    className={`flex items-center justify-between gap-3 px-4 py-3 rounded-t-xl bg-emerald-50 border-b border-green-200 text-emerald-900 select-none touch-none ${
-                        isDragging ? 'cursor-grabbing' : 'cursor-grab'
-                    }`}
+                    className={`flex items-center justify-between gap-3 px-4 py-3 rounded-t-xl bg-emerald-50 border-b border-green-200 text-emerald-900 select-none touch-none ${isDragging ? 'cursor-grabbing' : 'cursor-grab'
+                        }`}
                 >
                     <div className="flex items-center gap-2 min-w-0">
                         <GripVertical size={16} className="shrink-0 text-emerald-600" />
@@ -574,13 +706,21 @@ const DraggableModal = ({
 }
 
 /* ------------------------------------------------------------------ */
-/*  Excel-style column filter modal                                    */
+/*  Excel-style column filter popup                                    */
+/*  - opens right under the column header (not draggable, no backdrop) */
+/*  - flips above the header when there is no room below               */
+/*  - follows the header on scroll / resize, closes on outside click   */
+/*  - corrected for the ERP zoom (67% / 100% ...)                      */
 /* ------------------------------------------------------------------ */
 
-const ColumnFilterModal = ({ column, values, selected, position, onApply, onClose }) => {
+const FILTER_POPUP_WIDTH = 250
+
+const ColumnFilterModal = ({ column, values, selected, anchorEl, onApply, onClose }) => {
     const [search, setSearch] = useState('')
     const [draft, setDraft] = useState(() => new Set(selected ?? values))
+    const [pos, setPos] = useState(null)
     const selectAllRef = useRef(null)
+    const popRef = useRef(null)
 
     const display = (value) => (value === '' ? '(Blanks)' : column.format ? column.format(value) : value)
 
@@ -597,6 +737,66 @@ const ColumnFilterModal = ({ column, values, selected, position, onApply, onClos
     useEffect(() => {
         if (selectAllRef.current) selectAllRef.current.indeterminate = someVisibleSelected
     }, [someVisibleSelected])
+
+    // place the popup under the header cell (screen pixels -> the popup's own CSS pixels, so the ERP zoom is handled)
+    const place = useCallback(() => {
+        const el = popRef.current
+        if (!el || !anchorEl) return
+        const s = getElScale(el)
+        const w = el.offsetWidth
+        const h = el.offsetHeight
+        const vw = window.innerWidth / s
+        const vh = window.innerHeight / s
+        const r = anchorEl.getBoundingClientRect()
+        const a = { left: r.left / s, right: r.right / s, top: r.top / s, bottom: r.bottom / s }
+
+        // left edge of the header; if it would leave the screen, align the right edge instead
+        let x = a.left
+        if (x + w > vw - 8) x = a.right - w
+        x = Math.min(Math.max(8, x), Math.max(8, vw - w - 8))
+
+        let next
+        const below = a.bottom + 2
+        if (below + h <= vh - 8) {
+            next = { x, y: below }
+        } else if (a.top - 2 - h >= 8) {
+            // not enough room below: open above the header (grows upward)
+            next = { x, bottom: vh - (a.top - 2) }
+        } else {
+            next = { x, y: Math.max(8, vh - h - 8) }
+        }
+        setPos((prev) =>
+            prev && prev.x === next.x && prev.y === next.y && prev.bottom === next.bottom ? prev : next
+        )
+    }, [anchorEl])
+
+    useLayoutEffect(() => {
+        place()
+        window.addEventListener('resize', place)
+        window.addEventListener('scroll', place, true)
+        return () => {
+            window.removeEventListener('resize', place)
+            window.removeEventListener('scroll', place, true)
+        }
+    }, [place])
+
+    // click outside / Escape closes the popup (the filter icon itself toggles it)
+    useEffect(() => {
+        const handleMouseDown = (e) => {
+            if (popRef.current && popRef.current.contains(e.target)) return
+            if (e.target.closest && e.target.closest('[data-filter-trigger]')) return
+            onClose()
+        }
+        const handleKeyDown = (e) => {
+            if (e.key === 'Escape') onClose()
+        }
+        document.addEventListener('mousedown', handleMouseDown)
+        window.addEventListener('keydown', handleKeyDown)
+        return () => {
+            document.removeEventListener('mousedown', handleMouseDown)
+            window.removeEventListener('keydown', handleKeyDown)
+        }
+    }, [onClose])
 
     const toggleValue = (value) => {
         setDraft((prev) => {
@@ -616,34 +816,21 @@ const ColumnFilterModal = ({ column, values, selected, position, onApply, onClos
         })
     }
 
-    return (
-        <DraggableModal
-            title={`Filter: ${column.label}`}
-            width={280}
-            initialPosition={position}
-            closeOnBackdrop
-            onClose={onClose}
-            footer={
-                <div className="flex items-center justify-end gap-2">
-                    <button
-                        type="button"
-                        onClick={() => onApply(draft, values)}
-                        disabled={draft.size === 0}
-                        className="px-4 py-1.5 text-sm font-bold text-white bg-primary-500 hover:bg-primary-600 rounded-md cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                        OK
-                    </button>
-                    <button
-                        type="button"
-                        onClick={onClose}
-                        className="px-4 py-1.5 text-sm font-bold text-gray-800 bg-gray-200 hover:bg-gray-300 rounded-md cursor-pointer transition-colors"
-                    >
-                        Cancel
-                    </button>
-                </div>
-            }
+    return createPortal(
+        <div
+            ref={popRef}
+            role="dialog"
+            aria-label={`Filter: ${column.label}`}
+            className="fixed z-[60] flex flex-col bg-white border border-green-200 rounded-md shadow-2xl"
+            style={{
+                left: pos ? pos.x : 0,
+                ...(pos && pos.bottom !== undefined ? { bottom: pos.bottom } : { top: pos ? pos.y : 0 }),
+                width: FILTER_POPUP_WIDTH,
+                maxWidth: 'calc(100vw - 16px)',
+                visibility: pos ? 'visible' : 'hidden',
+            }}
         >
-            <div className="p-3 space-y-2">
+            <div className="p-2 space-y-2">
                 <div className="relative">
                     <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
                     <input
@@ -652,35 +839,35 @@ const ColumnFilterModal = ({ column, values, selected, position, onApply, onClos
                         onChange={(e) => setSearch(e.target.value)}
                         placeholder="Search"
                         autoFocus
-                        className="w-full pl-8 pr-2 py-1.5 text-sm border border-green-200 rounded-md outline-none focus:border-primary-500"
+                        className="w-full pl-8 pr-2 py-1.5 text-sm border border-green-200 rounded-sm outline-none focus:border-primary-500"
                     />
                 </div>
 
-                <div className="border border-green-200 rounded-md max-h-56 overflow-y-auto bg-white">
+                <div className="border border-green-200 rounded-sm max-h-56 overflow-y-auto bg-white">
                     {visibleValues.length === 0 ? (
                         <p className="px-3 py-4 text-center text-sm text-gray-500">No matches</p>
                     ) : (
                         <>
-                            <label className="flex items-center gap-2 px-3 py-1.5 text-sm font-semibold text-gray-800 border-b border-green-200 cursor-pointer hover:bg-emerald-50">
+                            <label className="flex items-center gap-2 px-3 py-1.5 text-[12px] font-semibold text-gray-800 border-b border-green-200 cursor-pointer hover:bg-emerald-50">
                                 <input
                                     ref={selectAllRef}
                                     type="checkbox"
                                     checked={allVisibleSelected}
                                     onChange={toggleAllVisible}
-                                    className="w-4 h-4 cursor-pointer accent-primary-600"
+                                    className="w-3 h-3 cursor-pointer accent-primary-600"
                                 />
                                 {search.trim() ? '(Select All Search Results)' : '(Select All)'}
                             </label>
                             {visibleValues.map((value) => (
                                 <label
                                     key={value === '' ? '__blank__' : value}
-                                    className="flex items-center gap-2 px-3 py-1.5 text-sm text-gray-700 cursor-pointer hover:bg-emerald-50"
+                                    className="flex items-center gap-2 px-3 py-1.5 text-[10px] text-gray-700 cursor-pointer hover:bg-emerald-50"
                                 >
                                     <input
                                         type="checkbox"
                                         checked={draft.has(value)}
                                         onChange={() => toggleValue(value)}
-                                        className="w-4 h-4 cursor-pointer accent-primary-600"
+                                        className="w-3 h-3 cursor-pointer accent-primary-600"
                                     />
                                     <span className="truncate">{display(value)}</span>
                                 </label>
@@ -689,7 +876,26 @@ const ColumnFilterModal = ({ column, values, selected, position, onApply, onClos
                     )}
                 </div>
             </div>
-        </DraggableModal>
+
+            <div className="flex items-center justify-end gap-2 px-2 py-2 border-t border-green-200 bg-emerald-50/50 rounded-b-md">
+                <button
+                    type="button"
+                    onClick={() => onApply(draft, values)}
+                    disabled={draft.size === 0}
+                    className="px-1.5 py-1.4 text-[12px] font-bold text-black bg-gray-200 hover:bg-primary-600 rounded-md cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                    Apply
+                </button>
+                <button
+                    type="button"
+                    onClick={onClose}
+                    className="px-1.5 py-1.4 text-[12px] font-bold text-gray-800 bg-gray-200 hover:bg-gray-300 rounded-md cursor-pointer transition-colors"
+                >
+                    Cancel
+                </button>
+            </div>
+        </div>,
+        document.body
     )
 }
 
@@ -718,15 +924,6 @@ const SummaryCard = ({ label, value, sub, icon: Icon, gradient }) => (
 
 const AssetSummary = () => {
     const [assets, setAssets] = useState([])
-    
-    const baseAssets = useMemo(
-        () => assets.map((a) => ({ 
-            ...a, 
-            savedPrice: Number(a.pricePerPcs || 0), 
-            savedRemarks: a.remarks ?? '' 
-        })),
-        [assets]
-    )
 
     const [sourceFilter, setSourceFilter] = useState('All')
     const [search, setSearch] = useState('')
@@ -736,11 +933,45 @@ const AssetSummary = () => {
     const [remarkEdits, setRemarkEdits] = useState({})
     const [editingRemarkId, setEditingRemarkId] = useState(null)
     const [notice, setNotice] = useState(null)
+    const [isExporting, setIsExporting] = useState(false)
+    const [exportProgress, setExportProgress] = useState(0)
     const selectAllRef = useRef(null)
     const lastNoticeRef = useRef({ text: '', time: 0 })
 
     const { user } = useAuth()
     const axiosPrivate = useAxiosPrivate()
+    // keep the latest axios instance in a ref so the loaders never re-run because of a new instance
+    const axiosRef = useRef(axiosPrivate)
+    axiosRef.current = axiosPrivate
+    const stationRef = useRef(user?.workingStation)
+    stationRef.current = user?.workingStation
+
+    /* ===== PAGED LOADING STATE (same system as Knitting) ===== */
+    const [initialLoading, setInitialLoading] = useState(true) // first page not received yet
+    const [loadingMore, setLoadingMore] = useState(false)
+    const [hasMore, setHasMore] = useState(false)
+    const [loadError, setLoadError] = useState(null)           // a later page failed (Retry resumes)
+    const [fetchError, setFetchError] = useState(null)         // the first page failed
+    const [refreshKey, setRefreshKey] = useState(0)
+    const genRef = useRef(0)                                   // bumped to cancel in-flight requests
+    const abortRef = useRef(null)
+    const cursorRef = useRef(null)
+    const loadingRef = useRef(false)
+    const hasMoreRef = useRef(false)
+    const capRef = useRef(false)
+    const loadErrorRef = useRef(null)
+    const assetsRef = useRef([])
+    assetsRef.current = assets
+    const seqRef = useRef(0)                                   // ids for rows the server sent without an id
+    /* ========================================================= */
+
+    /* ===== WINDOWED RENDERING + AUTO-FIT STATE ===== */
+    const scrollRef = useRef(null)   // the table box
+    const topRef = useRef(null)      // cards + toolbar, watched for size changes
+    const rafRef = useRef(0)
+    const [viewport, setViewport] = useState({ top: 0, height: 800 })
+    const [fit, setFit] = useState({ height: 560, width: 1400 })
+    /* =============================================== */
 
     const showNotice = useCallback((kind, text) => {
         const now = Date.now()
@@ -751,82 +982,11 @@ const AssetSummary = () => {
         setNotice({ kind, text })
     }, [])
 
-    const fetchAssetData = useCallback(async () => {
-        if (!user?.workingStation) return
-        showNotice('loading', 'Fetching asset data...')
-        try {
-            const res = await axiosPrivate.get(`/api/asset-items/${user.workingStation}`)
-            console.log('asset items response:', res.data)
-
-            const list = Array.isArray(res.data) ? res.data : res.data?.data ?? []
-            
-            const mappedList = list.map((item, index) => {
-                // FIXED: Properly normalize source field
-                // Check source first, then category as fallback
-                const sourceRaw = String(item.source || '').trim().toUpperCase()
-                const categoryRaw = String(item.category || '').trim().toUpperCase()
-                
-                let normalizedSource = 'Own' // Default
-                
-                // If source is explicitly "OWN" or "RENTAL"
-                if (sourceRaw === 'OWN') {
-                    normalizedSource = 'Own'
-                } else if (sourceRaw === 'RENTAL') {
-                    normalizedSource = 'Rental'
-                }
-                // If source is something else (like "SKS", "76", "6"), check category
-                else if (categoryRaw === 'OWN') {
-                    normalizedSource = 'Own'
-                } else if (categoryRaw === 'RENTAL') {
-                    normalizedSource = 'Rental'
-                }
-                // If neither source nor category indicates rental, default to Own
-                
-                return {
-                    ...item,
-                    id: item.id || index + 1,
-                    factoryName: item.factoryName || item['factory name'] || '_',
-                    source: normalizedSource, // Now properly normalized to "Own" or "Rental"
-                    assetType: item.assetType || '_',
-                    category: item.category || '_',
-                    description: item.description || '_',
-                    code: item.code || item.assetCode || '_',
-                    pricePerPcs: item.pricePerPcs !== undefined ? item.pricePerPcs : (item.priceValue !== undefined ? item.priceValue : 0),
-                    remarks: item.remarks || '',
-                    openingQty: Number(item.openingQty || 0),
-                    additionsQty: Number(item.additionsQty || 0),
-                    disposedQty: Number(item.disposedQty || 0),
-                    sentQty: Number(item.sentQty || 0),
-                    receivedQty: Number(item.receivedQty || 0),
-                }
-            })
-            
-            setAssets(mappedList)
-            showNotice('success', 'Assets fetched successfully.')
-        } catch (err) {
-            console.error(err)
-            showNotice('error', 'Could not load asset data.')
-        }
-    }, [user?.workingStation, showNotice])
-
-    useEffect(() => {
-        fetchAssetData()
-    }, [fetchAssetData])
-
     const freezeEnabled = useMediaQuery('(min-width: 1280px)')
     const editCount = Object.keys(remarkEdits).length
     const hasEdits = editCount > 0
 
-    const rows = useMemo(
-        () =>
-            baseAssets.map((asset) => {
-                const pricePerPcs = asset.savedPrice
-                const carryingQty = getCarryingQty(asset)
-                const remarks = remarkEdits[asset.id] !== undefined ? remarkEdits[asset.id] : asset.savedRemarks
-                return { ...asset, pricePerPcs, remarks, carryingQty, totalValue: carryingQty * pricePerPcs }
-            }),
-        [baseAssets, remarkEdits]
-    )
+    const rows = useMemo(() => assets.map((asset) => toRow(asset, remarkEdits)), [assets, remarkEdits])
 
     const sourceCounts = useMemo(
         () => ({
@@ -839,14 +999,7 @@ const AssetSummary = () => {
 
     const baseRows = useMemo(() => {
         const term = search.trim().toLowerCase()
-        return rows.filter((r) => {
-            if (sourceFilter !== 'All' && r.source !== sourceFilter) return false
-            if (!term) return true
-            return [r.assetType, r.category, r.description, r.code, r.remarks]
-                .join(' ')
-                .toLowerCase()
-                .includes(term)
-        })
+        return rows.filter((r) => matchesBase(r, sourceFilter, term))
     }, [rows, sourceFilter, search])
 
     const filteredRows = useMemo(
@@ -854,16 +1007,9 @@ const AssetSummary = () => {
         [baseRows, filters, remarkEdits]
     )
 
-    const totals = useMemo(() => {
-        const result = FOOTER_SUM_KEYS.reduce((acc, key) => {
-            acc[key] = sumBy(filteredRows, (r) => r[key])
-            return acc
-        }, {})
-        result.totalValue = sumBy(filteredRows, (r) => r.totalValue)
-        return result
-    }, [filteredRows])
+    const totals = useMemo(() => computeTotals(filteredRows), [filteredRows])
 
-    // Summary ALWAYS calculates from ALL rows, not filtered
+    // The cards always count ALL loaded rows (not the filtered ones)
     const summary = useMemo(() => {
         const own = rows.filter((r) => r.source === 'Own')
         const rental = rows.filter((r) => r.source === 'Rental')
@@ -878,6 +1024,240 @@ const AssetSummary = () => {
             additionsQty: sumBy(rows, (r) => r.additionsQty),
         }
     }, [rows])
+
+    const capReached = hasMore && assets.length >= MAX_LOADED_ROWS
+    hasMoreRef.current = hasMore
+    capRef.current = capReached
+    loadErrorRef.current = loadError
+
+    /* ===== PAGED LOADING ===== */
+    const cancelLoad = useCallback(() => {
+        genRef.current += 1
+        if (abortRef.current) abortRef.current.abort()
+        loadingRef.current = false
+        setLoadingMore(false)
+    }, [])
+
+    // Loads ONE page. replace=true starts a new list (first page).
+    const fetchPage = useCallback(async (gen, cursor, replace) => {
+        const station = stationRef.current
+        if (!station) return
+        if (loadingRef.current && !replace) return
+        loadingRef.current = true
+        setLoadingMore(true)
+        const controller = new AbortController()
+        abortRef.current = controller
+
+        try {
+            const res = await axiosRef.current.get(`/api/asset-items/${station}`, {
+                params: buildListParams(cursor),
+                signal: controller.signal,
+            })
+            if (gen !== genRef.current) return // cancelled / replaced by a newer load
+
+            const page = unwrapPage(res)
+            const items = page.items.map((item) => normalizeAsset(item, ++seqRef.current))
+
+            // rows that are really new (the same row can arrive twice at a page border)
+            let freshCount = items.length
+            if (!replace) {
+                const seen = new Set(assetsRef.current.map((r) => r.id))
+                freshCount = items.filter((it) => !seen.has(it.id)).length
+            }
+
+            setAssets((prev) => {
+                if (replace) return items
+                const seen = new Set(prev.map((r) => r.id))
+                return prev.concat(items.filter((it) => !seen.has(it.id)))
+            })
+
+            if (replace) {
+                setInitialLoading(false)
+                if (scrollRef.current) scrollRef.current.scrollTop = 0
+                setViewport((v) => ({ ...v, top: 0 }))
+            }
+
+            cursorRef.current = page.nextCursor
+            // nothing new arrived / more rows than the page size = the server ignored the paging: stop
+            setHasMore(
+                !!page.hasMore &&
+                page.nextCursor !== null &&
+                page.nextCursor !== undefined &&
+                freshCount > 0 &&
+                page.items.length <= PAGE_LIMIT
+            )
+        } catch (err) {
+            if (gen !== genRef.current) return // aborted on purpose
+            console.error('Failed to load asset summary:', err)
+            const message = err?.response?.status === 403
+                ? 'Permission denied'
+                : (err?.response?.data?.message || err?.message || 'Could not load asset data.')
+            setInitialLoading(false)
+            setHasMore(false)
+            if (replace) setFetchError(message)
+            else setLoadError(message)
+        } finally {
+            if (gen === genRef.current) {
+                loadingRef.current = false
+                setLoadingMore(false)
+            }
+        }
+    }, [])
+
+    // Load the next page when the user scrolls near the end (and the memory cap is not reached)
+    const maybeLoadMore = useCallback(() => {
+        const el = scrollRef.current
+        if (!el) return
+        if (!hasMoreRef.current || loadingRef.current || capRef.current || loadErrorRef.current) return
+        // start loading when less than ~20 rows are left below the visible area
+        if (el.scrollHeight - el.scrollTop - el.clientHeight > ROW_H * 20) return
+        fetchPage(genRef.current, cursorRef.current, false)
+    }, [fetchPage])
+
+    // (Re)start the list on first load, when the station is known, and on refresh
+    useEffect(() => {
+        if (!user?.workingStation) return
+        cancelLoad()
+        const gen = genRef.current
+        cursorRef.current = null
+        setHasMore(false)
+        setFetchError(null)
+        setLoadError(null)
+        setInitialLoading(true)
+        fetchPage(gen, null, true)
+    }, [user?.workingStation, refreshKey, cancelLoad, fetchPage])
+
+    // stop everything when the page is left
+    useEffect(() => () => cancelLoad(), [cancelLoad])
+
+    // content shorter than the box (or a page arrived / a filter changed / the screen got taller):
+    // keep loading until it is filled / capped
+    useEffect(() => {
+        maybeLoadMore()
+    }, [assets.length, filteredRows.length, hasMore, loadingMore, loadError, fit.height, maybeLoadMore])
+
+    const retryLoad = () => {
+        setLoadError(null)
+        loadErrorRef.current = null
+        fetchPage(genRef.current, cursorRef.current, false)
+    }
+
+    // Refresh = reload from page 1 (unsaved remark edits are dropped)
+    const handleRefresh = () => {
+        setRemarkEdits({})
+        setEditingRemarkId(null)
+        setSelectedIds(new Set())
+        setNotice(null)
+        setRefreshKey((k) => k + 1)
+    }
+    /* ========================= */
+
+    /* ===== AUTO-FIT MEASURING (same logic as Knitting) ===== */
+    const measureFit = useCallback(() => {
+        const el = scrollRef.current
+        if (!el) return
+        const viewH = (window.visualViewport && window.visualViewport.height) || window.innerHeight
+        const scale = getZoomScale(el)
+        const rect = el.getBoundingClientRect()
+
+        // table top measured from the very top of the content, no matter how far the page / the ERP panel is scrolled
+        let scrolled = window.scrollY || 0
+        let node = el.parentElement
+        while (node && node !== document.body && node !== document.documentElement) {
+            if (node.scrollTop) scrolled += node.scrollTop * scale
+            node = node.parentElement
+        }
+        const visualTop = rect.top + scrolled
+
+        const height = Math.max(MIN_TABLE_HEIGHT, Math.floor((viewH - visualTop) / scale - BOTTOM_RESERVE))
+        const width = el.clientWidth
+        if (FIT_DEBUG) console.log('[AssetSummary fit]', { viewH, scale, visualTop, reserve: BOTTOM_RESERVE, height, width })
+        setFit((prev) => (prev.height === height && prev.width === width ? prev : { height, width }))
+    }, [])
+
+    useLayoutEffect(() => {
+        measureFit()
+        // the ERP shell / fonts / images can still move things after the first paint: measure again a bit later
+        const t1 = setTimeout(measureFit, 100)
+        const t2 = setTimeout(measureFit, 500)
+        const t3 = setTimeout(measureFit, 1500)
+        window.addEventListener('resize', measureFit)
+        window.addEventListener('load', measureFit)
+        if (window.visualViewport) window.visualViewport.addEventListener('resize', measureFit)
+        // the ERP zoom control changes a style / class on <html> or <body> without resizing anything: catch that too
+        let mo = null
+        if (typeof MutationObserver !== 'undefined') {
+            mo = new MutationObserver(() => measureFit())
+            mo.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'class'] })
+            mo.observe(document.body, { attributes: true, attributeFilter: ['style', 'class'] })
+        }
+        // safety net: cheap re-check (state only changes when the number really changes)
+        const poll = setInterval(measureFit, 800)
+        let ro = null
+        if (typeof ResizeObserver !== 'undefined') {
+            ro = new ResizeObserver(() => measureFit())
+            if (topRef.current) ro.observe(topRef.current)
+            if (scrollRef.current) ro.observe(scrollRef.current)
+            ro.observe(document.documentElement)
+            ro.observe(document.body)
+        }
+        return () => {
+            clearTimeout(t1); clearTimeout(t2); clearTimeout(t3)
+            clearInterval(poll)
+            if (mo) mo.disconnect()
+            window.removeEventListener('resize', measureFit)
+            window.removeEventListener('load', measureFit)
+            if (window.visualViewport) window.visualViewport.removeEventListener('resize', measureFit)
+            if (ro) ro.disconnect()
+        }
+    }, [measureFit, initialLoading, fetchError, hasEdits, selectedIds.size > 0])
+    /* ======================================================= */
+
+    /* ===== WINDOWED RENDERING: only the rows near the viewport are in the DOM ===== */
+    const totalVisible = filteredRows.length
+
+    const { winStart, winEnd } = useMemo(() => {
+        const first = Math.floor(viewport.top / ROW_H) - OVERSCAN
+        const last = Math.ceil((viewport.top + viewport.height) / ROW_H) + OVERSCAN
+        const s = Math.max(0, Math.min(first, Math.max(0, totalVisible - 1)))
+        const e = Math.min(totalVisible, Math.max(last, s + 1))
+        return { winStart: s, winEnd: e }
+    }, [viewport.top, viewport.height, totalVisible])
+
+    const windowRows = useMemo(() => filteredRows.slice(winStart, winEnd), [filteredRows, winStart, winEnd])
+
+    const handleTableScroll = useCallback((e) => {
+        const el = e.currentTarget
+        if (rafRef.current) return
+        rafRef.current = requestAnimationFrame(() => {
+            rafRef.current = 0
+            const top = el.scrollTop
+            const height = el.clientHeight
+            setViewport((v) => (Math.abs(v.top - top) < ROW_H / 2 && v.height === height ? v : { top, height }))
+            maybeLoadMore()
+        })
+    }, [maybeLoadMore])
+
+    // keep the viewport height in sync (first render, data change, window resize, new auto-fit height)
+    useLayoutEffect(() => {
+        const sync = () => {
+            const el = scrollRef.current
+            if (!el) return
+            setViewport((v) => (v.height === el.clientHeight && v.top === el.scrollTop ? v : { top: el.scrollTop, height: el.clientHeight }))
+        }
+        sync()
+        window.addEventListener('resize', sync)
+        return () => window.removeEventListener('resize', sync)
+    }, [totalVisible > 0, initialLoading, fit.height])
+
+    useEffect(() => () => { if (rafRef.current) cancelAnimationFrame(rafRef.current) }, [])
+
+    // source tab / search / column filter changed: go back to the top of the table
+    useEffect(() => {
+        if (scrollRef.current) scrollRef.current.scrollTop = 0
+        setViewport((v) => (v.top === 0 ? v : { ...v, top: 0 }))
+    }, [filters, sourceFilter, search])
+    /* ================================================================================ */
 
     const modalValues = useMemo(() => {
         if (!filterModal) return []
@@ -918,7 +1298,7 @@ const AssetSummary = () => {
 
     const handleRemarkChange = (id, value) => {
         setNotice(null)
-        const original = baseAssets.find((a) => a.id === id)?.savedRemarks ?? ''
+        const original = assets.find((a) => a.id === id)?.remarks ?? ''
         setRemarkEdits((prev) => {
             const next = { ...prev }
             if (value === original) delete next[id]
@@ -938,8 +1318,8 @@ const AssetSummary = () => {
         showNotice('loading', 'Saving remarks...')
         try {
             console.log('Saving remarks payload:', remarkUpdates)
-            await new Promise(resolve => setTimeout(resolve, 500))
-            
+            await new Promise((resolve) => setTimeout(resolve, 500))
+
             setAssets((prev) =>
                 prev.map((asset) => {
                     if (remarkUpdates[asset.id] !== undefined) return { ...asset, remarks: remarkUpdates[asset.id] }
@@ -968,28 +1348,67 @@ const AssetSummary = () => {
         return () => window.removeEventListener('keydown', handleKeyDown)
     }, [hasEdits, editingRemarkId, filterModal])
 
-    const handleExport = () => {
+    // The table only holds the rows loaded so far, so when more rows exist on the server the export
+    // pulls the full list first (in chunks), then applies the source tab, search and column filters in the browser.
+    const handleExport = async () => {
+        setIsExporting(true)
+        setExportProgress(0)
         try {
-            if (filteredRows.length === 0) {
+            let source = assets
+            if (hasMore && stationRef.current) {
+                const all = []
+                let cursor = null
+                let exportSeq = 0
+                while (true) {
+                    const res = await axiosRef.current.get(`/api/asset-items/${stationRef.current}`, {
+                        params: buildListParams(cursor, EXPORT_PAGE_LIMIT),
+                    })
+                    const page = unwrapPage(res)
+                    page.items.forEach((it) => all.push(normalizeAsset(it, `export-${++exportSeq}`)))
+                    setExportProgress(all.length)
+                    if (all.length > EXPORT_MAX_ROWS) {
+                        showNotice('error', `Too many rows to export at once (more than ${EXPORT_MAX_ROWS}). Please narrow the data with filters.`)
+                        return
+                    }
+                    if (!page.hasMore || page.nextCursor === null || page.nextCursor === undefined) break
+                    cursor = page.nextCursor
+                }
+                source = all
+            }
+
+            const term = search.trim().toLowerCase()
+            const exportRows = source
+                .map((asset) => toRow(asset, remarkEdits))
+                .filter((r) => matchesBase(r, sourceFilter, term))
+                .filter((r) => remarkEdits[r.id] !== undefined || rowMatches(r, filters))
+
+            if (exportRows.length === 0) {
                 showNotice('error', 'No data to export.')
                 return
             }
             const today = new Date().toLocaleDateString('en-CA')
-            const bytes = buildAssetSummaryXlsx(filteredRows, totals, today)
+            const bytes = buildAssetSummaryXlsx(exportRows, computeTotals(exportRows), today)
             downloadXlsx(bytes, `Asset_Summary_${today}.xlsx`)
-            showNotice('success', `Exported ${filteredRows.length} row${filteredRows.length > 1 ? 's' : ''} to Excel.`)
+            showNotice('success', `Exported ${exportRows.length} row${exportRows.length > 1 ? 's' : ''} to Excel.`)
         } catch (error) {
             console.error(error)
             showNotice('error', 'Export failed. Please try again.')
+        } finally {
+            setIsExporting(false)
+            setExportProgress(0)
         }
     }
 
+    // Excel style: the popup is attached to the header cell; clicking the same icon again closes it
     const openFilter = (key, e) => {
-        const rect = e.currentTarget.getBoundingClientRect()
-        setFilterModal({ key, position: { x: rect.left, y: rect.bottom + 6 } })
+        if (filterModal && filterModal.key === key) {
+            setFilterModal(null)
+            return
+        }
+        setFilterModal({ key, anchorEl: e.currentTarget.closest('th') || e.currentTarget })
     }
 
-    const closeFilter = () => setFilterModal(null)
+    const closeFilter = useCallback(() => setFilterModal(null), [])
 
     const applyFilter = (key, draft, values) => {
         setFilters((prev) => {
@@ -1001,39 +1420,42 @@ const AssetSummary = () => {
         closeFilter()
     }
 
+    // cards count the loaded rows: say so while more rows are still on the server
+    const partialNote = hasMore ? ' (loaded so far)' : ''
+
     const summaryCards = [
         {
             label: 'Total Asset',
             value: formatNumber(summary.totalQty),
-            sub: `${summary.totalItems} item lines`,
+            sub: `${summary.totalItems} item lines${partialNote}`,
             icon: Boxes,
             gradient: 'from-blue-500 to-blue-600',
         },
         {
             label: 'Own Asset',
             value: formatNumber(summary.ownQty),
-            sub: `${summary.ownItems} item lines`,
+            sub: `${summary.ownItems} item lines${partialNote}`,
             icon: PackageCheck,
             gradient: 'from-emerald-500 to-emerald-600',
         },
         {
             label: 'Own Asset Value',
             value: formatCurrency(summary.ownValue),
-            sub: 'Carrying qty x price per pcs',
+            sub: `Carrying qty x price per pcs${partialNote}`,
             icon: Wallet,
             gradient: 'from-violet-500 to-violet-600',
         },
         {
             label: 'Rental Asset',
             value: formatNumber(summary.rentalQty),
-            sub: `${summary.rentalItems} item lines`,
+            sub: `${summary.rentalItems} item lines${partialNote}`,
             icon: CalendarClock,
             gradient: 'from-amber-500 to-amber-600',
         },
         {
             label: 'Addition Asset Qty',
             value: formatNumber(summary.additionsQty),
-            sub: 'Added in present year',
+            sub: hasMore ? 'Added in present year (loaded so far)' : 'Added in present year',
             icon: PackagePlus,
             gradient: 'from-rose-500 to-rose-600',
         },
@@ -1045,10 +1467,10 @@ const AssetSummary = () => {
 
     const renderCell = (col, row, rowIndex) => {
         const rawValue = row[col.key]
-        const isNullish = 
-            rawValue === null || 
-            rawValue === undefined || 
-            rawValue === '' || 
+        const isNullish =
+            rawValue === null ||
+            rawValue === undefined ||
+            rawValue === '' ||
             String(rawValue).trim().toUpperCase() === 'NULL'
 
         switch (col.kind) {
@@ -1098,9 +1520,8 @@ const AssetSummary = () => {
                 return (
                     <div
                         title="Double-click to edit"
-                        className={`select-none rounded-md px-2 py-1 text-left ${
-                            edited ? 'bg-amber-50 text-gray-900 ring-1 ring-amber-400 font-semibold' : 'text-gray-700'
-                        }`}
+                        className={`select-none rounded-md px-2 py-1 text-left ${edited ? 'bg-amber-50 text-gray-900 ring-1 ring-amber-400 font-semibold' : 'text-gray-700'
+                            }`}
                     >
                         {row.remarks || <span className="text-gray-400">_</span>}
                     </div>
@@ -1116,18 +1537,52 @@ const AssetSummary = () => {
         }
     }
 
+    /* ----- early screens (all hooks are above) ----- */
+    if (initialLoading && assets.length === 0 && !fetchError) {
+        return (
+            <>
+                <Toast notice={notice} onClose={() => setNotice(null)} />
+                <div className="flex items-center justify-center py-16 text-gray-500 text-sm">
+                    <Loader2 size={24} className="animate-spin mr-2.5" /> Loading data...
+                </div>
+            </>
+        )
+    }
+
+    if (fetchError && assets.length === 0) {
+        return (
+            <>
+                <Toast notice={notice} onClose={() => setNotice(null)} />
+                <div className="m-5 flex flex-wrap items-center gap-3 px-4 py-3 text-sm text-red-800 bg-red-50 border border-red-200 rounded-lg">
+                    <span>{fetchError}</span>
+                    <button
+                        type="button"
+                        onClick={handleRefresh}
+                        className="px-3.5 py-1.5 text-xs font-semibold text-white bg-primary-500 hover:bg-primary-600 rounded-md cursor-pointer"
+                    >
+                        Retry
+                    </button>
+                </div>
+            </>
+        )
+    }
+
+    const topSpacerHeight = winStart * ROW_H
+    const bottomSpacerHeight = Math.max(0, totalVisible - winEnd) * ROW_H
+
     return (
         <>
             <Toast notice={notice} onClose={() => setNotice(null)} />
-            <div className="space-y-5">
-                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
-                    {summaryCards.map((card) => (
-                        <SummaryCard key={card.label} {...card} />
-                    ))}
-                </div>
+            <div className="w-full">
+                {/* Everything above the table: watched for size changes so the table box always re-fits the screen */}
+                <div ref={topRef} className="space-y-5 mb-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
+                        {summaryCards.map((card) => (
+                            <SummaryCard key={card.label} {...card} />
+                        ))}
+                    </div>
 
-                <div className="bg-white rounded-xl border border-green-200 shadow-sm overflow-hidden">
-                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 px-4 py-3 border-b border-green-200 bg-emerald-50/60">
+                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 px-4 py-3 border border-green-200 rounded-xl bg-emerald-50/60">
                         <div className="flex flex-wrap items-center gap-2" role="tablist" aria-label="Filter by source">
                             {SOURCE_FILTERS.map((filter) => {
                                 const active = sourceFilter === filter
@@ -1139,11 +1594,10 @@ const AssetSummary = () => {
                                         role="tab"
                                         aria-selected={active}
                                         onClick={() => setSourceFilter(filter)}
-                                        className={`px-3 py-1.5 rounded-full text-xs font-semibold cursor-pointer transition-colors ${
-                                            active
-                                                ? 'bg-primary-500 text-white shadow-sm'
-                                                : 'bg-white text-gray-600 border border-green-200 hover:bg-emerald-50'
-                                        }`}
+                                        className={`px-3 py-1.5 rounded-full text-xs font-semibold cursor-pointer transition-colors ${active
+                                            ? 'bg-primary-500 text-white shadow-sm'
+                                            : 'bg-white text-gray-600 border border-green-200 hover:bg-emerald-50'
+                                            }`}
                                     >
                                         {filter}
                                         <span className={`ml-1.5 ${active ? 'text-primary-100' : 'text-gray-400'}`}>
@@ -1156,12 +1610,23 @@ const AssetSummary = () => {
                             <button
                                 type="button"
                                 onClick={handleExport}
-                                disabled={filteredRows.length === 0}
+                                disabled={isExporting || filteredRows.length === 0}
                                 title="Download the table as an Excel file"
                                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold text-emerald-700 bg-white border border-emerald-500 hover:bg-emerald-50 cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                             >
-                                <Download size={14} />
-                                Export
+                                {isExporting ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+                                {isExporting ? (exportProgress > 0 ? `Exporting... ${exportProgress} rows` : 'Exporting...') : 'Export'}
+                            </button>
+
+                            <button
+                                type="button"
+                                onClick={handleRefresh}
+                                disabled={initialLoading}
+                                title={hasEdits ? 'Reload from the server (unsaved remark edits will be dropped)' : 'Reload from the server'}
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 cursor-pointer transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                            >
+                                <RefreshCcw size={14} className={initialLoading || loadingMore ? 'animate-spin' : ''} />
+                                Refresh
                             </button>
                         </div>
 
@@ -1215,159 +1680,229 @@ const AssetSummary = () => {
                             </div>
                         </div>
                     </div>
+                </div>
 
-                    <div className="max-h-[60vh] overflow-auto bg-white">
-                        <table
-                            className="border-separate"
-                            style={{ minWidth: TOTAL_WIDTH, width: '100%', tableLayout: 'fixed', borderSpacing: 0 }}
-                        >
-                            <colgroup>
-                                {COLUMNS.map((col, index) => (
-                                    <col
-                                        key={col.key}
-                                        style={{
-                                            width: col.width,
-                                            minWidth: index < FROZEN_COUNT ? col.width : undefined,
-                                            maxWidth: index < FROZEN_COUNT ? col.width : undefined,
-                                        }}
-                                    />
-                                ))}
-                            </colgroup>
+                {/* The box height is calculated from the screen: it fills everything under the toolbar */}
+                <div
+                    ref={scrollRef}
+                    onScroll={handleTableScroll}
+                    className="relative overflow-auto bg-white border border-green-200 rounded-xl shadow-sm"
+                    style={{ height: fit.height, boxSizing: 'border-box' }}
+                >
+                    <table
+                        className="border-separate"
+                        style={{ minWidth: TOTAL_WIDTH, width: '100%', tableLayout: 'fixed', borderSpacing: 0 }}
+                    >
+                        <colgroup>
+                            {COLUMNS.map((col, index) => (
+                                <col
+                                    key={col.key}
+                                    style={{
+                                        width: col.width,
+                                        minWidth: index < FROZEN_COUNT ? col.width : undefined,
+                                        maxWidth: index < FROZEN_COUNT ? col.width : undefined,
+                                    }}
+                                />
+                            ))}
+                        </colgroup>
 
-                            <thead>
-                                <tr>
-                                    {COLUMNS.map((col, index) => {
-                                        const isFiltered = Boolean(filters[col.key])
-                                        return (
-                                            <th
-                                                key={col.key}
-                                                className={`bg-slate-500 text-white ${HEADER_CELL} ${dividerClass(index)} px-2 py-3 text-[11px] font-bold uppercase tracking-wide align-middle`}
-                                                style={{
-                                                    position: 'sticky',
-                                                    top: 0,
-                                                    height: 64,
-                                                    zIndex: isFrozen(index) ? 30 : 20,
-                                                    ...leftStyle(index),
-                                                }}
-                                            >
-                                                {col.kind === 'select' ? (
-                                                    <input
-                                                        ref={selectAllRef}
-                                                        type="checkbox"
-                                                        checked={allSelected}
-                                                        onChange={toggleAllRows}
-                                                        aria-label="Select all rows"
-                                                        className="w-4 h-4 cursor-pointer accent-emerald-600"
-                                                    />
-                                                ) : (
-                                                    <div className="flex items-center justify-center gap-1.5">
-                                                        <span className="leading-tight text-center whitespace-normal break-words">
-                                                            {col.label}
-                                                        </span>
-                                                        {col.filterable !== false && (
-                                                            <button
-                                                                type="button"
-                                                                onClick={(e) => openFilter(col.key, e)}
-                                                                aria-label={`Filter ${col.label}`}
-                                                                title={isFiltered ? `Filtered: ${col.label}` : `Filter ${col.label}`}
-                                                                className={`shrink-0 p-1 rounded cursor-pointer transition-colors ${
-                                                                    isFiltered
-                                                                        ? 'bg-white text-slate-700'
-                                                                        : 'text-white/80 hover:bg-white/25 hover:text-white'
-                                                                }`}
-                                                            >
-                                                                <Filter size={13} />
-                                                            </button>
-                                                        )}
-                                                    </div>
-                                                )}
-                                            </th>
-                                        )
-                                    })}
-                                </tr>
-                            </thead>
-
-                            <tbody>
-                                {filteredRows.length === 0 ? (
-                                    <tr>
-                                        <td
-                                            colSpan={COLUMNS.length}
-                                            className="px-3 py-12 text-center text-sm text-gray-500 bg-white border-b border-gray-200"
-                                        >
-                                            No assets found
-                                        </td>
-                                    </tr>
-                                ) : (
-                                    filteredRows.map((row, rowIndex) => {
-                                        const rowBg = selectedIds.has(row.id) ? 'bg-emerald-50' : 'bg-white'
-                                        return (
-                                            <tr key={row.id} className="group">
-                                                {COLUMNS.map((col, index) => (
-                                                    <td
-                                                        key={col.key}
-                                                        className={`${rowBg} group-hover:bg-slate-50 ${BODY_CELL} ${dividerClass(index)} px-3 py-2 text-xs text-gray-700 text-center align-middle whitespace-normal break-words transition-colors ${col.cell || ''}`}
-                                                        onDoubleClick={
-                                                            col.kind === 'remarks' ? () => setEditingRemarkId(row.id) : undefined
-                                                        }
-                                                        style={{
-                                                            height: 42,
-                                                            ...(isFrozen(index)
-                                                                ? { position: 'sticky', zIndex: 10, ...leftStyle(index) }
-                                                                : {}),
-                                                        }}
-                                                    >
-                                                        {renderCell(col, row, rowIndex)}
-                                                    </td>
-                                                ))}
-                                            </tr>
-                                        )
-                                    })
-                                )}
-                            </tbody>
-
-                            {filteredRows.length > 0 && (
-                                <tfoot>
-                                    <tr>
-                                        <td
-                                            colSpan={FROZEN_COUNT}
-                                            className={`bg-slate-500 text-white ${FOOTER_CELL} ${
-                                                freezeEnabled ? FROZEN_DIVIDER : ''
-                                            } px-3 py-3 text-xs font-bold uppercase tracking-wide text-center`}
+                        <thead>
+                            <tr>
+                                {COLUMNS.map((col, index) => {
+                                    const isFiltered = Boolean(filters[col.key])
+                                    return (
+                                        <th
+                                            key={col.key}
+                                            className={`bg-slate-500 text-white ${HEADER_CELL} ${dividerClass(index)} px-2 py-3 text-[11px] font-bold uppercase tracking-wide align-middle`}
                                             style={{
                                                 position: 'sticky',
-                                                bottom: 0,
-                                                zIndex: freezeEnabled ? 30 : 20,
-                                                ...(freezeEnabled ? { left: 0 } : {}),
+                                                top: 0,
+                                                height: HEADER_H,
+                                                zIndex: isFrozen(index) ? 30 : 20,
+                                                ...leftStyle(index),
                                             }}
                                         >
-                                            Total
-                                        </td>
-                                        {FOOTER_SUM_KEYS.map((key) => (
+                                            {col.kind === 'select' ? (
+                                                <input
+                                                    ref={selectAllRef}
+                                                    type="checkbox"
+                                                    checked={allSelected}
+                                                    onChange={toggleAllRows}
+                                                    aria-label="Select all rows"
+                                                    className="w-4 h-4 cursor-pointer accent-emerald-600"
+                                                />
+                                            ) : (
+                                                <div className="flex items-center justify-center gap-1.5">
+                                                    <span className="leading-tight text-center whitespace-normal break-words">
+                                                        {col.label}
+                                                    </span>
+                                                    {col.filterable !== false && (
+                                                        <button
+                                                            type="button"
+                                                            data-filter-trigger
+                                                            onClick={(e) => openFilter(col.key, e)}
+                                                            aria-label={`Filter ${col.label}`}
+                                                            title={isFiltered ? `Filtered: ${col.label}` : `Filter ${col.label}`}
+                                                            className={`shrink-0 p-1 rounded cursor-pointer transition-colors ${isFiltered
+                                                                ? 'bg-white text-slate-700'
+                                                                : 'text-white/80 hover:bg-white/25 hover:text-white'
+                                                                }`}
+                                                        >
+                                                            <Filter size={13} />
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </th>
+                                    )
+                                })}
+                            </tr>
+                        </thead>
+
+                        <tbody>
+                            {/* spacer = all the rows above the rendered window */}
+                            {topSpacerHeight > 0 && (
+                                <tr aria-hidden="true" style={{ height: topSpacerHeight }}>
+                                    <td colSpan={COLUMNS.length} style={{ padding: 0, border: 'none' }} />
+                                </tr>
+                            )}
+
+                            {windowRows.map((row, i) => {
+                                const rowIndex = winStart + i
+                                const rowBg = selectedIds.has(row.id) ? 'bg-emerald-50' : 'bg-white'
+                                return (
+                                    <tr key={row.id} className="group">
+                                        {COLUMNS.map((col, index) => (
                                             <td
-                                                key={key}
-                                                className={`bg-slate-500 text-white ${FOOTER_CELL} px-3 py-3 text-xs font-bold text-center`}
-                                                style={{ position: 'sticky', bottom: 0, zIndex: 20 }}
+                                                key={col.key}
+                                                className={`${rowBg} group-hover:bg-slate-50 ${BODY_CELL} ${dividerClass(index)} px-3 py-1 text-xs text-gray-700 text-center align-middle transition-colors ${col.cell || ''}`}
+                                                onDoubleClick={
+                                                    col.kind === 'remarks' ? () => setEditingRemarkId(row.id) : undefined
+                                                }
+                                                style={{
+                                                    height: ROW_H,
+                                                    boxSizing: 'border-box',
+                                                    overflow: 'hidden',
+                                                    ...(isFrozen(index)
+                                                        ? { position: 'sticky', zIndex: 10, ...leftStyle(index) }
+                                                        : {}),
+                                                }}
                                             >
-                                                {totals[key] === 0 ? '_' : formatNumber(totals[key])}
+                                                <div
+                                                    style={CLAMP_STYLE}
+                                                    title={col.kind === 'remarks' || col.kind === 'select' ? undefined : String(row[col.key] ?? '')}
+                                                >
+                                                    {renderCell(col, row, rowIndex)}
+                                                </div>
                                             </td>
                                         ))}
-                                        <td
-                                            className={`bg-slate-500 text-white ${FOOTER_CELL} px-3 py-3 text-xs font-bold text-center`}
-                                            style={{ position: 'sticky', bottom: 0, zIndex: 20 }}
-                                        >
-                                            {totals.totalValue === 0 ? '_' : formatCurrency(totals.totalValue)}
-                                        </td>
-                                        <td
-                                            className={`bg-slate-500 text-white ${FOOTER_CELL} px-3 py-3 text-xs font-bold text-center`}
-                                            style={{ position: 'sticky', bottom: 0, zIndex: 20 }}
-                                        >
-                                            _
-                                        </td>
                                     </tr>
-                                </tfoot>
+                                )
+                            })}
+
+                            {/* spacer = all the rows below the rendered window */}
+                            {bottomSpacerHeight > 0 && (
+                                <tr aria-hidden="true" style={{ height: bottomSpacerHeight }}>
+                                    <td colSpan={COLUMNS.length} style={{ padding: 0, border: 'none' }} />
+                                </tr>
                             )}
-                        </table>
-                    </div>
+
+                            {filteredRows.length === 0 && (
+                                <tr>
+                                    <td
+                                        colSpan={COLUMNS.length}
+                                        className="px-3 py-12 text-center text-sm text-gray-500 bg-white border-b border-gray-200"
+                                    >
+                                        <div style={{ position: 'sticky', left: 0, width: fit.width }}>
+                                            {loadingMore ? 'Loading...' : 'No assets found'}
+                                        </div>
+                                    </td>
+                                </tr>
+                            )}
+                        </tbody>
+
+                        {filteredRows.length > 0 && (
+                            <tfoot>
+                                <tr>
+                                    <td
+                                        colSpan={FROZEN_COUNT}
+                                        className={`bg-slate-500 text-white ${FOOTER_CELL} ${freezeEnabled ? FROZEN_DIVIDER : ''
+                                            } px-3 py-3 text-xs font-bold uppercase tracking-wide text-center`}
+                                        style={{
+                                            position: 'sticky',
+                                            bottom: 0,
+                                            height: FOOTER_H,
+                                            zIndex: freezeEnabled ? 30 : 20,
+                                            ...(freezeEnabled ? { left: 0 } : {}),
+                                        }}
+                                    >
+                                        {hasMore ? 'Total (loaded)' : 'Total'}
+                                    </td>
+                                    {FOOTER_SUM_KEYS.map((key) => (
+                                        <td
+                                            key={key}
+                                            className={`bg-slate-500 text-white ${FOOTER_CELL} px-3 py-3 text-xs font-bold text-center`}
+                                            style={{ position: 'sticky', bottom: 0, zIndex: 20 }}
+                                        >
+                                            {totals[key] === 0 ? '_' : formatNumber(totals[key])}
+                                        </td>
+                                    ))}
+                                    <td
+                                        className={`bg-slate-500 text-white ${FOOTER_CELL} px-3 py-3 text-xs font-bold text-center`}
+                                        style={{ position: 'sticky', bottom: 0, zIndex: 20 }}
+                                    >
+                                        {totals.totalValue === 0 ? '_' : formatCurrency(totals.totalValue)}
+                                    </td>
+                                    <td
+                                        className={`bg-slate-500 text-white ${FOOTER_CELL} px-3 py-3 text-xs font-bold text-center`}
+                                        style={{ position: 'sticky', bottom: 0, zIndex: 20 }}
+                                    >
+                                        _
+                                    </td>
+                                </tr>
+                            </tfoot>
+                        )}
+                    </table>
+                </div>
+
+                {/* Scroll loading status */}
+                <div className="flex flex-wrap items-center justify-center gap-2.5 mt-2 min-h-6 text-xs text-gray-500 text-center">
+                    {loadingMore && (
+                        <span className="inline-flex items-center gap-2 font-semibold text-emerald-700">
+                            <Loader2 size={16} className="animate-spin" /> Loading more...
+                        </span>
+                    )}
+                    {!loadingMore && loadError && (
+                        <span className="inline-flex items-center gap-2.5 text-red-700">
+                            {loadError}
+                            <button
+                                type="button"
+                                onClick={retryLoad}
+                                className="px-3 py-1 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-md cursor-pointer"
+                            >
+                                Retry
+                            </button>
+                        </span>
+                    )}
+                    {!loadingMore && !loadError && capReached && (
+                        <span className="font-semibold text-amber-700">
+                            Showing the first {assets.length} rows. More data exists: use the search, source tabs or column filters to narrow it down.
+                        </span>
+                    )}
+                    {!loadingMore && !loadError && !capReached && hasMore && (
+                        <span className="opacity-70">
+                            {filteredRows.length === assets.length
+                                ? `${assets.length} rows loaded. Scroll down to load more.`
+                                : `${filteredRows.length} of ${assets.length} loaded rows match the filters. Scroll down to load more.`}
+                        </span>
+                    )}
+                    {!loadingMore && !loadError && !hasMore && assets.length > 0 && (
+                        <span className="opacity-70">
+                            {filteredRows.length === assets.length
+                                ? `All ${assets.length} rows loaded`
+                                : `All ${assets.length} rows loaded, ${filteredRows.length} match the filters`}
+                        </span>
+                    )}
                 </div>
 
                 {filterModal && filterColumn && (
@@ -1376,7 +1911,7 @@ const AssetSummary = () => {
                         column={filterColumn}
                         values={modalValues}
                         selected={filters[filterModal.key] || null}
-                        position={filterModal.position}
+                        anchorEl={filterModal.anchorEl}
                         onApply={(draft, values) => applyFilter(filterModal.key, draft, values)}
                         onClose={closeFilter}
                     />

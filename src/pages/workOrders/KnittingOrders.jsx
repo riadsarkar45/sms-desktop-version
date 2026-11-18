@@ -1,4 +1,5 @@
 import { useState, useMemo } from "react";
+import WorkOrderDateCell from "./WorkOrderDateCell";
 
 const KnittingOrder = ({
     orders,
@@ -11,7 +12,9 @@ const KnittingOrder = ({
     FROZEN_COUNT,
     currentFrozenWidths,
     currentFrozenLefts,
-    getDataForCancellation
+    getDataForCancellation,
+    handlePreview,
+    getRevisionCount
 }) => {
     const [hoveredIndex, setHoveredIndex] = useState(null);
     const [searchTerm, setSearchTerm] = useState("");
@@ -439,18 +442,31 @@ const KnittingOrder = ({
                             }
                             onMouseLeave={() => setHoveredCancellation(null)}
                         >
-                            {/* COL 0 — MONTH */}
+                            {/* COL 0 — WORK ORDER DATE (new, frozen) */}
                             {isFirstOfWo && (
                                 <td style={stickyTd(0, isHovered)} rowSpan={woRowSpan}>
+                                    <WorkOrderDateCell
+                                        job={job}
+                                        wo={wo}
+                                        onPreview={handlePreview}
+                                        revisionCount={getRevisionCount ? getRevisionCount(wo) : 0}
+                                        className={cellPad}
+                                    />
+                                </td>
+                            )}
+
+                            {/* COL 1 — MONTH */}
+                            {isFirstOfWo && (
+                                <td style={stickyTd(1, isHovered)} rowSpan={woRowSpan}>
                                     <div className={cellPad} style={workOrderTextStyle}>
                                         {wo?.month || "NO MONTH NAME FOUND"}
                                     </div>
                                 </td>
                             )}
 
-                            {/* COL 1 — FACTORY NAME */}
+                            {/* COL 2 — FACTORY NAME */}
                             {isFirstOfWo && (
-                                <td style={stickyTd(1, isHovered)} rowSpan={woRowSpan}>
+                                <td style={stickyTd(2, isHovered)} rowSpan={woRowSpan}>
                                     <div className={cellPad} style={workOrderTextStyle}>
                                         {!wo || wo.factoryName === "NULL" ? (
                                             <span>-</span>
@@ -487,29 +503,29 @@ const KnittingOrder = ({
                                 </td>
                             )}
 
-                            {/* COL 2 — WORK ORDER NO */}
+                            {/* COL 3 — WORK ORDER NO */}
                             {isFirstOfWo && (
-                                <td style={stickyTd(2, isHovered)} rowSpan={woRowSpan}>
+                                <td style={stickyTd(3, isHovered)} rowSpan={woRowSpan}>
                                     <div className={cellPad} style={workOrderTextStyle}>
                                         {wo?.workOrderNo || "NO WORK ORDER FOUND"}
                                     </div>
                                 </td>
                             )}
 
-                            {/* COL 3 — BUYER NAME */}
+                            {/* COL 4 — BUYER NAME */}
                             {isFirstOfWo && (
-                                <td style={stickyTd(3, isHovered)} rowSpan={woRowSpan}>
+                                <td style={stickyTd(4, isHovered)} rowSpan={woRowSpan}>
                                     <div className={cellPad} style={workOrderTextStyle}>
                                         {wo?.styleRequirement?.buyerName || "NO BUYER NAME FOUND"}
                                     </div>
                                 </td>
                             )}
 
-                            {/* COL 4 — JOB NO */}
+                            {/* COL 5 — JOB NO */}
                             {isFirstOfJob && (
                                 <td
                                     onDoubleClick={() => handleRedirect(job.jobNo)}
-                                    style={stickyTd(4, isHovered)}
+                                    style={stickyTd(5, isHovered)}
                                     rowSpan={jobRowSpan}
                                 >
                                     <div
@@ -526,9 +542,9 @@ const KnittingOrder = ({
                                 </td>
                             )}
 
-                            {/* COL 5 — STYLE NO */}
+                            {/* COL 6 — STYLE NO */}
                             {isFirstOfWo && (
-                                <td style={stickyTd(5, isHovered)} rowSpan={woRowSpan}>
+                                <td style={stickyTd(6, isHovered)} rowSpan={woRowSpan}>
                                     <div className={cellPad} style={workOrderTextStyle}>
                                         {wo?.styleRequirement?.styleNo ||
                                             wo?.styleNo ||
@@ -537,8 +553,8 @@ const KnittingOrder = ({
                                 </td>
                             )}
 
-                            {/* COL 6 — COLOR */}
-                            <td style={stickyTd(6, isHovered)}>
+                            {/* COL 7 — COLOR */}
+                            <td style={stickyTd(7, isHovered)}>
                                 <div
                                     onClick={(e) => {
                                         e.stopPropagation();
@@ -553,33 +569,33 @@ const KnittingOrder = ({
                                 </div>
                             </td>
 
-                            {/* COL 7 — COMPOSITION */}
-                            <td style={stickyTd(7, isHovered)}>
+                            {/* COL 8 — COMPOSITION */}
+                            <td style={stickyTd(8, isHovered)}>
                                 <div className={cellPad} style={cancellationTextStyle}>
                                     {comp?.composition || "-"}
                                 </div>
                             </td>
 
-                            {/* COL 8 — FINISH DIA */}
+                            {/* FINISH DIA */}
                             <td style={plainTd(isHovered)}>
                                 <div className={cellPad} style={cancellationTextStyle}>
                                     {currentFinishDia}
                                 </div>
                             </td>
 
-                            {/* COL 9 — YARN COUNT (per composition) */}
+                            {/* YARN COUNT (per composition) */}
                             {renderLineCell("yarnCount", wo, comp, isHovered, cancellationTextStyle)}
 
-                            {/* COL 10 — YARN LOT (per composition) */}
+                            {/* YARN LOT (per composition) */}
                             {renderLineCell("lotNo", wo, comp, isHovered, cancellationTextStyle)}
 
-                            {/* COL 11 — STITCH LENGTH (per composition) */}
+                            {/* STITCH LENGTH (per composition) */}
                             {renderLineCell("stichLength", wo, comp, isHovered, cancellationTextStyle)}
 
-                            {/* COL 12 — MACHINE DIA (per composition) */}
+                            {/* MACHINE DIA (per composition) */}
                             {renderLineCell("machineDia", wo, comp, isHovered, cancellationTextStyle)}
 
-                            {/* COL 13 — WORK ORDER QTY */}
+                            {/* WORK ORDER QTY */}
                             <td style={plainTd(isHovered)}>
                                 <div
                                     onDoubleClick={() =>
@@ -610,14 +626,14 @@ const KnittingOrder = ({
                                 </div>
                             </td>
 
-                            {/* COL 14 — TOTAL YARN DELIVERY */}
+                            {/* TOTAL YARN DELIVERY */}
                             <td style={plainTd(isHovered)}>
                                 <div className={cellPad} style={cancellationTextStyle}>
                                     {totalDelivered.toFixed(2)}
                                 </div>
                             </td>
 
-                            {/* COL 15 — DEL SHORT & EXCESS */}
+                            {/* DEL SHORT & EXCESS */}
                             <td style={plainTd(isHovered)}>
                                 <div
                                     className={`${cellPad} font-bold`}
@@ -632,7 +648,7 @@ const KnittingOrder = ({
                                 </div>
                             </td>
 
-                            {/* COL 16 — YARN RETURN */}
+                            {/* YARN RETURN */}
                             <td style={plainTd(isHovered)}>
                                 <div
                                     className={`${cellPad} text-red-600 font-extrabold`}
@@ -642,14 +658,14 @@ const KnittingOrder = ({
                                 </div>
                             </td>
 
-                            {/* COL 17 — GREY RECEIVED */}
+                            {/* GREY RECEIVED */}
                             <td style={plainTd(isHovered)}>
                                 <div className={cellPad} style={cancellationTextStyle}>
                                     {comp?.yarnDeliveriesWithColor?.GreyFabricReceived?.toFixed(2) || "-"}
                                 </div>
                             </td>
 
-                            {/* COL 18 — RCVD SHORT & EXCESS */}
+                            {/* RCVD SHORT & EXCESS */}
                             <td style={plainTd(isHovered)}>
                                 <div
                                     className={`${cellPad} font-bold`}
@@ -664,7 +680,7 @@ const KnittingOrder = ({
                                 </div>
                             </td>
 
-                            {/* COL 19 — UNIT PRICE */}
+                            {/* UNIT PRICE */}
                             <td style={plainTd(isHovered)}>
                                 <div
                                     onDoubleClick={() =>
@@ -694,7 +710,7 @@ const KnittingOrder = ({
                                 </div>
                             </td>
 
-                            {/* COL 20 — PAYABLE AMOUNT */}
+                            {/* PAYABLE AMOUNT */}
                             <td style={plainTd(isHovered)}>
                                 <div
                                     className={`${cellPad} text-red-600 font-extrabold`}
@@ -704,7 +720,7 @@ const KnittingOrder = ({
                                 </div>
                             </td>
 
-                            {/* COL 21 — PAID BILLING AMOUNT */}
+                            {/* PAID BILLING AMOUNT */}
                             <td style={plainTd(isHovered)}>
                                 <div
                                     className={`${cellPad} text-red-600 font-extrabold`}
@@ -714,7 +730,7 @@ const KnittingOrder = ({
                                 </div>
                             </td>
 
-                            {/* COL 22 — PENDING BILLING AMOUNT */}
+                            {/* PENDING BILLING AMOUNT */}
                             <td style={plainTd(isHovered)}>
                                 <div
                                     className={`${cellPad} text-red-600 font-extrabold`}
@@ -748,46 +764,46 @@ const KnittingOrder = ({
                         </td>
                     ))}
 
-                    {/* COL 8 — FINISH DIA */}
+                    {/* FINISH DIA */}
                     <td style={getFooterCellStyle(FROZEN_COUNT)}>
                         <div className={`${cellPad} text-white`}>-</div>
                     </td>
 
-                    {/* COL 9 — YARN COUNT */}
+                    {/* YARN COUNT */}
                     <td style={getFooterCellStyle(FROZEN_COUNT + 1)}>
                         <div className={`${cellPad} text-white`}>-</div>
                     </td>
 
-                    {/* COL 10 — YARN LOT */}
+                    {/* YARN LOT */}
                     <td style={getFooterCellStyle(FROZEN_COUNT + 2)}>
                         <div className={`${cellPad} text-white`}>-</div>
                     </td>
 
-                    {/* COL 11 — STITCH LENGTH */}
+                    {/* STITCH LENGTH */}
                     <td style={getFooterCellStyle(FROZEN_COUNT + 3)}>
                         <div className={`${cellPad} text-white`}>-</div>
                     </td>
 
-                    {/* COL 12 — MACHINE DIA */}
+                    {/* MACHINE DIA */}
                     <td style={getFooterCellStyle(FROZEN_COUNT + 4)}>
                         <div className={`${cellPad} text-white`}>-</div>
                     </td>
 
-                    {/* COL 13 — WORK ORDER QTY */}
+                    {/* WORK ORDER QTY */}
                     <td style={getFooterCellStyle(FROZEN_COUNT + 5)}>
                         <div className={`${cellPad} text-white`}>
                             {formatNumber(totals.workOrderQty?.toFixed(2))}
                         </div>
                     </td>
 
-                    {/* COL 14 — TOTAL YARN DELIVERY */}
+                    {/* TOTAL YARN DELIVERY */}
                     <td style={getFooterCellStyle(FROZEN_COUNT + 6)}>
                         <div className={`${cellPad} text-white`}>
                             {formatNumber(totals.totalYarnDelivery?.toFixed(2))}
                         </div>
                     </td>
 
-                    {/* COL 15 — DEL SHORT & EXCESS */}
+                    {/* DEL SHORT & EXCESS */}
                     <td style={getFooterCellStyle(FROZEN_COUNT + 7)}>
                         <div
                             className={`${cellPad} font-bold text-white`}
@@ -799,21 +815,21 @@ const KnittingOrder = ({
                         </div>
                     </td>
 
-                    {/* COL 16 — YARN RETURN */}
+                    {/* YARN RETURN */}
                     <td style={getFooterCellStyle(FROZEN_COUNT + 8)}>
                         <div className={`${cellPad} text-white`}>
                             {formatNumber(totals.yarnReturn?.toFixed(2))}
                         </div>
                     </td>
 
-                    {/* COL 17 — GREY RECEIVED */}
+                    {/* GREY RECEIVED */}
                     <td style={getFooterCellStyle(FROZEN_COUNT + 9)}>
                         <div className={`${cellPad} text-white`}>
                             {formatNumber(totals.GreyFabricReceived?.toFixed(2))}
                         </div>
                     </td>
 
-                    {/* COL 18 — RCVD SHORT & EXCESS */}
+                    {/* RCVD SHORT & EXCESS */}
                     <td style={getFooterCellStyle(FROZEN_COUNT + 10)}>
                         <div
                             className={`${cellPad} font-bold text-white`}
@@ -825,24 +841,24 @@ const KnittingOrder = ({
                         </div>
                     </td>
 
-                    {/* COL 19 — UNIT PRICE */}
+                    {/* UNIT PRICE */}
                     <td style={getFooterCellStyle(FROZEN_COUNT + 11)}>
                         <div className={`${cellPad} text-white`} />
                     </td>
 
-                    {/* COL 20 — PAYABLE AMOUNT */}
+                    {/* PAYABLE AMOUNT */}
                     <td style={getFooterCellStyle(FROZEN_COUNT + 12)}>
                         <div className={`${cellPad} text-white`}>
                             {formatNumber(totals.payableAmount.toFixed(2))}
                         </div>
                     </td>
 
-                    {/* COL 21 — PAID BILLING AMOUNT */}
+                    {/* PAID BILLING AMOUNT */}
                     <td style={getFooterCellStyle(FROZEN_COUNT + 13)}>
                         <div className={`${cellPad} text-white`}>-</div>
                     </td>
 
-                    {/* COL 22 — PENDING BILLING AMOUNT */}
+                    {/* PENDING BILLING AMOUNT */}
                     <td style={getFooterCellStyle(FROZEN_COUNT + 14)}>
                         <div className={`${cellPad} text-white`}>-</div>
                     </td>

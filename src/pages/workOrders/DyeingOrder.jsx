@@ -1,4 +1,5 @@
 import { useState, useMemo } from "react";
+import WorkOrderDateCell from "./WorkOrderDateCell";
 
 const DyeingOrder = ({
     orders,
@@ -12,7 +13,9 @@ const DyeingOrder = ({
     currentFrozenWidths,
     currentFrozenLefts,
     searchTerm = "",
-    getDataForCancellation
+    getDataForCancellation,
+    handlePreview,
+    getRevisionCount
 }) => {
     const [hoveredIndex, setHoveredIndex] = useState(null);
 
@@ -248,16 +251,29 @@ const DyeingOrder = ({
                             onMouseEnter={() => setHoveredIndex(jobIndex)}
                             onMouseLeave={() => setHoveredIndex(null)}
                         >
-                            {/* MONTH (per work order) */}
+                            {/* WORK ORDER DATE (new, frozen, per work order) */}
                             {isFirstOfWo && (
                                 <td style={stickyTd(0, isHovered)} rowSpan={woRowSpan}>
+                                    <WorkOrderDateCell
+                                        job={job}
+                                        wo={wo}
+                                        onPreview={handlePreview}
+                                        revisionCount={getRevisionCount ? getRevisionCount(wo) : 0}
+                                        className={cellPad}
+                                    />
+                                </td>
+                            )}
+
+                            {/* MONTH (per work order) */}
+                            {isFirstOfWo && (
+                                <td style={stickyTd(1, isHovered)} rowSpan={woRowSpan}>
                                     <div className={cellPad}>{wo?.month || "-"}</div>
                                 </td>
                             )}
 
                             {/* FACTORY NAME (per work order) */}
                             {isFirstOfWo && (
-                                <td style={stickyTd(1, isHovered)} rowSpan={woRowSpan}>
+                                <td style={stickyTd(2, isHovered)} rowSpan={woRowSpan}>
                                     {!wo || wo.factoryName === "NULL" ? (
                                         <div className={`${cellPad} text-gray-500`}>-</div>
                                     ) : (
@@ -272,21 +288,21 @@ const DyeingOrder = ({
 
                             {/* WORK ORDER NO (per work order) */}
                             {isFirstOfWo && (
-                                <td style={stickyTd(2, isHovered)} rowSpan={woRowSpan}>
+                                <td style={stickyTd(3, isHovered)} rowSpan={woRowSpan}>
                                     <div className={cellPad}>{wo?.workOrderNo || "-"}</div>
                                 </td>
                             )}
 
                             {/* BUYER NAME (per work order) */}
                             {isFirstOfWo && (
-                                <td style={stickyTd(3, isHovered)} rowSpan={woRowSpan}>
+                                <td style={stickyTd(4, isHovered)} rowSpan={woRowSpan}>
                                     <div className={cellPad}>{wo?.styleRequirement?.buyerName || "-"}</div>
                                 </td>
                             )}
 
                             {/* JOB NO (per job) */}
                             {isFirstOfJob && (
-                                <td style={stickyTd(4, isHovered)} rowSpan={jobRowSpan}>
+                                <td style={stickyTd(5, isHovered)} rowSpan={jobRowSpan}>
                                     <div onDoubleClick={() => handleRedirect(job.jobNo)} className={cellPad}><span onClick={() =>getDataForCancellation({
                                         jobNo: job.jobNo,
                                         isOpen: true,
@@ -296,20 +312,20 @@ const DyeingOrder = ({
 
                             {/* STYLE NO (per work order) */}
                             {isFirstOfWo && (
-                                <td style={stickyTd(5, isHovered)} rowSpan={woRowSpan}>
+                                <td style={stickyTd(6, isHovered)} rowSpan={woRowSpan}>
                                     <div className={cellPad}>{wo?.styleRequirement?.styleNo || "-"}</div>
                                 </td>
                             )}
 
                             {/* COLOR (per composition) */}
-                            <td style={stickyTd(6, isHovered)}>
+                            <td style={stickyTd(7, isHovered)}>
                                 <div onClick={() => handleEditRowData(comp?.id)} className={cellPad} style={{ cursor: "pointer" }}>
                                     {comp?.color || "-"}
                                 </div>
                             </td>
 
                             {/* COMPOSITION (per composition) */}
-                            <td style={stickyTd(7, isHovered)}>
+                            <td style={stickyTd(8, isHovered)}>
                                 <div className={cellPad}>{comp?.composition || "-"}</div>
                             </td>
 

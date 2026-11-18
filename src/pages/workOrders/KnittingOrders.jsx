@@ -1,4 +1,3 @@
-
 import { useState, useMemo } from "react";
 
 const KnittingOrder = ({
@@ -34,7 +33,6 @@ const KnittingOrder = ({
         return num.toLocaleString("en-US");
     };
 
-    // Work order-level cancellation style
     const stickyTd = (colIndex, isHovered) => ({
         ...baseTd,
         position: "sticky",
@@ -99,6 +97,63 @@ const KnittingOrder = ({
         return footerBaseStyle;
     };
 
+    // ───────── Line-level field helpers (yarnCount, lotNo, stichLength, machineDia) ─────────
+
+    const isEmptyValue = (v) =>
+        v === null ||
+        v === undefined ||
+        String(v).trim() === "" ||
+        String(v).trim().toUpperCase() === "NULL";
+
+    // Composition value first; fall back to the old work-order value for old data
+    const getLineValue = (wo, comp, field) => {
+        if (!isEmptyValue(comp?.[field])) return comp[field];
+        if (!isEmptyValue(wo?.[field])) return wo[field];
+        return "";
+    };
+
+    // One editable cell per composition row
+    const renderLineCell = (field, wo, comp, isHovered, textStyle) => {
+        const value = getLineValue(wo, comp, field);
+        const isEditing =
+            isEdit.updatedFieldName === field && isEdit.compId === comp?.id;
+
+        return (
+            <td style={plainTd(isHovered)}>
+                <div className={cellPad} style={textStyle}>
+                    {!wo || !comp || isEmptyValue(value) ? (
+                        <span>-</span>
+                    ) : (
+                        <div
+                            onDoubleClick={() =>
+                                handleInlineEdit(
+                                    wo.id,
+                                    value,
+                                    "workOrder",
+                                    field,
+                                    comp.id
+                                )
+                            }
+                            className="cursor-pointer"
+                        >
+                            {isEditing ? (
+                                <input
+                                    type="text"
+                                    name={field}
+                                    className="p-2 outline-none border rounded-md w-full"
+                                    value={updatedFields.currentValue}
+                                    onChange={(e) => handleOnChange(e)}
+                                />
+                            ) : (
+                                <span>{value}</span>
+                            )}
+                        </div>
+                    )}
+                </div>
+            </td>
+        );
+    };
+
     // Totals
     const totals = useMemo(() => {
         const acc = {
@@ -140,20 +195,6 @@ const KnittingOrder = ({
         return acc;
     }, [orders]);
 
-    const renderSigned = (value) => {
-        const exceeded = value > 0;
-
-        return (
-            <span
-                style={{
-                    color: exceeded ? "green" : value < 0 ? "red" : "inherit",
-                }}
-            >
-                {exceeded ? `(${Math.abs(value)})` : Math.abs(value)}
-            </span>
-        );
-    };
-
     const getFinishDia = (wo, comp) => {
         if (!wo?.styleRequirement?.rows || !comp) return "-";
 
@@ -187,10 +228,10 @@ const KnittingOrder = ({
                                     wo?.month,
                                     comp?.composition,
                                     comp?.color,
-                                    wo?.yarnCount,
-                                    wo?.lotNo,
-                                    wo?.stichLength,
-                                    wo?.machineDia,
+                                    getLineValue(wo, comp, "yarnCount"),
+                                    getLineValue(wo, comp, "lotNo"),
+                                    getLineValue(wo, comp, "stichLength"),
+                                    getLineValue(wo, comp, "machineDia"),
                                     comp?.workOrderQty,
                                 ].map((val) =>
                                     String(val || "").toLowerCase()
@@ -273,33 +314,6 @@ const KnittingOrder = ({
         return out;
     }, [filteredOrders]);
 
-    // Search input styles
-    const searchInputStyle = {
-        width: "100%",
-        padding: "4px 8px",
-        border: "1px solid #d1d5db",
-        borderRadius: "4px",
-        fontSize: "12px",
-        outline: "none",
-        boxSizing: "border-box",
-    };
-
-    const clearButtonStyle = {
-        position: "absolute",
-        right: "4px",
-        top: "50%",
-        transform: "translateY(-50%)",
-        background: "none",
-        border: "none",
-        cursor: "pointer",
-        color: "#6b7280",
-        fontSize: "14px",
-        padding: "2px",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-    };
-
     // Handle cancellation tooltip
     const handleCancellationHover = (event, wo, comp) => {
         if (!wo) {
@@ -368,15 +382,11 @@ const KnittingOrder = ({
                     const isWorkOrderCancelled = Boolean(wo?.isCancelled);
                     const isCompositionCancelled = Boolean(comp?.isCancelled);
 
-                    // Full work order cancellation affects every composition row.
-                    // Composition cancellation affects only its own row.
                     const isRowCancelled =
                         isWorkOrderCancelled || isCompositionCancelled;
 
                     const cancellationTextStyle = {
-                        textDecoration: isRowCancelled
-                            ? "line-through"
-                            : "none",
+                        textDecoration: isRowCancelled ? "line-through" : "none",
                         textDecorationColor: "#dc2626",
                         textDecorationThickness: "1.5px",
                     };
@@ -392,14 +402,10 @@ const KnittingOrder = ({
                     const workOrderQty = Number(comp?.workOrderQty) || 0;
 
                     const totalYarnDelivery =
-                        Number(
-                            comp?.yarnDeliveriesWithColor?.YarnDelivery
-                        ) || 0;
+                        Number(comp?.yarnDeliveriesWithColor?.YarnDelivery) || 0;
 
                     const totalYarnReturn =
-                        Number(
-                            comp?.yarnDeliveriesWithColor?.YarnReturn
-                        ) || 0;
+                        Number(comp?.yarnDeliveriesWithColor?.YarnReturn) || 0;
 
                     const totalDelivered =
                         totalYarnDelivery - totalYarnReturn || 0;
@@ -431,20 +437,12 @@ const KnittingOrder = ({
                             onMouseEnter={(e) =>
                                 handleCancellationHover(e, wo, comp)
                             }
-                            onMouseLeave={() =>
-                                setHoveredCancellation(null)
-                            }
+                            onMouseLeave={() => setHoveredCancellation(null)}
                         >
                             {/* COL 0 — MONTH */}
                             {isFirstOfWo && (
-                                <td
-                                    style={stickyTd(0, isHovered)}
-                                    rowSpan={woRowSpan}
-                                >
-                                    <div
-                                        className={cellPad}
-                                        style={workOrderTextStyle}
-                                    >
+                                <td style={stickyTd(0, isHovered)} rowSpan={woRowSpan}>
+                                    <div className={cellPad} style={workOrderTextStyle}>
                                         {wo?.month || "NO MONTH NAME FOUND"}
                                     </div>
                                 </td>
@@ -452,14 +450,8 @@ const KnittingOrder = ({
 
                             {/* COL 1 — FACTORY NAME */}
                             {isFirstOfWo && (
-                                <td
-                                    style={stickyTd(1, isHovered)}
-                                    rowSpan={woRowSpan}
-                                >
-                                    <div
-                                        className={cellPad}
-                                        style={workOrderTextStyle}
-                                    >
+                                <td style={stickyTd(1, isHovered)} rowSpan={woRowSpan}>
+                                    <div className={cellPad} style={workOrderTextStyle}>
                                         {!wo || wo.factoryName === "NULL" ? (
                                             <span>-</span>
                                         ) : (
@@ -475,28 +467,17 @@ const KnittingOrder = ({
                                                 }
                                                 className="cursor-pointer"
                                             >
-                                                {isEdit.updatedFieldName ===
-                                                    "factoryName" &&
+                                                {isEdit.updatedFieldName === "factoryName" &&
                                                 isEdit.rowId === wo.id ? (
                                                     <input
                                                         type="text"
                                                         name="factoryName"
                                                         className="p-2 outline-none border rounded-md w-full"
-                                                        value={
-                                                            updatedFields.currentValue
-                                                        }
-                                                        onChange={(e) =>
-                                                            handleOnChange(e)
-                                                        }
+                                                        value={updatedFields.currentValue}
+                                                        onChange={(e) => handleOnChange(e)}
                                                     />
                                                 ) : (
-                                                    <span
-                                                        onClick={() =>
-                                                            handleEditRowData(
-                                                                wo.id
-                                                            )
-                                                        }
-                                                    >
+                                                    <span onClick={() => handleEditRowData(wo.id)}>
                                                         {wo.factoryName}
                                                     </span>
                                                 )}
@@ -508,32 +489,18 @@ const KnittingOrder = ({
 
                             {/* COL 2 — WORK ORDER NO */}
                             {isFirstOfWo && (
-                                <td
-                                    style={stickyTd(2, isHovered)}
-                                    rowSpan={woRowSpan}
-                                >
-                                    <div
-                                        className={cellPad}
-                                        style={workOrderTextStyle}
-                                    >
-                                        {wo?.workOrderNo ||
-                                            "NO WORK ORDER FOUND"}
+                                <td style={stickyTd(2, isHovered)} rowSpan={woRowSpan}>
+                                    <div className={cellPad} style={workOrderTextStyle}>
+                                        {wo?.workOrderNo || "NO WORK ORDER FOUND"}
                                     </div>
                                 </td>
                             )}
 
                             {/* COL 3 — BUYER NAME */}
                             {isFirstOfWo && (
-                                <td
-                                    style={stickyTd(3, isHovered)}
-                                    rowSpan={woRowSpan}
-                                >
-                                    <div
-                                        className={cellPad}
-                                        style={workOrderTextStyle}
-                                    >
-                                        {wo?.styleRequirement?.buyerName ||
-                                            "NO BUYER NAME FOUND"}
+                                <td style={stickyTd(3, isHovered)} rowSpan={woRowSpan}>
+                                    <div className={cellPad} style={workOrderTextStyle}>
+                                        {wo?.styleRequirement?.buyerName || "NO BUYER NAME FOUND"}
                                     </div>
                                 </td>
                             )}
@@ -541,9 +508,7 @@ const KnittingOrder = ({
                             {/* COL 4 — JOB NO */}
                             {isFirstOfJob && (
                                 <td
-                                    onDoubleClick={() =>
-                                        handleRedirect(job.jobNo)
-                                    }
+                                    onDoubleClick={() => handleRedirect(job.jobNo)}
                                     style={stickyTd(4, isHovered)}
                                     rowSpan={jobRowSpan}
                                 >
@@ -563,14 +528,8 @@ const KnittingOrder = ({
 
                             {/* COL 5 — STYLE NO */}
                             {isFirstOfWo && (
-                                <td
-                                    style={stickyTd(5, isHovered)}
-                                    rowSpan={woRowSpan}
-                                >
-                                    <div
-                                        className={cellPad}
-                                        style={workOrderTextStyle}
-                                    >
+                                <td style={stickyTd(5, isHovered)} rowSpan={woRowSpan}>
+                                    <div className={cellPad} style={workOrderTextStyle}>
                                         {wo?.styleRequirement?.styleNo ||
                                             wo?.styleNo ||
                                             "NO STYLE NO FOUND"}
@@ -583,7 +542,6 @@ const KnittingOrder = ({
                                 <div
                                     onClick={(e) => {
                                         e.stopPropagation();
-
                                         if (comp?.id) {
                                             handleEditRowData(comp.id);
                                         }
@@ -597,217 +555,29 @@ const KnittingOrder = ({
 
                             {/* COL 7 — COMPOSITION */}
                             <td style={stickyTd(7, isHovered)}>
-                                <div
-                                    className={cellPad}
-                                    style={cancellationTextStyle}
-                                >
+                                <div className={cellPad} style={cancellationTextStyle}>
                                     {comp?.composition || "-"}
                                 </div>
                             </td>
 
                             {/* COL 8 — FINISH DIA */}
                             <td style={plainTd(isHovered)}>
-                                <div
-                                    className={cellPad}
-                                    style={cancellationTextStyle}
-                                >
+                                <div className={cellPad} style={cancellationTextStyle}>
                                     {currentFinishDia}
                                 </div>
                             </td>
 
-                            {/* COL 9 — YARN COUNT */}
-                            {isFirstOfWo && (
-                                <td
-                                    style={plainTd(isHovered)}
-                                    rowSpan={woRowSpan}
-                                >
-                                    <div
-                                        className={cellPad}
-                                        style={workOrderTextStyle}
-                                    >
-                                        {!wo || wo.yarnCount === "NULL" ? (
-                                            <span>-</span>
-                                        ) : (
-                                            <div
-                                                onDoubleClick={() =>
-                                                    handleInlineEdit(
-                                                        wo.id,
-                                                        wo.yarnCount,
-                                                        "workOrder",
-                                                        "yarnCount",
-                                                        0
-                                                    )
-                                                }
-                                                className="cursor-pointer"
-                                            >
-                                                {isEdit.updatedFieldName ===
-                                                    "yarnCount" &&
-                                                isEdit.rowId === wo.id ? (
-                                                    <input
-                                                        type="text"
-                                                        name="yarnCount"
-                                                        className="p-2 outline-none border rounded-md w-full"
-                                                        value={
-                                                            updatedFields.currentValue
-                                                        }
-                                                        onChange={(e) =>
-                                                            handleOnChange(e)
-                                                        }
-                                                    />
-                                                ) : (
-                                                    <span>{wo.yarnCount}</span>
-                                                )}
-                                            </div>
-                                        )}
-                                    </div>
-                                </td>
-                            )}
+                            {/* COL 9 — YARN COUNT (per composition) */}
+                            {renderLineCell("yarnCount", wo, comp, isHovered, cancellationTextStyle)}
 
-                            {/* COL 10 — YARN LOT */}
-                            {isFirstOfWo && (
-                                <td
-                                    style={plainTd(isHovered)}
-                                    rowSpan={woRowSpan}
-                                >
-                                    <div
-                                        className={cellPad}
-                                        style={workOrderTextStyle}
-                                    >
-                                        {!wo || wo.lotNo === "NULL" ? (
-                                            <span>-</span>
-                                        ) : (
-                                            <div
-                                                onDoubleClick={() =>
-                                                    handleInlineEdit(
-                                                        wo.id,
-                                                        wo.lotNo,
-                                                        "workOrder",
-                                                        "lotNo",
-                                                        0
-                                                    )
-                                                }
-                                                className="cursor-pointer"
-                                            >
-                                                {isEdit.updatedFieldName ===
-                                                    "lotNo" &&
-                                                isEdit.rowId === wo.id ? (
-                                                    <input
-                                                        type="text"
-                                                        name="lotNo"
-                                                        className="p-2 outline-none border rounded-md w-full"
-                                                        value={
-                                                            updatedFields.currentValue
-                                                        }
-                                                        onChange={(e) =>
-                                                            handleOnChange(e)
-                                                        }
-                                                    />
-                                                ) : (
-                                                    <span>{wo.lotNo}</span>
-                                                )}
-                                            </div>
-                                        )}
-                                    </div>
-                                </td>
-                            )}
+                            {/* COL 10 — YARN LOT (per composition) */}
+                            {renderLineCell("lotNo", wo, comp, isHovered, cancellationTextStyle)}
 
-                            {/* COL 11 — STITCH LENGTH */}
-                            {isFirstOfWo && (
-                                <td
-                                    style={plainTd(isHovered)}
-                                    rowSpan={woRowSpan}
-                                >
-                                    <div
-                                        className={cellPad}
-                                        style={workOrderTextStyle}
-                                    >
-                                        {!wo || wo.stichLength === "NULL" ? (
-                                            <span>-</span>
-                                        ) : (
-                                            <div
-                                                onDoubleClick={() =>
-                                                    handleInlineEdit(
-                                                        wo.id,
-                                                        wo.stichLength,
-                                                        "workOrder",
-                                                        "stichLength",
-                                                        0
-                                                    )
-                                                }
-                                                className="cursor-pointer"
-                                            >
-                                                {isEdit.updatedFieldName ===
-                                                    "stichLength" &&
-                                                isEdit.rowId === wo.id ? (
-                                                    <input
-                                                        type="text"
-                                                        name="stichLength"
-                                                        className="p-2 outline-none border rounded-md w-full"
-                                                        value={
-                                                            updatedFields.currentValue
-                                                        }
-                                                        onChange={(e) =>
-                                                            handleOnChange(e)
-                                                        }
-                                                    />
-                                                ) : (
-                                                    <span>
-                                                        {wo.stichLength}
-                                                    </span>
-                                                )}
-                                            </div>
-                                        )}
-                                    </div>
-                                </td>
-                            )}
+                            {/* COL 11 — STITCH LENGTH (per composition) */}
+                            {renderLineCell("stichLength", wo, comp, isHovered, cancellationTextStyle)}
 
-                            {/* COL 12 — MACHINE DIA */}
-                            {isFirstOfWo && (
-                                <td
-                                    style={plainTd(isHovered)}
-                                    rowSpan={woRowSpan}
-                                >
-                                    <div
-                                        className={cellPad}
-                                        style={workOrderTextStyle}
-                                    >
-                                        {!wo || wo.machineDia === "NULL" ? (
-                                            <span>-</span>
-                                        ) : (
-                                            <div
-                                                onDoubleClick={() =>
-                                                    handleInlineEdit(
-                                                        wo.id,
-                                                        wo.machineDia,
-                                                        "workOrder",
-                                                        "machineDia",
-                                                        0
-                                                    )
-                                                }
-                                                className="cursor-pointer"
-                                            >
-                                                {isEdit.updatedFieldName ===
-                                                    "machineDia" &&
-                                                isEdit.rowId === wo.id ? (
-                                                    <input
-                                                        type="text"
-                                                        name="machineDia"
-                                                        className="p-2 outline-none border rounded-md w-full"
-                                                        value={
-                                                            updatedFields.currentValue
-                                                        }
-                                                        onChange={(e) =>
-                                                            handleOnChange(e)
-                                                        }
-                                                    />
-                                                ) : (
-                                                    <span>{wo.machineDia}</span>
-                                                )}
-                                            </div>
-                                        )}
-                                    </div>
-                                </td>
-                            )}
+                            {/* COL 12 — MACHINE DIA (per composition) */}
+                            {renderLineCell("machineDia", wo, comp, isHovered, cancellationTextStyle)}
 
                             {/* COL 13 — WORK ORDER QTY */}
                             <td style={plainTd(isHovered)}>
@@ -825,17 +595,14 @@ const KnittingOrder = ({
                                     className={`${cellPad} cursor-pointer`}
                                     style={cancellationTextStyle}
                                 >
-                                    {isEdit.updatedFieldName ===
-                                        "workOrderQty" &&
+                                    {isEdit.updatedFieldName === "workOrderQty" &&
                                     isEdit.compId === comp?.id ? (
                                         <input
                                             type="text"
                                             className="p-2 outline-none border rounded-md w-full"
                                             name="workOrderQty"
                                             value={updatedFields.currentValue}
-                                            onChange={(e) =>
-                                                handleOnChange(e)
-                                            }
+                                            onChange={(e) => handleOnChange(e)}
                                         />
                                     ) : (
                                         comp?.workOrderQty?.toFixed(2) || "-"
@@ -845,10 +612,7 @@ const KnittingOrder = ({
 
                             {/* COL 14 — TOTAL YARN DELIVERY */}
                             <td style={plainTd(isHovered)}>
-                                <div
-                                    className={cellPad}
-                                    style={cancellationTextStyle}
-                                >
+                                <div className={cellPad} style={cancellationTextStyle}>
                                     {totalDelivered.toFixed(2)}
                                 </div>
                             </td>
@@ -874,21 +638,14 @@ const KnittingOrder = ({
                                     className={`${cellPad} text-red-600 font-extrabold`}
                                     style={cancellationTextStyle}
                                 >
-                                    {comp?.yarnDeliveriesWithColor?.YarnReturn?.toFixed(
-                                        2
-                                    ) || "-"}
+                                    {comp?.yarnDeliveriesWithColor?.YarnReturn?.toFixed(2) || "-"}
                                 </div>
                             </td>
 
                             {/* COL 17 — GREY RECEIVED */}
                             <td style={plainTd(isHovered)}>
-                                <div
-                                    className={cellPad}
-                                    style={cancellationTextStyle}
-                                >
-                                    {comp?.yarnDeliveriesWithColor?.GreyFabricReceived?.toFixed(
-                                        2
-                                    ) || "-"}
+                                <div className={cellPad} style={cancellationTextStyle}>
+                                    {comp?.yarnDeliveriesWithColor?.GreyFabricReceived?.toFixed(2) || "-"}
                                 </div>
                             </td>
 
@@ -922,17 +679,14 @@ const KnittingOrder = ({
                                     className={`${cellPad} cursor-pointer`}
                                     style={cancellationTextStyle}
                                 >
-                                    {isEdit.updatedFieldName ===
-                                        "unitePrice" &&
+                                    {isEdit.updatedFieldName === "unitePrice" &&
                                     isEdit.rowId === comp?.id ? (
                                         <input
                                             type="text"
                                             className="p-2 outline-none border rounded-md w-full"
                                             name="unitePrice"
                                             value={updatedFields.currentValue}
-                                            onChange={(e) =>
-                                                handleOnChange(e)
-                                            }
+                                            onChange={(e) => handleOnChange(e)}
                                         />
                                     ) : (
                                         comp?.unitePrice?.toFixed(2) || "-"
@@ -946,9 +700,7 @@ const KnittingOrder = ({
                                     className={`${cellPad} text-red-600 font-extrabold`}
                                     style={cancellationTextStyle}
                                 >
-                                    {payableTotal > 0
-                                        ? payableTotal.toFixed(2)
-                                        : "-"}
+                                    {payableTotal > 0 ? payableTotal.toFixed(2) : "-"}
                                 </div>
                             </td>
 
@@ -980,10 +732,7 @@ const KnittingOrder = ({
                 <tr>
                     {/* FROZEN FOOTER CELLS */}
                     {Array.from({ length: FROZEN_COUNT }).map((_, i) => (
-                        <td
-                            key={`footer-frozen-${i}`}
-                            style={getFooterCellStyle(i)}
-                        >
+                        <td key={`footer-frozen-${i}`} style={getFooterCellStyle(i)}>
                             {i === 0 ? (
                                 <div
                                     className={`${cellPad} text-white`}
@@ -1045,12 +794,8 @@ const KnittingOrder = ({
                             style={{ color: "white" }}
                         >
                             {totals?.delShortExcess > 0
-                                ? `(${Math.abs(
-                                      totals?.delShortExcess
-                                  )?.toFixed(2)})`
-                                : Math.abs(
-                                      totals?.delShortExcess
-                                  )?.toFixed(2)}
+                                ? `(${Math.abs(totals?.delShortExcess)?.toFixed(2)})`
+                                : Math.abs(totals?.delShortExcess)?.toFixed(2)}
                         </div>
                     </td>
 
@@ -1064,9 +809,7 @@ const KnittingOrder = ({
                     {/* COL 17 — GREY RECEIVED */}
                     <td style={getFooterCellStyle(FROZEN_COUNT + 9)}>
                         <div className={`${cellPad} text-white`}>
-                            {formatNumber(
-                                totals.GreyFabricReceived?.toFixed(2)
-                            )}
+                            {formatNumber(totals.GreyFabricReceived?.toFixed(2))}
                         </div>
                     </td>
 
@@ -1077,12 +820,8 @@ const KnittingOrder = ({
                             style={{ color: "white" }}
                         >
                             {totals?.rcvdShortExcess < 0
-                                ? `(${Math.abs(
-                                      totals?.rcvdShortExcess
-                                  )?.toFixed(2)})`
-                                : Math.abs(
-                                      totals?.rcvdShortExcess
-                                  )?.toFixed(2)}
+                                ? `(${Math.abs(totals?.rcvdShortExcess)?.toFixed(2)})`
+                                : Math.abs(totals?.rcvdShortExcess)?.toFixed(2)}
                         </div>
                     </td>
 
@@ -1123,7 +862,6 @@ const KnittingOrder = ({
                         <span className="flex h-6 w-6 items-center justify-center rounded-full bg-red-100 text-red-600">
                             !
                         </span>
-
                         <span className="text-sm font-bold text-red-700">
                             Cancellation Details
                         </span>
@@ -1133,7 +871,6 @@ const KnittingOrder = ({
                         <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
                             Reason
                         </p>
-
                         <p className="break-words text-sm font-medium text-gray-800">
                             {hoveredCancellation.reason}
                         </p>
@@ -1143,7 +880,6 @@ const KnittingOrder = ({
                         <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
                             Remarks
                         </p>
-
                         <p className="break-words text-sm text-gray-700">
                             {hoveredCancellation.remarks}
                         </p>

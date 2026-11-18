@@ -1,14 +1,6 @@
 import React, { useMemo, useState, useRef, useEffect } from 'react'
-import { Filter, Search, X, PackageSearch, Layers, Scale, ArrowDownCircle, ArrowUpCircle, Package, ArrowRightCircle, RotateCcw, Check, Save, XCircle, Pencil } from 'lucide-react'
-
-const SAMPLE_DATA = [
-  { date: '2025-01-06', supplierName: 'Golden Spin Mills Ltd.', yarnCount: '30/1 Ne', composition: '100% Cotton', lot: 'LOT-A12', received: 1250.5, returnSpinning: 40, assignQty: 1000, assignBalance: 210.5, deliveryKnitting: 980.25, returnFromKnitting: 12.75, physicalBalance: 262.5 },
-  { date: '2025-01-14', supplierName: 'Everbright Yarn Co.', yarnCount: '20/1 Ne', composition: '100% Cotton', lot: 'LOT-A13', received: 2100, returnSpinning: 0, assignQty: 1900, assignBalance: 200, deliveryKnitting: 1875.4, returnFromKnitting: 25.6, physicalBalance: 249.6 },
-  { date: '2025-02-03', supplierName: 'Silk Route Textiles', yarnCount: '40/1 Ne', composition: 'CVC 60/40', lot: 'LOT-B04', received: 875.3, returnSpinning: 15.2, assignQty: 700, assignBalance: 160.1, deliveryKnitting: 700, returnFromKnitting: 0, physicalBalance: 190.5 },
-  { date: '2025-02-19', supplierName: 'Golden Spin Mills Ltd.', yarnCount: '30/1 Ne', composition: '100% Cotton', lot: 'LOT-B05', received: 1600, returnSpinning: 22.4, assignQty: 1420, assignBalance: 157.6, deliveryKnitting: 1400.8, returnFromKnitting: 8.1, physicalBalance: 205.3 },
-  { date: '2025-03-05', supplierName: 'Everbright Yarn Co.', yarnCount: '24/1 Ne', composition: '95% Cotton 5% Elastane', lot: 'LOT-C01', received: 990.75, returnSpinning: 5, assignQty: 875, assignBalance: 110.75, deliveryKnitting: 860, returnFromKnitting: 14.3, physicalBalance: 130.05 },
-  { date: '2025-03-21', supplierName: 'Silk Route Textiles', yarnCount: '40/1 Ne', composition: 'CVC 60/40', lot: 'LOT-C02', received: 1330.2, returnSpinning: 0, assignQty: 1330.2, assignBalance: 0, deliveryKnitting: 1330.2, returnFromKnitting: 0, physicalBalance: 0 },
-]
+import { Filter, Search, X, PackageSearch, Layers, Scale, ArrowDownCircle, ArrowUpCircle, Package, ArrowRightCircle, RotateCcw, Save, XCircle, Pencil, AlertCircle, Loader2 } from 'lucide-react'
+import useAxiosPrivate from '../../hooks/UseAxiosPrivate'
 
 const NUMERIC_KEYS = [
   'received', 'returnSpinning', 'assignQty', 'assignBalance',
@@ -31,14 +23,45 @@ const COLUMNS = [
 
 const REMARKS_WIDTH = 170
 
-const fmt = (n) => (Number.isFinite(n) ? n.toFixed(2) : '0.00')
+// Static class map (Tailwind cannot detect dynamically built class names)
+const CARD_COLORS = {
+  blue: 'bg-blue-100 text-blue-600',
+  red: 'bg-red-100 text-red-600',
+  emerald: 'bg-emerald-100 text-emerald-600',
+  amber: 'bg-amber-100 text-amber-600',
+  purple: 'bg-purple-100 text-purple-600',
+  orange: 'bg-orange-100 text-orange-600',
+  teal: 'bg-teal-100 text-teal-600',
+}
+
+const num = (v) => {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : 0
+}
+
+const fmt = (n) => (Number.isFinite(Number(n)) ? Number(n).toFixed(2) : '0.00')
+
+const calcPhysicalBalance = ({ received, returnSpinning, deliveryKnitting, returnFromKnitting }) =>
+  num(received) - num(returnSpinning) - num(deliveryKnitting) + num(returnFromKnitting)
+
+const calcAssignBalance = ({ assignQty, deliveryKnitting, returnFromKnitting }) =>
+  num(assignQty) - (num(deliveryKnitting) - num(returnFromKnitting))
+
+// Recalculate balances for a table row coming from the API
+const normalizeRow = (row) => ({
+  ...row,
+  assignBalance: calcAssignBalance(row),
+  physicalBalance: calcPhysicalBalance(row),
+})
 
 const monthLabel = (ym) => {
   const [y, m] = ym.split('-')
   return new Date(Number(y), Number(m) - 1, 1).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
 }
 
-const rowKey = (row) => `${row.lot}__${row.date}`
+const monthOf = (row) => (row.date ? row.date.slice(0, 7) : '')
+
+const rowKey = (row) => `${row.lot}__${row.yarnCount}__${row.date}`
 
 // Excel-style column filter dropdown
 const ColumnFilterDropdown = ({ column, uniqueValues, selectedValues, onApply, onClose, buttonRef }) => {
@@ -52,7 +75,7 @@ const ColumnFilterDropdown = ({ column, uniqueValues, selectedValues, onApply, o
       const rect = buttonRef.current.getBoundingClientRect()
       const scrollTop = window.pageYOffset || document.documentElement.scrollTop
       const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft
-      
+
       setPosition({
         top: rect.bottom + scrollTop + 4,
         left: rect.left + scrollLeft
@@ -180,7 +203,7 @@ const ColumnFilterDropdown = ({ column, uniqueValues, selectedValues, onApply, o
   )
 }
 
-const StockStatus = ({ data = SAMPLE_DATA }) => {
+const StockStatus = () => {
   const [monthFilter, setMonthFilter] = useState('all')
   const [searchText, setSearchText] = useState('')
   const [columnFilters, setColumnFilters] = useState({})
@@ -192,6 +215,72 @@ const StockStatus = ({ data = SAMPLE_DATA }) => {
   const [draftValue, setDraftValue] = useState('')
   const inputRef = useRef(null)
 
+  // Table rows from API
+  const [data, setData] = useState([])
+  const [tableLoading, setTableLoading] = useState(true)
+  const [tableError, setTableError] = useState('')
+
+  // Summary cards data from API
+  const [stockSummary, setStockSummary] = useState(null)
+  const [summaryLoading, setSummaryLoading] = useState(true)
+  const [summaryError, setSummaryError] = useState('')
+
+  const axiosSecure = useAxiosPrivate()
+
+  useEffect(() => {
+    let cancelled = false
+
+    const fetchSummary = async () => {
+      try {
+        setSummaryLoading(true)
+        setSummaryError('')
+        const res = await axiosSecure.get('/api/yarn-stock')
+        if (cancelled) return
+        if (res?.data?.success) {
+          setStockSummary(res.data.data)
+        } else {
+          setSummaryError('Failed to load stock summary.')
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setSummaryError(err?.response?.data?.message || 'Failed to load stock summary.')
+        }
+      } finally {
+        if (!cancelled) setSummaryLoading(false)
+      }
+    }
+
+    const fetchTable = async () => {
+      try {
+        setTableLoading(true)
+        setTableError('')
+        const res = await axiosSecure.get('/api/yarn-stock/table')
+        if (cancelled) return
+        if (res?.data?.success) {
+          const rows = Array.isArray(res.data.data) ? res.data.data : []
+          // Recalculate balances on the frontend so they always follow the formulas above
+          setData(rows.map(normalizeRow))
+        } else {
+          setTableError('Failed to load stock table.')
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setTableError(err?.response?.data?.message || 'Failed to load stock table.')
+        }
+      } finally {
+        if (!cancelled) setTableLoading(false)
+      }
+    }
+
+    fetchSummary()
+    fetchTable()
+
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   useEffect(() => {
     if (editingKey && inputRef.current) {
       inputRef.current.focus()
@@ -200,7 +289,7 @@ const StockStatus = ({ data = SAMPLE_DATA }) => {
   }, [editingKey])
 
   const months = useMemo(() => {
-    const set = new Set(data.map((r) => r.date.slice(0, 7)))
+    const set = new Set(data.map(monthOf).filter(Boolean))
     return Array.from(set).sort()
   }, [data])
 
@@ -225,7 +314,7 @@ const StockStatus = ({ data = SAMPLE_DATA }) => {
 
   const filteredData = useMemo(() => {
     return data.filter((row) => {
-      if (monthFilter !== 'all' && row.date.slice(0, 7) !== monthFilter) return false
+      if (monthFilter !== 'all' && monthOf(row) !== monthFilter) return false
       if (searchText.trim()) {
         const q = searchText.trim().toLowerCase()
         const hay = [row.supplierName, row.yarnCount, row.composition, row.lot].join(' ').toLowerCase()
@@ -248,13 +337,24 @@ const StockStatus = ({ data = SAMPLE_DATA }) => {
     return t
   }, [filteredData])
 
-  const grandTotals = useMemo(() => {
-    const t = {}
-    NUMERIC_KEYS.forEach((k) => {
-      t[k] = data.reduce((sum, row) => sum + (Number(row[k]) || 0), 0)
-    })
-    return t
-  }, [data])
+  // Summary-level figures (cards), calculated with the same formulas as the rows
+  const summaryValues = useMemo(() => {
+    const received = num(stockSummary?.spinningMovement?.received)
+    const returnSpinning = num(stockSummary?.spinningMovement?.returned)
+    const assignQty = num(stockSummary?.assignedStock?.totalQty)
+    const deliveryKnitting = num(stockSummary?.yarnMovement?.delivered)
+    const returnFromKnitting = num(stockSummary?.yarnMovement?.returned)
+
+    return {
+      received,
+      returnSpinning,
+      assignQty,
+      deliveryKnitting,
+      returnFromKnitting,
+      assignBalance: calcAssignBalance({ assignQty, deliveryKnitting, returnFromKnitting }),
+      physicalBalance: calcPhysicalBalance({ received, returnSpinning, deliveryKnitting, returnFromKnitting }),
+    }
+  }, [stockSummary])
 
   const hasFilters =
     monthFilter !== 'all' ||
@@ -332,14 +432,61 @@ const StockStatus = ({ data = SAMPLE_DATA }) => {
     }
   }
 
+  // Cards
   const summaryCards = [
-    { key: 'received', label: 'Yarn Received (Spinning)', icon: ArrowDownCircle, color: 'blue' },
-    { key: 'returnSpinning', label: 'Return (Spinning)', icon: ArrowUpCircle, color: 'red' },
-    { key: 'assignQty', label: 'Assign Qty', icon: Package, color: 'emerald' },
-    { key: 'assignBalance', label: 'Assign Balance', icon: Layers, color: 'amber' },
-    { key: 'deliveryKnitting', label: 'Delivery (Knitting)', icon: ArrowRightCircle, color: 'purple' },
-    { key: 'returnFromKnitting', label: 'Return (Knitting)', icon: RotateCcw, color: 'orange' },
-    { key: 'physicalBalance', label: 'Physical Balance', icon: Scale, color: 'teal' },
+    {
+      key: 'received',
+      label: 'Yarn Received (Spinning)',
+      icon: ArrowDownCircle,
+      color: 'blue',
+      value: summaryValues.received,
+    },
+    {
+      key: 'returnSpinning',
+      label: 'Return (Spinning)',
+      icon: ArrowUpCircle,
+      color: 'red',
+      value: summaryValues.returnSpinning,
+    },
+    {
+      key: 'assignQty',
+      label: 'Assign Qty',
+      icon: Package,
+      color: 'emerald',
+      value: summaryValues.assignQty,
+      sub:
+        stockSummary?.assignedStock?.totalCount !== undefined
+          ? `${stockSummary.assignedStock.totalCount} assignment(s)`
+          : null,
+    },
+    {
+      key: 'assignBalance',
+      label: 'Assign Balance',
+      icon: Layers,
+      color: 'amber',
+      value: summaryValues.assignBalance,
+    },
+    {
+      key: 'deliveryKnitting',
+      label: 'Delivery (Knitting)',
+      icon: ArrowRightCircle,
+      color: 'purple',
+      value: summaryValues.deliveryKnitting,
+    },
+    {
+      key: 'returnFromKnitting',
+      label: 'Return (Knitting)',
+      icon: RotateCcw,
+      color: 'orange',
+      value: summaryValues.returnFromKnitting,
+    },
+    {
+      key: 'physicalBalance',
+      label: 'Physical Balance',
+      icon: Scale,
+      color: 'teal',
+      value: summaryValues.physicalBalance,
+    },
   ]
 
   const totalColumns = COLUMNS.length + 1
@@ -356,17 +503,31 @@ const StockStatus = ({ data = SAMPLE_DATA }) => {
         </div>
       </div>
 
+      {summaryError && (
+        <div className="mb-3 flex items-center gap-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+          <AlertCircle size={16} />
+          {summaryError}
+        </div>
+      )}
+
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-3 mb-5">
         {summaryCards.map((card) => {
           const Icon = card.icon
           return (
             <div key={card.key} className="bg-slate-50 p-3 rounded-xl border border-slate-200 shadow-sm flex flex-col gap-2 transition hover:shadow-md">
-              <div className={`p-2 bg-${card.color}-100 text-${card.color}-600 rounded-lg w-fit`}>
+              <div className={`p-2 rounded-lg w-fit ${CARD_COLORS[card.color]}`}>
                 <Icon size={18} />
               </div>
               <div>
                 <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide leading-tight">{card.label}</p>
-                <p className="text-lg font-bold text-slate-800 mt-0.5">{fmt(grandTotals[card.key])}</p>
+                {summaryLoading ? (
+                  <div className="h-6 w-20 mt-1 bg-slate-200 rounded animate-pulse" />
+                ) : (
+                  <p className="text-lg font-bold text-slate-800 mt-0.5">{fmt(card.value)}</p>
+                )}
+                {card.sub && !summaryLoading && (
+                  <p className="text-[10px] text-slate-400 mt-0.5">{card.sub}</p>
+                )}
               </div>
             </div>
           )
@@ -451,6 +612,13 @@ const StockStatus = ({ data = SAMPLE_DATA }) => {
         )}
       </div>
 
+      {tableError && (
+        <div className="mb-3 flex items-center gap-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+          <AlertCircle size={16} />
+          {tableError}
+        </div>
+      )}
+
       <div className="overflow-x-auto rounded-xl border border-slate-200 shadow-sm bg-white">
         <table className="w-full border-collapse text-[12px]" style={{ tableLayout: 'fixed' }}>
           <colgroup>
@@ -466,7 +634,7 @@ const StockStatus = ({ data = SAMPLE_DATA }) => {
                 const filtered = isColumnFiltered(c.key)
                 const isOpen = openFilter === c.key
                 const buttonRef = getFilterButtonRef(c.key)
-                
+
                 return (
                   <th
                     key={c.key}
@@ -530,13 +698,26 @@ const StockStatus = ({ data = SAMPLE_DATA }) => {
           </thead>
 
           <tbody>
-            {filteredData.length === 0 ? (
+            {tableLoading ? (
+              <tr>
+                <td colSpan={totalColumns} className="text-center text-slate-400 py-10">
+                  <div className="flex flex-col items-center gap-2">
+                    <Loader2 size={28} className="animate-spin text-slate-300" />
+                    <p className="text-sm font-medium">Loading stock data...</p>
+                  </div>
+                </td>
+              </tr>
+            ) : filteredData.length === 0 ? (
               <tr>
                 <td colSpan={totalColumns} className="text-center text-slate-400 py-10">
                   <div className="flex flex-col items-center gap-2">
                     <Search size={32} className="text-slate-300" />
-                    <p className="text-sm font-medium">No records match the selected filters.</p>
-                    <button onClick={handleClearAll} className="text-xs text-amber-600 hover:underline font-semibold">Clear all filters</button>
+                    <p className="text-sm font-medium">
+                      {data.length === 0 ? 'No stock records found.' : 'No records match the selected filters.'}
+                    </p>
+                    {hasFilters && (
+                      <button onClick={handleClearAll} className="text-xs text-amber-600 hover:underline font-semibold">Clear all filters</button>
+                    )}
                   </div>
                 </td>
               </tr>
@@ -581,7 +762,7 @@ const StockStatus = ({ data = SAMPLE_DATA }) => {
             )}
           </tbody>
 
-          {filteredData.length > 0 && (
+          {!tableLoading && filteredData.length > 0 && (
             <tfoot>
               <tr className="bg-slate-50 text-slate-800 font-bold">
                 {COLUMNS.map((c, i) => (
@@ -599,9 +780,11 @@ const StockStatus = ({ data = SAMPLE_DATA }) => {
         </table>
       </div>
 
-      <p className="mt-3 text-[11px] text-slate-400 text-right">
-        Showing {filteredData.length} of {data.length} total records{monthFilter !== 'all' ? ` for ${monthLabel(monthFilter)}` : ''}.
-      </p>
+      {!tableLoading && (
+        <p className="mt-3 text-[11px] text-slate-400 text-right">
+          Showing {filteredData.length} of {data.length} total records{monthFilter !== 'all' ? ` for ${monthLabel(monthFilter)}` : ''}.
+        </p>
+      )}
     </div>
   )
 }

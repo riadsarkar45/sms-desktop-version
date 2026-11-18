@@ -39,10 +39,14 @@ const sanitizeDecimal = (value) =>
         .replace(/[^\d.]/g, "")
         .replace(/(\..*)\./g, "$1");
 
-// Fields in a composition row that must be numeric
-const NUMERIC_ROW_FIELDS = new Set(["unitPrice", "workOrderQty"]);
 // Fields in a yarn color row that must be numeric
 const NUMERIC_YARN_FIELDS = new Set(["qty", "price"]);
+// Fields in a work order line that must be numeric
+const NUMERIC_LOT_FIELDS = new Set(["workOrderQty"]);
+// Composition-level fields (shared by all lines) that must be numeric
+const NUMERIC_ROW_FIELDS = new Set(["unitPrice"]);
+// Fields driven by the PI / Lot / Count inventory
+const INVENTORY_FIELDS = new Set(["lotNo", "yarnCount", "piNo"]);
 
 // Stable ids so React keys stay correct when yarn colors are removed
 let yarnColorCounter = 0;
@@ -51,6 +55,22 @@ const defaultYarnColor = () => ({
     color: "",
     qty: "",
     price: "",
+    lotNo: "",
+    yarnCount: "",
+    piNo: "",
+});
+
+// Stable ids so React keys stay correct when work order lines are removed.
+// A line holds ONLY: qty, lot, yarn count and PI.
+// Price / stich length / machine dia live on the composition row.
+let lotCounter = 0;
+const defaultLot = (init = {}) => ({
+    uid: ++lotCounter,
+    workOrderQty: "",
+    lotNo: "",
+    yarnCount: "",
+    piNo: "",
+    ...init,
 });
 
 const getFactoryName = (factory) => {
@@ -62,6 +82,79 @@ const getFactoryName = (factory) => {
         factory?.factory ||
         ""
     );
+};
+
+// ---------------------------------------------------------
+// Yarn inventory helpers (one entry = PI + Lot No + Yarn Count)
+// ---------------------------------------------------------
+const uniqSorted = (values) => [...new Set(values)].sort();
+
+const inventoryKey = (piNo, lotNo, yarnCount) =>
+    JSON.stringify([piNo, lotNo, yarnCount]);
+
+const getAllLots = (inventory) =>
+    uniqSorted(inventory.map((entry) => entry.lotNo));
+
+const getAllCounts = (inventory) =>
+    uniqSorted(inventory.map((entry) => entry.yarnCount));
+
+const getCountsForLot = (inventory, lotNo) =>
+    uniqSorted(
+        inventory
+            .filter((entry) => entry.lotNo === lotNo)
+            .map((entry) => entry.yarnCount)
+    );
+
+const getLotsForCount = (inventory, yarnCount) =>
+    uniqSorted(
+        inventory
+            .filter((entry) => entry.yarnCount === yarnCount)
+            .map((entry) => entry.lotNo)
+    );
+
+const getPisForPair = (inventory, lotNo, yarnCount) =>
+    inventory
+        .filter(
+            (entry) => entry.lotNo === lotNo && entry.yarnCount === yarnCount
+        )
+        .sort((a, b) => a.piNo.localeCompare(b.piNo));
+
+const getAvailableQty = (inventory, piNo, lotNo, yarnCount) =>
+    inventory.find(
+        (entry) =>
+            entry.piNo === piNo &&
+            entry.lotNo === lotNo &&
+            entry.yarnCount === yarnCount
+    )?.totalQuantity ?? 0;
+
+// Applies a Lot / Count / PI change to a line or yarn color and keeps the
+// three fields consistent (auto-fills a value when only one choice exists).
+const applyInventoryChange = (inventory, item, field, value) => {
+    const next = { ...item, [field]: value };
+
+    if (field === "lotNo") {
+        const counts = getCountsForLot(inventory, value);
+        if (!counts.includes(next.yarnCount)) {
+            next.yarnCount = counts.length === 1 ? counts[0] : "";
+        }
+    } else if (field === "yarnCount") {
+        const lots = getLotsForCount(inventory, value);
+        if (!lots.includes(next.lotNo)) {
+            next.lotNo = lots.length === 1 ? lots[0] : "";
+        }
+    }
+
+    if (field !== "piNo") {
+        const pis = getPisForPair(inventory, next.lotNo, next.yarnCount).map(
+            (entry) => entry.piNo
+        );
+
+        if (!pis.includes(next.piNo)) {
+            next.piNo = pis.length === 1 ? pis[0] : "";
+        }
+    }
+
+    return next;
 };
 
 // Yarn requirement for one composition.
@@ -79,6 +172,13 @@ const calcRequireQty = (row, fallbackLoss) => {
         toNum(row.additional)
     );
 };
+
+// Sum of all work order qty lines of one composition
+const sumLotQty = (row) =>
+    (row.lots || []).reduce((sum, lot) => sum + toNum(lot.workOrderQty), 0);
+
+// Amount of one composition = total line qty x the composition's price
+const sumLotAmount = (row) => sumLotQty(row) * toNum(row.unitPrice);
 
 const ORDER_TYPE_RULES = {
     knittingOrder: {
@@ -121,13 +221,12 @@ const buildRowsFromStyle = (style) => {
         finishDia: row.finishDia || "",
         processLoss: row.processLoss || "",
         additional: row.additional || "",
-        unitPrice: row.unitPrice || "",
         compBreakdown: row.compBreakdown || [],
-        workOrderQty: "",
+        // Shared by every line of this composition
+        unitPrice: row.unitPrice || "",
         stichLength: "",
         machineDia: "",
-        lotNo: "",
-        yarnCount: "",
+        lots: [defaultLot()],
         yarnColors: [defaultYarnColor()],
     }));
 
@@ -143,11 +242,9 @@ const buildRowsFromStyle = (style) => {
             processLoss: "",
             additional: "",
             unitPrice: "",
-            workOrderQty: "",
             stichLength: "",
             machineDia: "",
-            lotNo: "",
-            yarnCount: "",
+            lots: [defaultLot()],
             yarnColors: [defaultYarnColor()],
         }];
 };
@@ -186,6 +283,109 @@ const SectionCard = ({
     </section>
 );
 
+const SELECT_CLASS =
+    "h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 disabled:cursor-not-allowed disabled:bg-slate-100";
+
+// Lot No + Yarn Count + PI No selects.
+// Renders three grid cells, so put it directly inside a grid container.
+// Used by work order lines AND yarn dyeing colors.
+const LotCountPiFields = ({ item, onChange, inventory, loading }) => {
+    const lotOptions = item.yarnCount
+        ? getLotsForCount(inventory, item.yarnCount)
+        : getAllLots(inventory);
+
+    const countOptions = item.lotNo
+        ? getCountsForLot(inventory, item.lotNo)
+        : getAllCounts(inventory);
+
+    const piOptions =
+        item.lotNo && item.yarnCount
+            ? getPisForPair(inventory, item.lotNo, item.yarnCount)
+            : [];
+
+    const availableQty =
+        item.piNo && item.lotNo && item.yarnCount
+            ? getAvailableQty(inventory, item.piNo, item.lotNo, item.yarnCount)
+            : null;
+
+    const noStock = !loading && inventory.length === 0;
+
+    return (
+        <>
+            <div className="min-w-0">
+                <label className="mb-1.5 block text-xs font-medium text-slate-600">
+                    Lot No <span className="text-red-500">*</span>
+                </label>
+                <select
+                    value={item.lotNo}
+                    disabled={loading || noStock}
+                    onChange={(e) => onChange("lotNo", e.target.value)}
+                    className={SELECT_CLASS}
+                >
+                    <option value="">
+                        {loading ? "Loading lots..." : "Select Lot No"}
+                    </option>
+                    {lotOptions.map((lotNo) => (
+                        <option key={lotNo} value={lotNo}>
+                            {lotNo}
+                        </option>
+                    ))}
+                </select>
+            </div>
+
+            <div className="min-w-0">
+                <label className="mb-1.5 block text-xs font-medium text-slate-600">
+                    Yarn Count <span className="text-red-500">*</span>
+                </label>
+                <select
+                    value={item.yarnCount}
+                    disabled={loading || noStock}
+                    onChange={(e) => onChange("yarnCount", e.target.value)}
+                    className={SELECT_CLASS}
+                >
+                    <option value="">
+                        {loading ? "Loading counts..." : "Select Yarn Count"}
+                    </option>
+                    {countOptions.map((count) => (
+                        <option key={count} value={count}>
+                            {count}
+                        </option>
+                    ))}
+                </select>
+            </div>
+
+            <div className="min-w-0">
+                <label className="mb-1.5 block text-xs font-medium text-slate-600">
+                    PI No <span className="text-red-500">*</span>
+                </label>
+                <select
+                    value={item.piNo}
+                    disabled={loading || piOptions.length === 0}
+                    onChange={(e) => onChange("piNo", e.target.value)}
+                    className={SELECT_CLASS}
+                >
+                    <option value="">
+                        {item.lotNo && item.yarnCount
+                            ? "Select PI No"
+                            : "Select Lot & Count first"}
+                    </option>
+                    {piOptions.map((entry) => (
+                        <option key={entry.piNo} value={entry.piNo}>
+                            {entry.piNo} — {entry.totalQuantity.toLocaleString()} KG
+                        </option>
+                    ))}
+                </select>
+
+                {availableQty !== null && (
+                    <p className="mt-1 text-[11px] text-slate-500">
+                        Available in this PI: {availableQty.toLocaleString()} KG
+                    </p>
+                )}
+            </div>
+        </>
+    );
+};
+
 const NewOrder = () => {
     // The URL is the single source of truth for the active Job No.
     const { jobNumber } = useParams();
@@ -204,11 +404,9 @@ const NewOrder = () => {
     const [formError, setFormError] = useState("");
 
     // True ONLY while the create-order request is in flight.
-    // Always reset in `finally`, so the button can never get stuck.
     const [isSubmitting, setIsSubmitting] = useState(false);
 
     // True after a successful save while we wait to redirect.
-    // Keeps the form locked (no duplicate orders) but shows "Saved".
     const [isSaved, setIsSaved] = useState(false);
 
     const [isLoading, setIsLoading] = useState(true);
@@ -234,10 +432,15 @@ const NewOrder = () => {
 
     const [autoRedirect, setAutoRedirect] = useState(true);
 
+    // Yarn inventory from /api/lots-work-orders:
+    // one entry per PI + Lot No + Yarn Count with its remaining balance.
+    const [lotsAndCounts, setLotsAndCounts] = useState([]);
+    const [isLotsAndCountsLoading, setIsLotsAndCountsLoading] = useState(false);
+    const [lotQtyAlert, setLotQtyAlert] = useState("");
+
     // Refs
     const redirectTimerRef = useRef(null);
-    // Synchronous lock: state updates are async, so a fast double click
-    // could otherwise submit twice before `isSubmitting` becomes true.
+    // Synchronous lock against fast double clicks
     const submitLockRef = useRef(false);
     const searchBoxRef = useRef(null);
 
@@ -252,10 +455,6 @@ const NewOrder = () => {
         style: "",
         orderType: "",
         factoryName: "",
-        stichLength: "",
-        lotNo: "",
-        unitPrice: "",
-        yarnCount: "",
         processLoss: "",
     });
 
@@ -299,6 +498,65 @@ const NewOrder = () => {
         setShowToast(true);
     }, []);
 
+    // Load the yarn inventory (PI + Lot + Yarn Count + remaining balance).
+    // Reloaded after a successful save so the balances stay current.
+    useEffect(() => {
+        let isMounted = true;
+        const controller = new AbortController();
+
+        const fetchLotsAndCounts = async () => {
+            setIsLotsAndCountsLoading(true);
+
+            try {
+                const response = await axiosPrivate.get("/api/lots-work-orders", {
+                    signal: controller.signal,
+                });
+
+                const responseData = response.data?.data ?? response.data;
+                const records = Array.isArray(responseData) ? responseData : [];
+
+                if (isMounted) {
+                    setLotsAndCounts(
+                        records
+                            .map((item) => ({
+                                piNo: String(item?.piNo ?? "").trim(),
+                                lotNo: String(item?.lotNo ?? "").trim(),
+                                yarnCount: String(item?.yarnCount ?? "").trim(),
+                                totalQuantity: toNum(item?.totalQuantity),
+                            }))
+                            .filter(
+                                (item) =>
+                                    item.piNo &&
+                                    item.lotNo &&
+                                    item.yarnCount &&
+                                    item.totalQuantity > 0
+                            )
+                    );
+                }
+            } catch (error) {
+                if (controller.signal.aborted || error?.code === "ERR_CANCELED") return;
+
+                console.error("Failed to fetch available lots and yarn counts:", error);
+                if (isMounted) {
+                    setLotsAndCounts([]);
+                    showNotification(
+                        error?.response?.data?.message || "Failed to load available lots and yarn counts",
+                        "error"
+                    );
+                }
+            } finally {
+                if (isMounted) setIsLotsAndCountsLoading(false);
+            }
+        };
+
+        fetchLotsAndCounts();
+
+        return () => {
+            isMounted = false;
+            controller.abort();
+        };
+    }, [axiosPrivate, showNotification, reloadKey]);
+
     // ---------------------------------------------------------
     // Apply selected style data to the form
     // ---------------------------------------------------------
@@ -320,10 +578,6 @@ const NewOrder = () => {
             style: style.styleNo || "",
             orderType: "",
             factoryName: "",
-            stichLength: "",
-            lotNo: "",
-            unitPrice: "",
-            yarnCount: "",
             processLoss: style.processLoss ?? "",
         });
 
@@ -336,7 +590,6 @@ const NewOrder = () => {
 
     // ---------------------------------------------------------
     // Style fetch — runs whenever the URL param changes
-    // (initial load, job picked from search, or after saving).
     // ---------------------------------------------------------
     useEffect(() => {
         let isMounted = true;
@@ -395,12 +648,7 @@ const NewOrder = () => {
     }, [jobNumber, reloadKey, axiosPrivate, applyStyleData, showNotification]);
 
     // ---------------------------------------------------------
-    // Job No search
-    //
-    // API is called 1 second after the user stops typing.
-    // Every new keystroke cancels the previous timer AND any
-    // in-flight request, so stale responses can never overwrite
-    // newer results.
+    // Job No search (debounced 1s, cancels stale requests)
     // ---------------------------------------------------------
     useEffect(() => {
         const searchValue = searchJobNo.trim();
@@ -461,11 +709,7 @@ const NewOrder = () => {
     }, [searchJobNo, axiosPrivate, showNotification]);
 
     // ---------------------------------------------------------
-    // Select a Job No from search results.
-    //
-    // We only change the URL here. The style-fetch effect above
-    // reacts to the new :jobNumber param and loads the data, so the
-    // URL, the page and every dependent request stay in sync.
+    // Select a Job No from search results (only changes the URL)
     // ---------------------------------------------------------
     const handleSelectSearchJob = (selectedJob) => {
         if (!selectedJob?.jobNo || isBusy) return;
@@ -568,13 +812,12 @@ const NewOrder = () => {
                     totalAmount += qty * price;
                 });
             } else {
-                const qty = Number(row.workOrderQty) || 0;
-                const price = Number(row.unitPrice) || 0;
+                const qty = sumLotQty(row);
 
                 if (qty > 0) compositionsWithWorkOrder += 1;
 
                 totalWorkOrderQty += qty;
-                totalAmount += qty * price;
+                totalAmount += sumLotAmount(row);
             }
         });
 
@@ -648,7 +891,6 @@ const NewOrder = () => {
 
     // ---------------------------------------------------------
     // Fetch factory-wise work order totals
-    // Uses the currently loaded Job No.
     // ---------------------------------------------------------
     useEffect(() => {
         let isMounted = true;
@@ -743,20 +985,6 @@ const NewOrder = () => {
     // ---------------------------------------------------------
     // Composition changes
     // ---------------------------------------------------------
-    const handleRowChange = (index, field, value) => {
-        setFormError("");
-
-        const nextValue = NUMERIC_ROW_FIELDS.has(field)
-            ? sanitizeDecimal(value)
-            : value;
-
-        setRows((prev) =>
-            prev.map((row, i) =>
-                i === index ? { ...row, [field]: nextValue } : row
-            )
-        );
-    };
-
     const handleRemoveRow = (index) => {
         if (rows.length <= 1) {
             showNotification(
@@ -778,8 +1006,89 @@ const NewOrder = () => {
         showNotification("Compositions restored", "success");
     }, [styleData, showNotification]);
 
+    // Composition-level fields shared by ALL lines of that composition:
+    // Price Per Kg, Stich Length, Machine Dia
+    const handleRowFieldChange = (rowIndex, field, value) => {
+        setFormError("");
+
+        setRows((prev) =>
+            prev.map((row, i) =>
+                i === rowIndex
+                    ? {
+                        ...row,
+                        [field]: NUMERIC_ROW_FIELDS.has(field)
+                            ? sanitizeDecimal(value)
+                            : value,
+                    }
+                    : row
+            )
+        );
+    };
+
     // ---------------------------------------------------------
-    // Yarn color handlers
+    // Work order line handlers
+    // Each line = Qty + Lot No + Yarn Count + PI No ONLY
+    // ---------------------------------------------------------
+    const handleAddLot = (rowIndex) => {
+        setRows((prev) =>
+            prev.map((row, i) =>
+                i === rowIndex
+                    ? { ...row, lots: [...(row.lots ?? []), defaultLot()] }
+                    : row
+            )
+        );
+    };
+
+    const handleLotChange = (rowIndex, lotIndex, field, value) => {
+        setFormError("");
+        setLotQtyAlert("");
+
+        setRows((prev) =>
+            prev.map((row, i) => {
+                if (i !== rowIndex) return row;
+
+                return {
+                    ...row,
+                    lots: (row.lots ?? [defaultLot()]).map((lot, li) => {
+                        if (li !== lotIndex) return lot;
+
+                        if (INVENTORY_FIELDS.has(field)) {
+                            return applyInventoryChange(lotsAndCounts, lot, field, value);
+                        }
+
+                        return {
+                            ...lot,
+                            [field]: NUMERIC_LOT_FIELDS.has(field)
+                                ? sanitizeDecimal(value)
+                                : value,
+                        };
+                    }),
+                };
+            })
+        );
+    };
+
+    const handleRemoveLot = (rowIndex, lotIndex) => {
+        setRows((prev) =>
+            prev.map((row, i) => {
+                if (i !== rowIndex) return row;
+
+                const current = row.lots ?? [];
+
+                // Always keep at least one line
+                if (current.length <= 1) return row;
+
+                return {
+                    ...row,
+                    lots: current.filter((_, li) => li !== lotIndex),
+                };
+            })
+        );
+    };
+
+    // ---------------------------------------------------------
+    // Yarn color handlers (yarn dyeing)
+    // Each color = Color + Qty + Price + Lot No + Yarn Count + PI No
     // ---------------------------------------------------------
     const handleAddYarnColor = (rowIndex) => {
         setRows((prev) =>
@@ -804,26 +1113,32 @@ const NewOrder = () => {
         value
     ) => {
         setFormError("");
-
-        const nextValue = NUMERIC_YARN_FIELDS.has(field)
-            ? sanitizeDecimal(value)
-            : value;
+        setLotQtyAlert("");
 
         setRows((prev) =>
-            prev.map((row, i) =>
-                i === rowIndex
-                    ? {
-                        ...row,
-                        yarnColors: (
-                            row.yarnColors ?? [defaultYarnColor()]
-                        ).map((color, ci) =>
-                            ci === colorIndex
-                                ? { ...color, [field]: nextValue }
-                                : color
-                        ),
-                    }
-                    : row
-            )
+            prev.map((row, i) => {
+                if (i !== rowIndex) return row;
+
+                return {
+                    ...row,
+                    yarnColors: (row.yarnColors ?? [defaultYarnColor()]).map(
+                        (color, ci) => {
+                            if (ci !== colorIndex) return color;
+
+                            if (INVENTORY_FIELDS.has(field)) {
+                                return applyInventoryChange(lotsAndCounts, color, field, value);
+                            }
+
+                            return {
+                                ...color,
+                                [field]: NUMERIC_YARN_FIELDS.has(field)
+                                    ? sanitizeDecimal(value)
+                                    : value,
+                            };
+                        }
+                    ),
+                };
+            })
         );
     };
 
@@ -847,8 +1162,6 @@ const NewOrder = () => {
 
     // ---------------------------------------------------------
     // Form validation
-    // Every failure shows a toast AND an inline message in the
-    // footer, so the user always sees why Create Order did nothing.
     // ---------------------------------------------------------
     const validateForm = () => {
         const fail = (message) => {
@@ -878,6 +1191,23 @@ const NewOrder = () => {
         }
 
         const rules = getRules(orderType);
+        const isYD = orderType === "yarnDyeingOrder";
+
+        // Requested qty per PI + Lot + Count (summed over ALL lines / colors)
+        const requestedByBucket = new Map();
+
+        const addRequested = (piNo, lotNo, yarnCount, qty) => {
+            const key = inventoryKey(piNo, lotNo, yarnCount);
+            const current = requestedByBucket.get(key) ?? {
+                piNo,
+                lotNo,
+                yarnCount,
+                requestedQty: 0,
+            };
+
+            current.requestedQty += qty;
+            requestedByBucket.set(key, current);
+        };
 
         for (let i = 0; i < rows.length; i++) {
             const row = rows[i];
@@ -888,40 +1218,53 @@ const NewOrder = () => {
                 );
             }
 
-            if (orderType !== "yarnDyeingOrder") {
+            if (!isYD) {
+                // Composition-level (shared) fields are validated once
                 if (!(toNum(row.unitPrice) > 0)) {
                     return fail(
                         `Price Per Kg must be greater than 0 for Composition ${i + 1}`
                     );
                 }
 
-                if (!(toNum(row.workOrderQty) > 0)) {
-                    return fail(
-                        `Work Order Qty must be greater than 0 for Composition ${i + 1}`
-                    );
-                }
-
-                if (rules.yarnCount && !String(row.yarnCount).trim()) {
-                    return fail(
-                        `Yarn Count is required for Composition ${i + 1}`
-                    );
-                }
-
-                if (rules.lotNo && !String(row.lotNo).trim()) {
-                    return fail(
-                        `Lot No is required for Composition ${i + 1}`
-                    );
+                if (rules.stichLength && !String(row.stichLength).trim()) {
+                    return fail(`Stich Length is required for Composition ${i + 1}`);
                 }
 
                 if (rules.machineDia && !String(row.machineDia).trim()) {
+                    return fail(`Machine Dia is required for Composition ${i + 1}`);
+                }
+
+                if (!row.lots?.length) {
                     return fail(
-                        `Machine Dia is required for Composition ${i + 1}`
+                        `At least one Work Order Qty line is required for Composition ${i + 1}`
                     );
                 }
 
-                if (rules.stichLength && !String(row.stichLength).trim()) {
-                    return fail(
-                        `Stich Length is required for Composition ${i + 1}`
+                for (let j = 0; j < row.lots.length; j++) {
+                    const lot = row.lots[j];
+                    const where = `Composition ${i + 1}, Line ${j + 1}`;
+
+                    if (!(toNum(lot.workOrderQty) > 0)) {
+                        return fail(`Work Order Qty must be greater than 0 for ${where}`);
+                    }
+
+                    if (rules.lotNo && !String(lot.lotNo).trim()) {
+                        return fail(`Lot No is required for ${where}`);
+                    }
+
+                    if (rules.yarnCount && !String(lot.yarnCount).trim()) {
+                        return fail(`Yarn Count is required for ${where}`);
+                    }
+
+                    if (!String(lot.piNo).trim()) {
+                        return fail(`PI No is required for ${where}`);
+                    }
+
+                    addRequested(
+                        String(lot.piNo).trim(),
+                        String(lot.lotNo).trim(),
+                        String(lot.yarnCount).trim(),
+                        toNum(lot.workOrderQty)
                     );
                 }
             } else {
@@ -933,39 +1276,81 @@ const NewOrder = () => {
 
                 for (let j = 0; j < row.yarnColors.length; j++) {
                     const yarnColor = row.yarnColors[j];
+                    const where = `Composition ${i + 1}, Color ${j + 1}`;
 
                     if (!String(yarnColor.color).trim()) {
-                        return fail(
-                            `Yarn color is required for Composition ${i + 1}, Color ${j + 1}`
-                        );
+                        return fail(`Yarn color is required for ${where}`);
                     }
 
                     if (!(toNum(yarnColor.qty) > 0)) {
-                        return fail(
-                            `Qty must be greater than 0 for Composition ${i + 1}, Color ${j + 1}`
-                        );
+                        return fail(`Qty must be greater than 0 for ${where}`);
                     }
 
                     if (!(toNum(yarnColor.price) > 0)) {
-                        return fail(
-                            `Price must be greater than 0 for Composition ${i + 1}, Color ${j + 1}`
-                        );
+                        return fail(`Price must be greater than 0 for ${where}`);
                     }
+
+                    if (!String(yarnColor.lotNo).trim()) {
+                        return fail(`Lot No is required for ${where}`);
+                    }
+
+                    if (!String(yarnColor.yarnCount).trim()) {
+                        return fail(`Yarn Count is required for ${where}`);
+                    }
+
+                    if (!String(yarnColor.piNo).trim()) {
+                        return fail(`PI No is required for ${where}`);
+                    }
+
+                    addRequested(
+                        String(yarnColor.piNo).trim(),
+                        String(yarnColor.lotNo).trim(),
+                        String(yarnColor.yarnCount).trim(),
+                        toNum(yarnColor.qty)
+                    );
                 }
             }
         }
 
+        // Combined requested qty of every line / color must fit inside the
+        // remaining balance of that exact PI + Lot + Count.
+        if (isLotsAndCountsLoading) {
+            return fail("Available lot quantities are still loading. Please wait and try again.");
+        }
+
+        for (const requested of requestedByBucket.values()) {
+            const label = `PI ${requested.piNo} / Lot ${requested.lotNo} / Yarn Count ${requested.yarnCount}`;
+
+            const availableQty = getAvailableQty(
+                lotsAndCounts,
+                requested.piNo,
+                requested.lotNo,
+                requested.yarnCount
+            );
+
+            if (availableQty <= 0) {
+                const message = `No available quantity found for ${label}.`;
+                setLotQtyAlert(message);
+                return fail(message);
+            }
+
+            if (requested.requestedQty > availableQty) {
+                const message =
+                    `Insufficient quantity for ${label}. ` +
+                    `Available: ${availableQty.toLocaleString()} KG, ` +
+                    `Requested: ${requested.requestedQty.toLocaleString()} KG.`;
+                setLotQtyAlert(message);
+                return fail(message);
+            }
+        }
+
         setFormError("");
+        setLotQtyAlert("");
         return true;
     };
 
     // ---------------------------------------------------------
     // Submit work order
-    //
-    // `isSubmitting` is true ONLY while the request is in flight and
-    // is ALWAYS reset in `finally` — on success, on API error, on
-    // network error, or on timeout. After a successful save with
-    // auto-redirect, the button switches to "Saved" (isSaved).
     // ---------------------------------------------------------
     const handleSubmit = async () => {
         // Ref lock blocks double clicks instantly (state is async)
@@ -982,6 +1367,55 @@ const NewOrder = () => {
         setIsSubmitting(true);
 
         try {
+            // Common fields for one composition
+            const baseComposition = (row) => ({
+                composition: row.composition,
+                color: row.color,
+                orderQty: row.orderQty,
+            });
+
+            const compositions = rows.flatMap((row) => {
+                if (orderType === "yarnDyeingOrder") {
+                    const yarnColors = (row.yarnColors ?? []).map((yc) => ({
+                        color: String(yc.color).trim(),
+                        qty: yc.qty,
+                        price: yc.price,
+                        lotNo: String(yc.lotNo).trim(),
+                        yarnCount: String(yc.yarnCount).trim(),
+                        piNo: String(yc.piNo).trim(),
+                    }));
+
+                    return [
+                        {
+                            ...baseComposition(row),
+                            workOrderQty: "",
+                            unitPrice: "",
+                            lotNo: "",
+                            yarnCount: "",
+                            stichLength: "",
+                            machineDia: "",
+                            // composition-level PI = PI of the first color
+                            piNo: yarnColors[0]?.piNo ?? "",
+                            yarnColors,
+                        },
+                    ];
+                }
+
+                // One payload entry per Work Order line. Each line has its own
+                // qty, lot, yarn count and PI; price / stich length / machine
+                // dia are shared from the composition.
+                return (row.lots ?? []).map((lot) => ({
+                    ...baseComposition(row),
+                    workOrderQty: lot.workOrderQty,
+                    unitPrice: row.unitPrice,
+                    lotNo: String(lot.lotNo).trim(),
+                    yarnCount: String(lot.yarnCount).trim(),
+                    piNo: String(lot.piNo).trim(),
+                    stichLength: String(row.stichLength ?? "").trim(),
+                    machineDia: String(row.machineDia ?? "").trim(),
+                }));
+            });
+
             const payload = {
                 workOrderPlaceDate: formData.workOrderPlaceDate,
                 workOrderNo: formData.workOrderNo.trim(),
@@ -990,31 +1424,7 @@ const NewOrder = () => {
                 factoryName: formData.factoryName.trim(),
                 orderType: formData.orderType,
                 styleNo: styleData.styleNo,
-
-                compositions: rows.map((row) => ({
-                    composition: row.composition,
-                    color: row.color,
-                    orderQty: row.orderQty,
-                    workOrderQty: row.workOrderQty,
-                    unitPrice: row.unitPrice,
-                    machineDia: row.machineDia,
-                    yarnCount: row.yarnCount,
-                    stichLength: row.stichLength,
-                    lotNo: row.lotNo,
-
-                    ...(orderType === "yarnDyeingOrder"
-                        ? {
-                            // strip the UI-only `uid` before sending
-                            yarnColors: (row.yarnColors ?? []).map(
-                                ({ color, qty, price }) => ({
-                                    color: color.trim(),
-                                    qty,
-                                    price,
-                                })
-                            ),
-                        }
-                        : {}),
-                })),
+                compositions,
             };
 
             // 30s timeout so a hanging server can never leave the UI stuck
@@ -1024,8 +1434,6 @@ const NewOrder = () => {
                 { timeout: 30000 }
             );
 
-            // Any 2xx response counts as success unless the backend
-            // explicitly says otherwise through `type`.
             const responseType = response.data?.type;
             const isSuccess = responseType
                 ? responseType === "success"
@@ -1046,8 +1454,8 @@ const NewOrder = () => {
                         navigate("/dashboard/style-requirement");
                     }, 1500);
                 } else {
-                    // Stay on the page and reload the style so
-                    // "Previous Work Order Qty" reflects the new order.
+                    // Stay on the page and reload the style + inventory so
+                    // previous work order qty and PI balances are current.
                     setReloadKey((prev) => prev + 1);
                 }
             } else {
@@ -1069,7 +1477,6 @@ const NewOrder = () => {
             setFormError(message);
             showNotification(message, "error");
         } finally {
-            // Always stop the "Saving..." state, whatever happened.
             submitLockRef.current = false;
             setIsSubmitting(false);
         }
@@ -1320,6 +1727,10 @@ const NewOrder = () => {
                                         styleTotals.processLoss
                                     ).toFixed(2);
 
+                                    const lotList = styleRow.lots ?? [defaultLot()];
+                                    const lotsTotal = sumLotQty(styleRow);
+                                    const lotsAmount = sumLotAmount(styleRow);
+
                                     const renderRemaining = (qty) => {
                                         const remaining =
                                             Number(qty) - Number(requireQty);
@@ -1427,7 +1838,7 @@ const NewOrder = () => {
 
                                             {/* Composition Inputs */}
                                             <div className="p-4">
-                                                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                                                <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                                                     <Input
                                                         label="Composition"
                                                         readOnly
@@ -1448,109 +1859,194 @@ const NewOrder = () => {
                                                         value={styleRow.orderQty}
                                                         isShowOutLabel
                                                     />
-
-                                                    {!isYarnDyeing && (
-                                                        <>
-                                                            <Input
-                                                                label="Price Per Kg"
-                                                                value={styleRow.unitPrice}
-                                                                onChange={(e) =>
-                                                                    handleRowChange(
-                                                                        index,
-                                                                        "unitPrice",
-                                                                        e.target.value
-                                                                    )
-                                                                }
-                                                                required
-                                                                isShowOutLabel
-                                                                placeholder="Unit Price"
-                                                            />
-
-                                                            <Input
-                                                                label="Work Order Qty"
-                                                                value={styleRow.workOrderQty}
-                                                                onChange={(e) =>
-                                                                    handleRowChange(
-                                                                        index,
-                                                                        "workOrderQty",
-                                                                        e.target.value
-                                                                    )
-                                                                }
-                                                                required
-                                                                isShowOutLabel
-                                                                placeholder="Work Order Qty"
-                                                            />
-                                                        </>
-                                                    )}
-
-                                                    {currentRules.stichLength && (
-                                                        <Input
-                                                            label="Stich Length"
-                                                            value={styleRow.stichLength}
-                                                            onChange={(e) =>
-                                                                handleRowChange(
-                                                                    index,
-                                                                    "stichLength",
-                                                                    e.target.value
-                                                                )
-                                                            }
-                                                            required
-                                                            isShowOutLabel
-                                                            placeholder="Stich Length"
-                                                        />
-                                                    )}
-
-                                                    {currentRules.machineDia && (
-                                                        <Input
-                                                            label="Machine Dia"
-                                                            value={styleRow.machineDia}
-                                                            onChange={(e) =>
-                                                                handleRowChange(
-                                                                    index,
-                                                                    "machineDia",
-                                                                    e.target.value
-                                                                )
-                                                            }
-                                                            required
-                                                            isShowOutLabel
-                                                            placeholder="Machine Dia"
-                                                        />
-                                                    )}
-
-                                                    {currentRules.lotNo && (
-                                                        <Input
-                                                            label="Lot No"
-                                                            value={styleRow.lotNo}
-                                                            onChange={(e) =>
-                                                                handleRowChange(
-                                                                    index,
-                                                                    "lotNo",
-                                                                    e.target.value
-                                                                )
-                                                            }
-                                                            required
-                                                            isShowOutLabel
-                                                            placeholder="Lot No"
-                                                        />
-                                                    )}
-
-                                                    {currentRules.yarnCount && (
-                                                        <Input
-                                                            label="Yarn Count"
-                                                            value={styleRow.yarnCount}
-                                                            onChange={(e) =>
-                                                                handleRowChange(
-                                                                    index,
-                                                                    "yarnCount",
-                                                                    e.target.value
-                                                                )
-                                                            }
-                                                            required
-                                                            isShowOutLabel
-                                                            placeholder="Yarn Count"
-                                                        />
-                                                    )}
                                                 </div>
+
+                                                {/* Common details (shared by ALL lines) + Work Order Lines */}
+                                                {!isYarnDyeing && (
+                                                    <>
+                                                        {/* Common Details — entered once, not repeated per line */}
+                                                        <div className="mt-5 rounded-lg border border-slate-200 bg-slate-50/60 p-4">
+                                                            <div className="mb-3">
+                                                                <h5 className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                                                                    Common Details
+                                                                </h5>
+                                                                <p className="mt-0.5 text-[11px] text-slate-400">
+                                                                    Applies to every line of this composition
+                                                                </p>
+                                                            </div>
+
+                                                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                                                                <Input
+                                                                    label="Price Per Kg"
+                                                                    placeholder="Unit Price"
+                                                                    value={styleRow.unitPrice}
+                                                                    onChange={(e) =>
+                                                                        handleRowFieldChange(
+                                                                            index,
+                                                                            "unitPrice",
+                                                                            e.target.value
+                                                                        )
+                                                                    }
+                                                                    required
+                                                                    isShowOutLabel
+                                                                />
+
+                                                                {currentRules.stichLength && (
+                                                                    <Input
+                                                                        label="Stich Length"
+                                                                        placeholder="Stich Length"
+                                                                        value={styleRow.stichLength}
+                                                                        onChange={(e) =>
+                                                                            handleRowFieldChange(
+                                                                                index,
+                                                                                "stichLength",
+                                                                                e.target.value
+                                                                            )
+                                                                        }
+                                                                        required
+                                                                        isShowOutLabel
+                                                                    />
+                                                                )}
+
+                                                                {currentRules.machineDia && (
+                                                                    <Input
+                                                                        label="Machine Dia"
+                                                                        placeholder="Machine Dia"
+                                                                        value={styleRow.machineDia}
+                                                                        onChange={(e) =>
+                                                                            handleRowFieldChange(
+                                                                                index,
+                                                                                "machineDia",
+                                                                                e.target.value
+                                                                            )
+                                                                        }
+                                                                        required
+                                                                        isShowOutLabel
+                                                                    />
+                                                                )}
+                                                            </div>
+                                                        </div>
+
+                                                        {/* Work Order Lines */}
+                                                        <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50/60 p-4">
+                                                            <div className="mb-3 flex items-center justify-between gap-3">
+                                                                <div className="flex items-center gap-2">
+                                                                    <h5 className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                                                                        Work Order Lines
+                                                                    </h5>
+
+                                                                    <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-500">
+                                                                        {lotList.length}{" "}
+                                                                        {lotList.length === 1 ? "LINE" : "LINES"}
+                                                                    </span>
+                                                                </div>
+
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => handleAddLot(index)}
+                                                                    title="Add another line"
+                                                                    className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                                                                >
+                                                                    <Plus size={13} />
+                                                                    Add Line
+                                                                </button>
+                                                            </div>
+
+                                                            <div className="space-y-3">
+                                                                {lotList.map((lot, lotIndex) => (
+                                                                    <div
+                                                                        key={lot.uid ?? lotIndex}
+                                                                        className="rounded-lg border border-slate-200 bg-white p-3"
+                                                                    >
+                                                                        {/* Line header */}
+                                                                        <div className="mb-3 flex items-center justify-between gap-2">
+                                                                            <span className="inline-flex items-center rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">
+                                                                                Line {lotIndex + 1}
+                                                                            </span>
+
+                                                                            <div className="flex items-center gap-2">
+                                                                                <button
+                                                                                    type="button"
+                                                                                    onClick={() => handleAddLot(index)}
+                                                                                    title="Add another line"
+                                                                                    className="flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:border-slate-300 hover:bg-slate-100 hover:text-slate-800"
+                                                                                >
+                                                                                    <Plus size={14} />
+                                                                                </button>
+
+                                                                                {lotList.length > 1 && (
+                                                                                    <button
+                                                                                        type="button"
+                                                                                        onClick={() =>
+                                                                                            handleRemoveLot(index, lotIndex)
+                                                                                        }
+                                                                                        title="Remove this line"
+                                                                                        className="flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-400 hover:border-red-200 hover:bg-red-50 hover:text-red-600"
+                                                                                    >
+                                                                                        <X size={14} />
+                                                                                    </button>
+                                                                                )}
+                                                                            </div>
+                                                                        </div>
+
+                                                                        {/* Line fields: Qty + Lot No + Yarn Count + PI No */}
+                                                                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                                                                            <Input
+                                                                                label="Work Order Qty"
+                                                                                placeholder="Work Order Qty"
+                                                                                value={lot.workOrderQty}
+                                                                                onChange={(e) =>
+                                                                                    handleLotChange(
+                                                                                        index,
+                                                                                        lotIndex,
+                                                                                        "workOrderQty",
+                                                                                        e.target.value
+                                                                                    )
+                                                                                }
+                                                                                required
+                                                                                isShowOutLabel
+                                                                            />
+
+                                                                            {(currentRules.lotNo || currentRules.yarnCount) && (
+                                                                                <LotCountPiFields
+                                                                                    item={lot}
+                                                                                    inventory={lotsAndCounts}
+                                                                                    loading={isLotsAndCountsLoading}
+                                                                                    onChange={(field, value) =>
+                                                                                        handleLotChange(index, lotIndex, field, value)
+                                                                                    }
+                                                                                />
+                                                                            )}
+                                                                        </div>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+
+                                                            <div className="mt-3 flex flex-wrap items-center justify-end gap-x-6 gap-y-1 text-xs text-slate-500">
+                                                                <span>
+                                                                    Composition Work Order Total:{" "}
+                                                                    <span className="font-semibold tabular-nums text-slate-800">
+                                                                        {lotsTotal.toLocaleString(undefined, {
+                                                                            maximumFractionDigits: 2,
+                                                                        })}{" "}
+                                                                        KG
+                                                                    </span>
+                                                                </span>
+
+                                                                <span>
+                                                                    Amount:{" "}
+                                                                    <span className="font-semibold tabular-nums text-slate-800">
+                                                                        {lotsAmount.toLocaleString(undefined, {
+                                                                            minimumFractionDigits: 2,
+                                                                            maximumFractionDigits: 2,
+                                                                        })}{" "}
+                                                                        BDT
+                                                                    </span>
+                                                                </span>
+                                                            </div>
+                                                        </div>
+                                                    </>
+                                                )}
 
                                                 {/* Yarn Dyeing Colors */}
                                                 {isYarnDyeing && (
@@ -1575,55 +2071,13 @@ const NewOrder = () => {
                                                                 (yarnItem, colorIndex) => (
                                                                     <div
                                                                         key={yarnItem.uid ?? colorIndex}
-                                                                        className="grid grid-cols-1 items-end gap-3 rounded-lg border border-slate-200 bg-white p-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_auto]"
+                                                                        className="rounded-lg border border-slate-200 bg-white p-3"
                                                                     >
-                                                                        <Input
-                                                                            label={colorIndex === 0 ? "Booking Color" : ""}
-                                                                            placeholder="Yarn booking color"
-                                                                            value={yarnItem.color}
-                                                                            onChange={(e) =>
-                                                                                handleYarnColorChange(
-                                                                                    index,
-                                                                                    colorIndex,
-                                                                                    "color",
-                                                                                    e.target.value
-                                                                                )
-                                                                            }
-                                                                            isShowOutLabel
-                                                                        />
+                                                                        <div className="mb-3 flex items-center justify-between gap-2">
+                                                                            <span className="inline-flex items-center rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">
+                                                                                Color {colorIndex + 1}
+                                                                            </span>
 
-                                                                        <Input
-                                                                            label={colorIndex === 0 ? "Qty (KG)" : ""}
-                                                                            placeholder="Qty"
-                                                                            value={yarnItem.qty}
-                                                                            onChange={(e) =>
-                                                                                handleYarnColorChange(
-                                                                                    index,
-                                                                                    colorIndex,
-                                                                                    "qty",
-                                                                                    e.target.value
-                                                                                )
-                                                                            }
-                                                                            isShowOutLabel
-                                                                        />
-
-                                                                        <Input
-                                                                            label={colorIndex === 0 ? "Price Per Kg" : ""}
-                                                                            placeholder="Unit Price"
-                                                                            value={yarnItem.price}
-                                                                            onChange={(e) =>
-                                                                                handleYarnColorChange(
-                                                                                    index,
-                                                                                    colorIndex,
-                                                                                    "price",
-                                                                                    e.target.value
-                                                                                )
-                                                                            }
-                                                                            isShowOutLabel
-                                                                            required
-                                                                        />
-
-                                                                        <div className="flex justify-end">
                                                                             {(styleRow.yarnColors ?? []).length > 1 && (
                                                                                 <button
                                                                                     type="button"
@@ -1633,11 +2087,76 @@ const NewOrder = () => {
                                                                                             colorIndex
                                                                                         )
                                                                                     }
-                                                                                    className="flex h-[42px] w-10 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-400 hover:border-red-200 hover:bg-red-50 hover:text-red-600"
+                                                                                    title="Remove this color"
+                                                                                    className="flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-400 hover:border-red-200 hover:bg-red-50 hover:text-red-600"
                                                                                 >
                                                                                     <X size={14} />
                                                                                 </button>
                                                                             )}
+                                                                        </div>
+
+                                                                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                                                                            <Input
+                                                                                label="Booking Color"
+                                                                                placeholder="Yarn booking color"
+                                                                                value={yarnItem.color}
+                                                                                onChange={(e) =>
+                                                                                    handleYarnColorChange(
+                                                                                        index,
+                                                                                        colorIndex,
+                                                                                        "color",
+                                                                                        e.target.value
+                                                                                    )
+                                                                                }
+                                                                                required
+                                                                                isShowOutLabel
+                                                                            />
+
+                                                                            <Input
+                                                                                label="Qty (KG)"
+                                                                                placeholder="Qty"
+                                                                                value={yarnItem.qty}
+                                                                                onChange={(e) =>
+                                                                                    handleYarnColorChange(
+                                                                                        index,
+                                                                                        colorIndex,
+                                                                                        "qty",
+                                                                                        e.target.value
+                                                                                    )
+                                                                                }
+                                                                                required
+                                                                                isShowOutLabel
+                                                                            />
+
+                                                                            <Input
+                                                                                label="Price Per Kg"
+                                                                                placeholder="Unit Price"
+                                                                                value={yarnItem.price}
+                                                                                onChange={(e) =>
+                                                                                    handleYarnColorChange(
+                                                                                        index,
+                                                                                        colorIndex,
+                                                                                        "price",
+                                                                                        e.target.value
+                                                                                    )
+                                                                                }
+                                                                                required
+                                                                                isShowOutLabel
+                                                                            />
+
+                                                                            <LotCountPiFields
+                                                                                item={yarnItem}
+                                                                                inventory={lotsAndCounts}
+                                                                                loading={isLotsAndCountsLoading}
+                                                                                onChange={(field, value) =>
+                                                                                    handleYarnColorChange(
+                                                                                        index,
+                                                                                        colorIndex,
+                                                                                        field,
+                                                                                        value
+                                                                                    )
+                                                                                }
+                                                                            />
                                                                         </div>
                                                                     </div>
                                                                 )
@@ -2008,9 +2527,7 @@ const NewOrder = () => {
                 </div>
             </div>
 
-            {/* Fixed Action Bar
-                z-30 keeps it BELOW floating widgets (chat bubble), and pr-24
-                leaves room on the right so nothing sits under the bubble. */}
+            {/* Fixed Action Bar */}
             <div className="fixed bottom-0 left-0 right-0 z-30 border-t border-slate-200 bg-white/95 px-4 py-2.5 pr-24 shadow-[0_-4px_12px_rgba(15,23,42,0.05)] backdrop-blur">
                 <div className="flex items-center justify-between gap-4">
                     {/* Info / validation error / saved message */}
@@ -2078,6 +2595,55 @@ const NewOrder = () => {
                     </div>
                 </div>
             </div>
+
+            {/* Custom quantity alert - intentionally not window.alert() */}
+            {lotQtyAlert && (
+                <div
+                    className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/50 p-4"
+                    role="presentation"
+                    onMouseDown={(event) => {
+                        if (event.target === event.currentTarget) setLotQtyAlert("");
+                    }}
+                >
+                    <div
+                        role="alertdialog"
+                        aria-modal="true"
+                        aria-labelledby="lot-quantity-alert-title"
+                        className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-5 shadow-2xl"
+                    >
+                        <div className="flex items-start gap-3">
+                            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-50 text-amber-600">
+                                <AlertCircle size={21} />
+                            </span>
+                            <div className="min-w-0 flex-1">
+                                <h3 id="lot-quantity-alert-title" className="text-base font-semibold text-slate-900">
+                                    Lot quantity unavailable
+                                </h3>
+                                <p className="mt-2 text-sm leading-6 text-slate-600">
+                                    {lotQtyAlert}
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setLotQtyAlert("")}
+                                aria-label="Close alert"
+                                className="rounded-md p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                            >
+                                <X size={18} />
+                            </button>
+                        </div>
+                        <div className="mt-5 flex justify-end">
+                            <button
+                                type="button"
+                                onClick={() => setLotQtyAlert("")}
+                                className="h-9 rounded-md bg-slate-900 px-4 text-sm font-medium text-white hover:bg-slate-800"
+                            >
+                                Okay
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </DashboardLayout>
     );
 };

@@ -579,6 +579,7 @@ const AllOrders = ({ orderType }) => {
                         step.payload,
                         { params: { yarnId: step.yarnId, workOrderId: step.workOrderId } }
                     );
+                    console.log(step.payload);
                     completed.push(step);
                 } catch (e) {
                     console.log(`${step.label} failed:`, e.response?.data ?? e.message ?? e);
@@ -622,6 +623,7 @@ const AllOrders = ({ orderType }) => {
                         .then((res) => {
                             if (res) {
                                 setOrders(res.data ?? []);
+                                console.log(res.data);
                                 if (res.pagination) setPagination(res.pagination);
                                 // close the modal only when everything succeeded,
                                 // so any error stays visible

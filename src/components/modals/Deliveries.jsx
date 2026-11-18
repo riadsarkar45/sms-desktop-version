@@ -17,6 +17,12 @@ const prettyOrderType = (t) => {
 
 const norm = (v) => String(v ?? "").trim().toLowerCase();
 
+// NEW: treat "", null, "NULL" as empty
+const isEmptyValue = (v) => {
+  const s = String(v ?? "").trim();
+  return s === "" || s.toUpperCase() === "NULL";
+};
+
 const GREY_FABRIC_RECEIVED = "Grey Fabric Received";
 const GREY_DELIVERY = "Grey Delivery";
 
@@ -104,6 +110,10 @@ const flattenDeliveries = (workOrders) => {
         factoryName: wo.factoryName,
         composition: comp.composition || "—",
         color: comp.color || "—",
+        // NEW: per-composition lot & yarn count
+        lotNo: isEmptyValue(comp.lotNo) ? "" : String(comp.lotNo).trim(),
+        yarnCount: isEmptyValue(comp.yarnCount) ? "" : String(comp.yarnCount).trim(),
+        piId: isEmptyValue(comp.piId) ? "" : String(comp.piId).trim(),
         workOrderQty: comp.workOrderQty || 0,
         deliveries: comp.deliveries || [],
         buyerName: styleReq.buyerName || comp.buyerName || comp.styleRequirementRow?.buyerName,
@@ -222,13 +232,12 @@ const LinkedCompositionStrip = ({ details, selectedId, knittingFactory, pendingQ
                 disabled={!selectable}
                 onClick={() => onSelect(item)}
                 title={selectable ? "Click to select this factory" : "No factory name on record"}
-                className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] border transition-colors ${
-                  isSelected
+                className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] border transition-colors ${isSelected
                     ? "bg-indigo-500 border-indigo-500 text-white"
                     : selectable
                       ? "bg-white border-blue-200 text-gray-800 hover:bg-indigo-50 hover:border-indigo-300 cursor-pointer"
                       : "bg-white border-blue-100 text-gray-400 cursor-not-allowed"
-                }`}
+                  }`}
               >
                 {isSelected && <Check className="w-3 h-3" />}
                 <span className={isSelected ? "text-indigo-100" : "text-gray-400"}>Factory</span>
@@ -237,6 +246,11 @@ const LinkedCompositionStrip = ({ details, selectedId, knittingFactory, pendingQ
 
               {item.composition && <InfoPill label="Composition" value={item.composition} />}
               {item.color && <InfoPill label="Color" value={item.color} />}
+
+              {/* NEW: lot & yarn count of the linked composition */}
+              {!isEmptyValue(item.lotNo) && <InfoPill label="Lot" value={item.lotNo} />}
+              {!isEmptyValue(item.yarnCount) && <InfoPill label="Count" value={item.yarnCount} />}
+
               {item.workOrderQty !== undefined && item.workOrderQty !== null && (
                 <InfoPill label="WO Qty" value={formatKg(item.workOrderQty)} />
               )}
@@ -655,6 +669,10 @@ const Deliveries = ({ deliveries, deliveryIssue, challanIssue, orderType, change
       deliveryQty: parsedQty,
       finishReceivedQty: parsedFinishQty,
       deliveries: finalDeliveries,
+      // NEW: lot & yarn count of this composition row
+      lotNo: row.lotNo || "",
+      yarnCount: row.yarnCount || "",
+      piId: row.piId
     };
 
     const factoryOptional = isFactoryOptional(rowChangedField.deliveryType);
@@ -690,6 +708,10 @@ const Deliveries = ({ deliveries, deliveryIssue, challanIssue, orderType, change
             fromFactory: fullPayload.fromFactory, // knitting factory
             toFactory: fullPayload.toFactory,     // selected dyeing factory
             factoryOptional: false,
+            // NEW: the grey fabric lot being sent comes from this knitting row
+            lotNo: row.lotNo || "",
+            yarnCount: row.yarnCount || "",
+            piId: row.piId,
             deliveries: [{ deliveryType: GREY_DELIVERY, qty: parsedQty }],
           },
         },
@@ -816,6 +838,23 @@ const Deliveries = ({ deliveries, deliveryIssue, challanIssue, orderType, change
                       >
                         {row.color}
                       </span>
+
+                      {/* NEW: Lot No */}
+                      {row.lotNo && (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2.5 py-1 rounded-full bg-amber-50 border border-amber-200 text-amber-800">
+                          <span className="text-amber-500 font-medium">Lot</span>
+                          {row.lotNo}
+                        </span>
+                      )}
+
+                      {/* NEW: Yarn Count */}
+                      {row.yarnCount && (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2.5 py-1 rounded-full bg-sky-50 border border-sky-200 text-sky-800">
+                          <span className="text-sky-500 font-medium">Count</span>
+                          {row.yarnCount}
+                        </span>
+                      )}
+
                       <span className="text-[10px] text-gray-400">
                         {row.workOrderQty > 0 ? formatKg(row.workOrderQty) : "No Qty"} work order qty
                       </span>

@@ -1415,11 +1415,21 @@ const AllOrders = ({ orderType }) => {
                         />
                     )}
 
-                    {/* {orderType === "yarnDyeingOrder" && isEditing && (
+                    {/* {orderType === "yarnDyeingOrder && (
                         <YarnDeliveryModal
                             deliveries={deliveries}
                         />
                     )} */}
+
+                    {
+                        orderType === "yarnDyeingOrder" && isEditing && (
+                            <YarnDeliveryModal 
+                                deliveries={deliveries}
+                            />
+                        )
+                    }
+
+                    
 
                     {
                         isCancelModalOpen && (

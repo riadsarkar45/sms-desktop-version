@@ -63,15 +63,22 @@ const NUMERIC_ROW_FIELDS = new Set(["unitPrice", "shadePercent"]);
 const INVENTORY_FIELDS = new Set(["lotNo", "yarnCount", "piNo"]);
 
 // ---------------------------------------------------------
-// Default lot / count (ALL order types)
-// Shown and selected when the job has no lot / yarn count at all.
-// A line that uses them needs no PI No and has no stock bucket.
+// Default lot / count / PI (ALL order types)
+// Selectable from the dropdowns, and selected automatically when the job has
+// no lot / yarn count at all.
+// A line that uses them ALWAYS carries DEFAULT PI too, so the backend
+// still receives a PI No. It has no stock bucket.
 // ---------------------------------------------------------
 const DEFAULT_LOT = "DEFAULT LOT";
 const DEFAULT_COUNT = "DEFAULT COUNT";
+const DEFAULT_PI = "DEFAULT PI";
 
 const isDefaultItem = (item) =>
     item?.lotNo === DEFAULT_LOT || item?.yarnCount === DEFAULT_COUNT;
+
+// PI No that is sent to the backend for one line / color
+const getPiForPayload = (item) =>
+    isDefaultItem(item) ? DEFAULT_PI : String(item?.piNo ?? "").trim();
 
 // Stable ids so React keys stay correct when yarn colors are removed
 let yarnColorCounter = 0;
@@ -125,19 +132,9 @@ const getAllLots = (inventory) =>
 const getAllCounts = (inventory) =>
     uniqSorted(inventory.map((entry) => entry.yarnCount));
 
-const getCountsForLot = (inventory, lotNo) =>
-    uniqSorted(
-        inventory
-            .filter((entry) => entry.lotNo === lotNo)
-            .map((entry) => entry.yarnCount)
-    );
-
-const getLotsForCount = (inventory, yarnCount) =>
-    uniqSorted(
-        inventory
-            .filter((entry) => entry.yarnCount === yarnCount)
-            .map((entry) => entry.lotNo)
-    );
+// Every PI No in the yarn stock
+const getAllPis = (inventory) =>
+    uniqSorted(inventory.map((entry) => entry.piNo));
 
 const getPisForPair = (inventory, lotNo, yarnCount) =>
     inventory
@@ -154,10 +151,20 @@ const getAvailableQty = (inventory, piNo, lotNo, yarnCount) =>
             entry.yarnCount === yarnCount
     )?.totalQuantity ?? 0;
 
-// Applies a Lot / Count / PI change to a line or yarn color and keeps the
-// three fields consistent (auto-fills a value when only one choice exists).
-const applyInventoryChange = (inventory, item, field, value) => {
-    // Picking the default lot / count selects both defaults and drops the PI
+// TRUE when the stock list has this exact PI + Lot + Count
+const hasInventoryEntry = (inventory, piNo, lotNo, yarnCount) =>
+    inventory.some(
+        (entry) =>
+            entry.piNo === piNo &&
+            entry.lotNo === lotNo &&
+            entry.yarnCount === yarnCount
+    );
+
+// Applies a Lot / Count / PI change to a line or yarn color.
+// Every lot, count and PI is offered, so nothing is cascaded: each field keeps
+// exactly what the user picked. Only the default values are handled.
+const applyInventoryChange = (item, field, value) => {
+    // Picking the default lot / count / PI selects ALL THREE defaults
     if (
         (field === "lotNo" && value === DEFAULT_LOT) ||
         (field === "yarnCount" && value === DEFAULT_COUNT)
@@ -166,32 +173,17 @@ const applyInventoryChange = (inventory, item, field, value) => {
             ...item,
             lotNo: DEFAULT_LOT,
             yarnCount: DEFAULT_COUNT,
-            piNo: "",
+            piNo: DEFAULT_PI,
         };
     }
 
     const next = { ...item, [field]: value };
 
-    if (field === "lotNo") {
-        const counts = getCountsForLot(inventory, value);
-        if (!counts.includes(next.yarnCount)) {
-            next.yarnCount = counts.length === 1 ? counts[0] : "";
-        }
-    } else if (field === "yarnCount") {
-        const lots = getLotsForCount(inventory, value);
-        if (!lots.includes(next.lotNo)) {
-            next.lotNo = lots.length === 1 ? lots[0] : "";
-        }
-    }
-
-    if (field !== "piNo") {
-        const pis = getPisForPair(inventory, next.lotNo, next.yarnCount).map(
-            (entry) => entry.piNo
-        );
-
-        if (!pis.includes(next.piNo)) {
-            next.piNo = pis.length === 1 ? pis[0] : "";
-        }
+    // Leaving the defaults: drop the other default values so they do not stick
+    if (isDefaultItem(item)) {
+        if (field !== "lotNo" && next.lotNo === DEFAULT_LOT) next.lotNo = "";
+        if (field !== "yarnCount" && next.yarnCount === DEFAULT_COUNT) next.yarnCount = "";
+        if (field !== "piNo" && next.piNo === DEFAULT_PI) next.piNo = "";
     }
 
     return next;
@@ -245,8 +237,8 @@ const ORDER_TYPE_RULES = {
         stichLength: true,
         machineDia: true,
     },
-    // AOP + Dyeing use the compact design: ONE set of 7 fields per
-    // composition (price, qty, yarn count, yarn lot, stitch length,
+    // AOP + Dyeing use the compact design: ONE set of 8 fields per
+    // composition (price, qty, yarn count, yarn lot, PI no, stitch length,
     // package, shade %). Knitting + Yarn dyeing keep the standard design.
     aopOrder: {
         compact: true,
@@ -308,99 +300,45 @@ const getRules = (orderType) =>
     ORDER_TYPE_RULES[orderType] || {};
 
 // ---------------------------------------------------------
-// Job lot helpers (AOP / Dyeing orders)
-// One entry = a lot + yarn count already used by ANY work order of this job.
-// If the composition row has its own entries they are offered first,
-// otherwise every lot of the job is offered.
+// AOP / Dyeing lot helpers
+// They use the SAME full yarn stock as Knitting: ALL lots, ALL yarn counts and
+// ALL PI numbers (not only the lots of this job). When a Lot + Count is
+// chosen, the stock balance of the PIs that really exist for that pair is
+// attached. Each PI option: { piNo, totalQuantity } (null when unknown).
 // ---------------------------------------------------------
-const getJobLotCandidates = (jobLots, rowId) => {
-    const forRow = Number.isFinite(rowId)
-        ? jobLots.filter((entry) => entry.styleRequirementRowIds.includes(rowId))
-        : [];
+const getAllCompactLots = (inventory) => getAllLots(inventory);
 
-    return forRow.length > 0 ? forRow : jobLots;
-};
+const getAllCompactCounts = (inventory) => getAllCounts(inventory);
 
-// Keeps the Lot and Count dropdowns consistent: when one changes and the other
-// no longer belongs together, the other is set to the only valid value
-// (or cleared when there are several).
-const applyJobLotChange = (candidates, item, field, value) => {
-    const next = { ...item, [field]: value };
+const getCompactPiOptions = (inventory, lotNo, yarnCount) => {
+    const options = new Map(getAllPis(inventory).map((piNo) => [piNo, null]));
 
-    if (!value) return next;
-
-    if (field === "lotNo") {
-        const counts = uniqSorted(
-            candidates
-                .filter((entry) => entry.lotNo === value)
-                .map((entry) => entry.yarnCount)
-                .filter(Boolean)
-        );
-
-        if (counts.length > 0 && !counts.includes(next.yarnCount)) {
-            next.yarnCount = counts.length === 1 ? counts[0] : "";
-        }
-    } else if (field === "yarnCount") {
-        const lots = uniqSorted(
-            candidates
-                .filter((entry) => entry.yarnCount === value)
-                .map((entry) => entry.lotNo)
-        );
-
-        if (lots.length > 0 && !lots.includes(next.lotNo)) {
-            next.lotNo = lots.length === 1 ? lots[0] : "";
-        }
+    if (lotNo && yarnCount) {
+        getPisForPair(inventory, lotNo, yarnCount).forEach((entry) => {
+            options.set(entry.piNo, entry.totalQuantity);
+        });
     }
 
-    return next;
-};
-
-// Default Yarn Lot / Count for AOP + Dyeing: when a composition has exactly ONE
-// lot + count to choose from and nothing is selected yet, select it.
-const applyJobLotDefaults = (rows, jobLots, orderType) => {
-    if (!getRules(orderType).compact || jobLots.length === 0) return rows;
-
-    return rows.map((row) => {
-        const rowId = Number(row.styleRequirementRowId ?? row.id);
-        const candidates = getJobLotCandidates(jobLots, rowId);
-
-        if (candidates.length !== 1) return row;
-
-        const lot = row.lots?.[0] ?? defaultLot();
-
-        if (
-            String(lot.lotNo ?? "").trim() !== "" ||
-            String(lot.yarnCount ?? "").trim() !== ""
-        ) {
-            return row;
-        }
-
-        const [only] = candidates;
-
-        return {
-            ...row,
-            lots: [
-                { ...lot, lotNo: only.lotNo, yarnCount: only.yarnCount },
-                ...(row.lots ?? []).slice(1),
-            ],
-        };
-    });
+    return [...options.entries()]
+        .map(([piNo, totalQuantity]) => ({ piNo, totalQuantity }))
+        .sort((a, b) => a.piNo.localeCompare(b.piNo));
 };
 
 // ---------------------------------------------------------
-// DEFAULT LOT / DEFAULT COUNT sync (ALL order types)
+// DEFAULT LOT / DEFAULT COUNT / DEFAULT PI sync (ALL order types)
 // ---------------------------------------------------------
 
-// Removes DEFAULT LOT / DEFAULT COUNT from every line + color
+// Removes DEFAULT LOT / DEFAULT COUNT / DEFAULT PI from every line + color
 // (used when real lots exist, so the real ones can take over)
 const clearDefaultLotValues = (rows) => {
     const fix = (item) => {
-        if (!isDefaultItem(item)) return item;
+        if (!isDefaultItem(item) && item.piNo !== DEFAULT_PI) return item;
 
         return {
             ...item,
             lotNo: item.lotNo === DEFAULT_LOT ? "" : item.lotNo,
             yarnCount: item.yarnCount === DEFAULT_COUNT ? "" : item.yarnCount,
+            piNo: item.piNo === DEFAULT_PI ? "" : item.piNo,
         };
     };
 
@@ -411,15 +349,21 @@ const clearDefaultLotValues = (rows) => {
     }));
 };
 
-// Fills empty Lot / Count with the defaults (lines that use a Y/D batch are skipped)
+// Fills empty Lot / Count with the defaults AND sets DEFAULT PI on every line
+// that ends up using a default (lines that use a Y/D batch are skipped)
 const fillDefaultLotValues = (rows, orderType) => {
     const fill = (item) => {
         if (item.ydBatch) return item;
 
+        const lotNo = item.lotNo || DEFAULT_LOT;
+        const yarnCount = item.yarnCount || DEFAULT_COUNT;
+        const usesDefault = lotNo === DEFAULT_LOT || yarnCount === DEFAULT_COUNT;
+
         return {
             ...item,
-            lotNo: item.lotNo || DEFAULT_LOT,
-            yarnCount: item.yarnCount || DEFAULT_COUNT,
+            lotNo,
+            yarnCount,
+            piNo: usesDefault ? DEFAULT_PI : item.piNo,
         };
     };
 
@@ -430,15 +374,19 @@ const fillDefaultLotValues = (rows, orderType) => {
     );
 };
 
-// One place that decides what Lot / Count the rows should hold:
-//  - real lots exist  -> clear the defaults, then auto-select a single real lot
-//  - nothing found    -> select DEFAULT LOT / DEFAULT COUNT
-const syncDefaultLots = (rows, jobLots, orderType, noLotsFound) => {
+// One place that decides what Lot / Count / PI the rows should hold:
+//  - real lots exist  -> clear the defaults, then auto-select a single real lot / PI
+//                        (AOP / Dyeing keep a default the user picked on purpose)
+//  - nothing found    -> select DEFAULT LOT / DEFAULT COUNT / DEFAULT PI
+const syncDefaultLots = (rows, orderType, noLotsFound) => {
     if (!orderType) return rows;
 
-    if (noLotsFound) return fillDefaultLotValues(rows, orderType);
+    // AOP / Dyeing never use the default lot / count / PI: real values only
+    if (noLotsFound && !getRules(orderType).compact) {
+        return fillDefaultLotValues(rows, orderType);
+    }
 
-    return applyJobLotDefaults(clearDefaultLotValues(rows), jobLots, orderType);
+    return clearDefaultLotValues(rows);
 };
 
 // ===== AUTO-FIT LAYOUT CONFIG (same as Summary) =====
@@ -540,7 +488,8 @@ const SELECT_CLASS =
     "h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 disabled:cursor-not-allowed disabled:bg-slate-100";
 
 // Dropdown used by AOP / Dyeing for Yarn Count and Yarn Lot.
-// The options come from the backend (lots used by this job's work orders).
+// The options come from the backend (lots used by this job's work orders),
+// plus the default value as the last option.
 const JobLotSelect = ({
     label,
     value,
@@ -576,12 +525,80 @@ const JobLotSelect = ({
     </div>
 );
 
+// PI No field used by AOP / Dyeing (compact design).
+//  - a dropdown with EVERY PI (stock balance shown when the chosen Lot + Count
+//    has one) and DEFAULT PI as the last option
+//  - picking DEFAULT PI selects DEFAULT LOT + DEFAULT COUNT too (and the other
+//    way round); picking a real PI switches the defaults off again
+// `usage` is a Map(inventoryKey -> qty requested by ALL lines of this order).
+const CompactPiField = ({ item, options, loading, usage, onChange }) => {
+    const picked = options.find((option) => option.piNo === item.piNo);
+    const availableQty = picked?.totalQuantity ?? null;
+
+    const usedQty =
+        item.piNo && availableQty !== null
+            ? usage?.get(inventoryKey(item.piNo, item.lotNo, item.yarnCount)) ?? 0
+            : 0;
+
+    const isOver = availableQty !== null && usedQty > availableQty;
+
+    return (
+        <div className="min-w-0">
+            <label className="mb-1.5 block text-xs font-medium text-slate-600">
+                PI No <span className="text-red-500">*</span>
+            </label>
+
+            {options.length > 0 ? (
+                <select
+                    value={item.piNo ?? ""}
+                    disabled={loading}
+                    onChange={(e) => onChange(e.target.value)}
+                    className={SELECT_CLASS}
+                >
+                    <option value="">
+                        {loading ? "Loading..." : "Select PI No"}
+                    </option>
+                    {options.map((option) => (
+                        <option key={option.piNo} value={option.piNo}>
+                            {option.piNo}
+                            {option.totalQuantity !== null
+                                ? ` — ${option.totalQuantity.toLocaleString()} KG`
+                                : ""}
+                        </option>
+                    ))}
+                </select>
+            ) : (
+                <input
+                    type="text"
+                    value={item.piNo ?? ""}
+                    disabled={loading}
+                    onChange={(e) => onChange(e.target.value)}
+                    placeholder="Type PI No"
+                    autoComplete="off"
+                    className={SELECT_CLASS}
+                />
+            )}
+
+            {availableQty !== null && (
+                <p
+                    className={`mt-1 text-[11px] ${isOver ? "font-medium text-red-600" : "text-slate-500"}`}
+                >
+                    {isOver
+                        ? `Over by ${formatKg(usedQty - availableQty)} KG. `
+                        : ""}
+                    {formatKg(usedQty)} of {formatKg(availableQty)} KG used in this order
+                </p>
+            )}
+        </div>
+    );
+};
+
 // Lot No + Yarn Count + PI No selects.
 // Renders three grid cells, so put it directly inside a grid container.
 // Lot and Count sit side by side, PI No spans the full width underneath.
 // `usage` is a Map(inventoryKey -> qty requested by ALL lines of this order)
 // so each card can show a live stock bar for its PI.
-// `noLots` = nothing found for this job: DEFAULT LOT / DEFAULT COUNT are offered.
+// `noLots` = nothing found for this job: DEFAULT LOT / DEFAULT COUNT / DEFAULT PI are offered.
 const LotCountPiFields = ({
     item,
     onChange,
@@ -611,18 +628,13 @@ const LotCountPiFields = ({
         );
     };
 
-    let lotOptions = item.yarnCount
-        ? getLotsForCount(inventory, item.yarnCount)
-        : getAllLots(inventory);
+    // Every lot / count / PI is offered, whatever is picked in the other fields
+    let lotOptions = getAllLots(inventory);
 
     const ydCounts = hasYd ? getYdCounts(ydLots, item.ydBatch) : [];
 
     let countOptions =
-        ydCounts.length > 0
-            ? ydCounts
-            : item.lotNo
-                ? getCountsForLot(inventory, item.lotNo)
-                : getAllCounts(inventory);
+        ydCounts.length > 0 ? ydCounts : getAllCounts(inventory);
 
     // Nothing found for this job: offer the defaults
     if ((noLots || item.lotNo === DEFAULT_LOT) && !lotOptions.includes(DEFAULT_LOT)) {
@@ -636,16 +648,34 @@ const LotCountPiFields = ({
         countOptions = [...countOptions, DEFAULT_COUNT];
     }
 
-    const piOptions =
-        item.lotNo && item.yarnCount && !isDefault
-            ? getPisForPair(inventory, item.lotNo, item.yarnCount)
-            : [];
+    // ALL PI numbers; the balance is shown when the chosen Lot + Count has one
+    const piOptions = isDefault
+        ? []
+        : getAllPis(inventory).map((piNo) => ({
+            piNo,
+            totalQuantity:
+                item.lotNo && item.yarnCount
+                    ? inventory.find(
+                        (entry) =>
+                            entry.piNo === piNo &&
+                            entry.lotNo === item.lotNo &&
+                            entry.yarnCount === item.yarnCount
+                    )?.totalQuantity ?? null
+                    : null,
+        }));
 
     const hasFullKey = Boolean(
         item.piNo && item.lotNo && item.yarnCount && !isDefault
     );
 
-    const availableQty = hasFullKey
+    const hasEntry =
+        hasFullKey &&
+        hasInventoryEntry(inventory, item.piNo, item.lotNo, item.yarnCount);
+
+    // PI + Lot + Count picked together but not found in the stock
+    const noMatch = hasFullKey && !hasEntry && !loading && !hasYd;
+
+    const availableQty = hasEntry
         ? getAvailableQty(inventory, item.piNo, item.lotNo, item.yarnCount)
         : null;
 
@@ -740,29 +770,44 @@ const LotCountPiFields = ({
 
             <div className="col-span-2 min-w-0">
                 <label className="mb-1.5 block text-xs font-medium text-slate-600">
-                    PI No {!hasYd && !isDefault && <span className="text-red-500">*</span>}
+                    PI No {!hasYd && <span className="text-red-500">*</span>}
                 </label>
-                <select
-                    value={item.piNo}
-                    disabled={loading || piOptions.length === 0}
-                    onChange={(e) => onChange("piNo", e.target.value)}
-                    className={SELECT_CLASS}
-                >
-                    <option value="">
-                        {hasYd
-                            ? "Not needed for Y/D batch"
-                            : isDefault
-                                ? "Not needed for default lot"
-                                : item.lotNo && item.yarnCount
-                                    ? "Select PI No"
-                                    : "Pick a lot and count first"}
-                    </option>
-                    {piOptions.map((entry) => (
-                        <option key={entry.piNo} value={entry.piNo}>
-                            {entry.piNo} — {entry.totalQuantity.toLocaleString()} KG
+
+                {isDefault ? (
+                    // Default lot / count always carry the default PI
+                    <input
+                        type="text"
+                        value={DEFAULT_PI}
+                        disabled
+                        readOnly
+                        className={SELECT_CLASS}
+                    />
+                ) : (
+                    <select
+                        value={item.piNo}
+                        disabled={loading || hasYd || piOptions.length === 0}
+                        onChange={(e) => onChange("piNo", e.target.value)}
+                        className={SELECT_CLASS}
+                    >
+                        <option value="">
+                            {hasYd ? "Not needed for Y/D batch" : "Select PI No"}
                         </option>
-                    ))}
-                </select>
+                        {piOptions.map((entry) => (
+                            <option key={entry.piNo} value={entry.piNo}>
+                                {entry.piNo}
+                                {entry.totalQuantity !== null
+                                    ? ` — ${entry.totalQuantity.toLocaleString()} KG`
+                                    : ""}
+                            </option>
+                        ))}
+                    </select>
+                )}
+
+                {noMatch && (
+                    <p className="mt-1 text-[11px] font-medium text-amber-600">
+                        This PI has no stock for the selected Lot + Count.
+                    </p>
+                )}
 
                 {availableQty !== null && (
                     <div className="mt-2">
@@ -1021,8 +1066,8 @@ const LinesBoard = ({
                     {noLots && (
                         <p className="mt-1 flex items-center gap-1 text-[11px] font-medium text-amber-600">
                             <AlertCircle size={12} className="shrink-0" />
-                            No lot or yarn count found for this job. {DEFAULT_LOT} and{" "}
-                            {DEFAULT_COUNT} are used.
+                            No lot or yarn count found for this job. {DEFAULT_LOT},{" "}
+                            {DEFAULT_COUNT} and {DEFAULT_PI} are used.
                         </p>
                     )}
                 </div>
@@ -1199,10 +1244,11 @@ const NewOrder = () => {
 
     // Lots from /api/lots-work-orders/:orderType (loaded per order type + job):
     //  - lotsAndCounts: raw yarn stock, one entry per PI + Lot + Count with its
-    //    remaining balance (knitting + yarn dyeing)
+    //    remaining balance (knitting + yarn dyeing, also used for the PI of
+    //    AOP + dyeing when the stock has a matching entry)
     //  - ydLots: yarn dyeing lots booked for this job (knitting only)
-    //  - jobLots: lots + counts already used by any work order of this job
-    //    (AOP + dyeing)
+    //  - jobLots: lots + counts (+ PI numbers) already used by any work order
+    //    of this job (AOP + dyeing)
     const [lotsAndCounts, setLotsAndCounts] = useState([]);
     const [ydLots, setYdLots] = useState([]);
     const [jobLots, setJobLots] = useState([]);
@@ -1360,7 +1406,7 @@ const NewOrder = () => {
     // Reloaded after a successful save so the balances stay current.
     //  - knitting:        raw yarn stock + yarn dyeing lots of the job
     //  - yarn dyeing:     raw yarn stock
-    //  - AOP / dyeing:    lots + counts used by any work order of the job
+    //  - AOP / dyeing:    lots + counts + PI numbers used by any work order of the job
     useEffect(() => {
         if (!orderType || !activeJobNo) {
             setLotsAndCounts([]);
@@ -1382,8 +1428,13 @@ const NewOrder = () => {
             setJobLots([]);
 
             try {
+                // AOP / Dyeing show the SAME lots as Knitting (the full yarn stock)
+                const stockOrderType = getRules(orderType).compact
+                    ? "knittingOrder"
+                    : orderType;
+
                 const response = await axiosPrivate.get(
-                    `/api/lots-work-orders/${encodeURIComponent(orderType)}`,
+                    `/api/lots-work-orders/${encodeURIComponent(stockOrderType)}`,
                     {
                         params: { jobNo: activeJobNo },
                         signal: controller.signal,
@@ -1429,6 +1480,12 @@ const NewOrder = () => {
                         .map((item) => ({
                             lotNo: String(item?.lotNo ?? "").trim(),
                             yarnCount: String(item?.yarnCount ?? "").trim(),
+                            // PI numbers of this lot + count (single `piNo` or a `piNos` list)
+                            piNos: uniqSorted(
+                                [item?.piNo, ...toList(item?.piNos)]
+                                    .map((pi) => String(pi ?? "").trim())
+                                    .filter(Boolean)
+                            ),
                             sources: toList(item?.sources),
                             styleRequirementRowIds: toList(item?.styleRequirementRowIds)
                                 .map(Number)
@@ -1468,14 +1525,16 @@ const NewOrder = () => {
     }, [axiosPrivate, showNotification, reloadKey, orderType, activeJobNo]);
 
     // TRUE when the loaded job has no lot / yarn count to choose from.
-    // Then DEFAULT LOT and DEFAULT COUNT are offered and selected.
+    // Then DEFAULT LOT, DEFAULT COUNT and DEFAULT PI are selected automatically.
+    // (They stay available in the dropdowns either way for AOP / dyeing.)
     //  - AOP / dyeing:   no lots in the job's work orders
     //  - knitting:       no raw stock AND no Y/D batch (a Y/D batch is a real choice)
     //  - yarn dyeing:    no raw stock
     const noLotsFound = useMemo(() => {
         if (!orderType || !activeJobNo || isLotsAndCountsLoading) return false;
 
-        if (getRules(orderType).compact) return jobLots.length === 0;
+        // AOP / Dyeing never use the defaults
+        if (getRules(orderType).compact) return false;
 
         if (orderType === "knittingOrder") {
             return lotsAndCounts.length === 0 && ydLots.length === 0;
@@ -1491,19 +1550,23 @@ const NewOrder = () => {
         ydLots,
     ]);
 
-    // Keeps the Lot / Count of every line in step with what the job really has:
-    //  - nothing found      -> DEFAULT LOT / DEFAULT COUNT are selected
-    //  - real lots found    -> defaults are cleared, and when a composition has
-    //                          exactly one real lot + count it is selected (AOP / dyeing)
-    // Runs only when the lots / order type change, so it never overwrites a
+    // Keeps the Lot / Count / PI of every line in step with what the job really has:
+    //  - nothing found      -> DEFAULT LOT / DEFAULT COUNT / DEFAULT PI are selected
+    //  - real lots found    -> defaults are cleared (AOP / dyeing keep a default the
+    //                          user picked), and when a composition has
+    //                          exactly one real lot + count (and one PI) it is
+    //                          selected (AOP / dyeing)
+    // It only fills empty values and clears defaults, so it never overwrites a
     // choice the user makes afterwards.
     useEffect(() => {
-        setRows((prev) => syncDefaultLots(prev, jobLots, orderType, noLotsFound));
-    }, [jobLots, orderType, noLotsFound]);
+        setRows((prev) =>
+            syncDefaultLots(prev, orderType, noLotsFound)
+        );
+    }, [lotsAndCounts, orderType, noLotsFound]);
 
     // Initial values for a NEW line / color (defaults when nothing was found)
     const newLineInit = noLotsFound
-        ? { lotNo: DEFAULT_LOT, yarnCount: DEFAULT_COUNT }
+        ? { lotNo: DEFAULT_LOT, yarnCount: DEFAULT_COUNT, piNo: DEFAULT_PI }
         : {};
 
     // ---------------------------------------------------------
@@ -1778,7 +1841,7 @@ const NewOrder = () => {
     }, [rows, orderType]);
 
     // Live usage per PI + Lot + Count across ALL lines / colors of this order
-    // (default lot lines have no PI, so they never count here)
+    // (default lot lines have no stock bucket, so they never count here)
     const bucketUsage = useMemo(() => {
         const usage = new Map();
 
@@ -1924,6 +1987,11 @@ const NewOrder = () => {
                 factoryName: "",
             }));
 
+            // Defaults that were filled for the previous order type must not
+            // follow the user into the new one (they are filled again by the
+            // sync effect when the new order type really has no lots).
+            setRows((prev) => clearDefaultLotValues(prev));
+
             if (value === "yarnDyeingOrder") {
                 setRows((prev) =>
                     prev.map((row) => ({
@@ -1990,17 +2058,12 @@ const NewOrder = () => {
         if (!styleData) return;
 
         setRows(
-            syncDefaultLots(
-                buildRowsFromStyle(styleData),
-                jobLots,
-                orderType,
-                noLotsFound
-            )
+            syncDefaultLots(buildRowsFromStyle(styleData), orderType, noLotsFound)
         );
         setFormError("");
 
         showNotification("Compositions restored", "success");
-    }, [styleData, jobLots, orderType, noLotsFound, showNotification]);
+    }, [styleData, orderType, noLotsFound, showNotification]);
 
     // Composition-level fields shared by ALL lines of that composition:
     // Price Per Kg, Stich Length, Machine Dia
@@ -2078,8 +2141,6 @@ const NewOrder = () => {
             prev.map((row, i) => {
                 if (i !== rowIndex) return row;
 
-                const rowId = Number(row.styleRequirementRowId ?? row.id);
-
                 return {
                     ...row,
                     lots: (row.lots ?? [defaultLot()]).map((lot, li) => {
@@ -2105,25 +2166,12 @@ const NewOrder = () => {
                             };
                         }
 
-                        // AOP / Dyeing: Lot + Count dropdowns come from this job's work
-                        if (
-                            getRules(orderType).compact &&
-                            (field === "lotNo" || field === "yarnCount")
-                        ) {
-                            return applyJobLotChange(
-                                getJobLotCandidates(jobLots, rowId),
-                                lot,
-                                field,
-                                value
-                            );
-                        }
-
                         if (
                             INVENTORY_FIELDS.has(field) &&
                             !getRules(orderType).compact &&
                             !lot.ydBatch
                         ) {
-                            return applyInventoryChange(lotsAndCounts, lot, field, value);
+                            return applyInventoryChange(lot, field, value);
                         }
 
                         return {
@@ -2228,7 +2276,7 @@ const NewOrder = () => {
                             if (ci !== colorIndex) return color;
 
                             if (INVENTORY_FIELDS.has(field)) {
-                                return applyInventoryChange(lotsAndCounts, color, field, value);
+                                return applyInventoryChange(color, field, value);
                             }
 
                             return {
@@ -2325,6 +2373,7 @@ const NewOrder = () => {
                 // AOP / Dyeing: one set of details per composition
                 const lot = row.lots?.[0] ?? {};
                 const where = `Composition ${i + 1}`;
+                const usesDefault = isDefaultItem(lot);
 
                 if (!(toNum(row.unitPrice) > 0)) {
                     return fail(`Price Per Kg must be greater than 0 for ${where}`);
@@ -2342,8 +2391,26 @@ const NewOrder = () => {
                     return fail(`Yarn Lot is required for ${where}`);
                 }
 
+                // PI No is required. Default lot / count carry DEFAULT PI automatically.
+                if (!getPiForPayload(lot)) {
+                    return fail(`PI No is required for ${where}`);
+                }
+
                 if (!String(row.stichLength ?? "").trim()) {
                     return fail(`Stitch Length is required for ${where}`);
+                }
+
+                // Check the stock balance only when this PI really exists in the
+                // stock list (a PI taken from the job's work orders or typed by
+                // hand has no balance to compare against).
+                if (!usesDefault) {
+                    const piNo = String(lot.piNo).trim();
+                    const lotNo = String(lot.lotNo).trim();
+                    const yarnCount = String(lot.yarnCount).trim();
+
+                    if (hasInventoryEntry(lotsAndCounts, piNo, lotNo, yarnCount)) {
+                        addRequested(piNo, lotNo, yarnCount, toNum(lot.workOrderQty));
+                    }
                 }
             } else if (!isYD) {
                 // Composition-level (shared) fields are validated once
@@ -2379,7 +2446,7 @@ const NewOrder = () => {
                         orderType === "knittingOrder" &&
                         String(lot.ydBatch ?? "").trim() !== "";
 
-                    // Default lot / count: no PI and no stock bucket
+                    // Default lot / count: DEFAULT PI, no stock bucket
                     const usesDefault = isDefaultItem(lot);
                     const skipStock = usesYdBatch || usesDefault;
 
@@ -2395,7 +2462,7 @@ const NewOrder = () => {
                         return fail(`Yarn Count is required for ${where}`);
                     }
 
-                    if (!skipStock && !String(lot.piNo).trim()) {
+                    if (!usesYdBatch && !getPiForPayload(lot)) {
                         return fail(`PI No is required for ${where}`);
                     }
 
@@ -2441,8 +2508,8 @@ const NewOrder = () => {
                         return fail(`Yarn Count is required for ${where}`);
                     }
 
-                    // Default lot / count: no PI and no stock bucket
-                    if (!usesDefault && !String(yarnColor.piNo).trim()) {
+                    // PI No is required. Default lot / count carry DEFAULT PI automatically.
+                    if (!getPiForPayload(yarnColor)) {
                         return fail(`PI No is required for ${where}`);
                     }
 
@@ -2528,7 +2595,8 @@ const NewOrder = () => {
                         price: yc.price,
                         lotNo: String(yc.lotNo).trim(),
                         yarnCount: String(yc.yarnCount).trim(),
-                        piNo: String(yc.piNo).trim(),
+                        // DEFAULT PI is sent for default lot / count
+                        piNo: getPiForPayload(yc),
                     }));
 
                     return [
@@ -2547,7 +2615,8 @@ const NewOrder = () => {
                     ];
                 }
 
-                // AOP / Dyeing: a single entry per composition (no PI, no stock bucket)
+                // AOP / Dyeing: a single entry per composition, with its PI No
+                // (DEFAULT PI for the default lot / count)
                 if (getRules(orderType).compact) {
                     const lot = row.lots?.[0] ?? {};
 
@@ -2558,7 +2627,7 @@ const NewOrder = () => {
                             unitPrice: row.unitPrice,
                             lotNo: String(lot.lotNo ?? "").trim(),
                             yarnCount: String(lot.yarnCount ?? "").trim(),
-                            piNo: "",
+                            piNo: getPiForPayload(lot),
                             stichLength: String(row.stichLength ?? "").trim(),
                             machineDia: "",
                             package: String(row.pkg ?? "").trim(),
@@ -2576,7 +2645,7 @@ const NewOrder = () => {
                     unitPrice: row.unitPrice,
                     lotNo: String(lot.lotNo).trim(),
                     yarnCount: String(lot.yarnCount).trim(),
-                    piNo: String(lot.piNo).trim(),
+                    piNo: getPiForPayload(lot),
                     stichLength: String(row.stichLength ?? "").trim(),
                     machineDia: String(row.machineDia ?? "").trim(),
                     ...(orderType === "knittingOrder"
@@ -3322,49 +3391,29 @@ const NewOrder = () => {
                                     const colorList =
                                         styleRow.yarnColors ?? [defaultYarnColor()];
 
-                                    // AOP / Dyeing: lots + counts offered from this job's work
-                                    const jobCandidates = isCompact
-                                        ? getJobLotCandidates(
-                                            jobLots,
-                                            Number(styleRow.styleRequirementRowId ?? styleRow.id)
-                                        )
-                                        : [];
 
+                                    // AOP / Dyeing: EVERY lot, count and PI is offered.
+                                    // DEFAULT LOT / DEFAULT COUNT / DEFAULT PI are always the
+                                    // last option of their dropdown.
                                     const chosenCompactLot = String(lotList[0]?.lotNo ?? "").trim();
                                     const chosenCompactCount = String(lotList[0]?.yarnCount ?? "").trim();
 
-                                    // Counts that belong to the chosen lot (all counts when none chosen)
-                                    const countsForChosenLot = uniqSorted(
-                                        jobCandidates
-                                            .filter((entry) => !chosenCompactLot || entry.lotNo === chosenCompactLot)
-                                            .map((entry) => entry.yarnCount)
-                                            .filter(Boolean)
-                                    );
+                                    const compactCountOptions = isCompact
+                                        ? getAllCompactCounts(lotsAndCounts)
+                                        : [];
 
-                                    let compactCountOptions =
-                                        countsForChosenLot.length > 0
-                                            ? countsForChosenLot
-                                            : uniqSorted(
-                                                jobCandidates.map((entry) => entry.yarnCount).filter(Boolean)
-                                            );
+                                    const compactLotOptions = isCompact
+                                        ? getAllCompactLots(lotsAndCounts)
+                                        : [];
 
-                                    // Lots that belong to the chosen count (all lots when none chosen)
-                                    let compactLotOptions = uniqSorted(
-                                        jobCandidates
-                                            .filter((entry) => !chosenCompactCount || entry.yarnCount === chosenCompactCount)
-                                            .map((entry) => entry.lotNo)
-                                    );
-
-                                    // Nothing found for this job: offer the defaults
-                                    if (noLotsFound) {
-                                        if (!compactCountOptions.includes(DEFAULT_COUNT)) {
-                                            compactCountOptions = [...compactCountOptions, DEFAULT_COUNT];
-                                        }
-
-                                        if (!compactLotOptions.includes(DEFAULT_LOT)) {
-                                            compactLotOptions = [...compactLotOptions, DEFAULT_LOT];
-                                        }
-                                    }
+                                    // All PI numbers (balance attached for the chosen lot + count)
+                                    const compactPiOptions = isCompact
+                                        ? getCompactPiOptions(
+                                            lotsAndCounts,
+                                            chosenCompactLot,
+                                            chosenCompactCount
+                                                        )
+                                        : [];
 
                                     const renderRemaining = (qty) => {
                                         const remaining =
@@ -3512,7 +3561,7 @@ const NewOrder = () => {
                                                     </div>
                                                 )}
 
-                                                {/* AOP / Dyeing: compact design, 7 fields in two lines */}
+                                                {/* AOP / Dyeing: compact design, 8 fields in two lines */}
                                                 {isCompact && (
                                                     <div className="mt-5 rounded-xl border border-slate-200 bg-gradient-to-b from-slate-50/80 to-white p-4">
                                                         <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
@@ -3523,17 +3572,10 @@ const NewOrder = () => {
                                                                 <p className="mt-0.5 text-xs text-slate-500">
                                                                     {isLotsAndCountsLoading
                                                                         ? "Loading yarn lots for this job..."
-                                                                        : jobCandidates.length > 0
-                                                                            ? "One set of details for this composition. Yarn count and lot come from the work already placed for this job."
-                                                                            : "No yarn lot found in the work orders of this job yet."}
+                                                                        : lotsAndCounts.length > 0
+                                                                            ? "One set of details for this composition. Yarn count, lot and PI No list every available value."
+                                                                            : "No yarn lot found in the yarn stock."}
                                                                 </p>
-
-                                                                {noLotsFound && (
-                                                                    <p className="mt-1 flex items-center gap-1 text-[11px] font-medium text-amber-600">
-                                                                        <AlertCircle size={12} className="shrink-0" />
-                                                                        {DEFAULT_LOT} and {DEFAULT_COUNT} are used.
-                                                                    </p>
-                                                                )}
                                                             </div>
 
                                                             <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-[11px] font-semibold text-indigo-700">
@@ -3571,7 +3613,7 @@ const NewOrder = () => {
                                                                 options={compactCountOptions}
                                                                 loading={isLotsAndCountsLoading}
                                                                 placeholder="Select count"
-                                                                emptyText="No yarn count for this job"
+                                                                emptyText="No yarn count in stock"
                                                                 onChange={(value) =>
                                                                     handleLotChange(index, 0, "yarnCount", value)
                                                                 }
@@ -3583,7 +3625,7 @@ const NewOrder = () => {
                                                                 options={compactLotOptions}
                                                                 loading={isLotsAndCountsLoading}
                                                                 placeholder="Select lot"
-                                                                emptyText="No yarn lot for this job"
+                                                                emptyText="No yarn lot in stock"
                                                                 onChange={(value) =>
                                                                     handleLotChange(index, 0, "lotNo", value)
                                                                 }
@@ -3592,6 +3634,16 @@ const NewOrder = () => {
 
                                                         {/* Line 2 */}
                                                         <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                                                            <CompactPiField
+                                                                item={lotList[0] ?? {}}
+                                                                options={compactPiOptions}
+                                                                loading={isLotsAndCountsLoading}
+                                                                usage={bucketUsage}
+                                                                onChange={(value) =>
+                                                                    handleLotChange(index, 0, "piNo", value)
+                                                                }
+                                                            />
+
                                                             <Input
                                                                 label="Stitch Length"
                                                                 placeholder="Stitch Length"
@@ -3622,16 +3674,15 @@ const NewOrder = () => {
                                                                 }
                                                                 isShowOutLabel
                                                             />
+                                                        </div>
 
-                                                            <div className="flex flex-col justify-end">
-                                                                <div className="flex h-10 items-center justify-between rounded-md border border-slate-200 bg-white px-3 text-xs text-slate-500">
-                                                                    <span>Amount</span>
-                                                                    <span className="text-sm font-semibold tabular-nums text-slate-900">
-                                                                        {formatMoney(sumLotAmount(styleRow))}
-                                                                        <span className="ml-1 text-[11px] font-medium text-slate-400">BDT</span>
-                                                                    </span>
-                                                                </div>
-                                                            </div>
+                                                        {/* Amount */}
+                                                        <div className="mt-3 flex items-center justify-end gap-2 border-t border-slate-200 pt-3 text-xs text-slate-500">
+                                                            <span>Amount</span>
+                                                            <span className="text-sm font-semibold tabular-nums text-slate-900">
+                                                                {formatMoney(sumLotAmount(styleRow))}
+                                                                <span className="ml-1 text-[11px] font-medium text-slate-400">BDT</span>
+                                                            </span>
                                                         </div>
                                                     </div>
                                                 )}

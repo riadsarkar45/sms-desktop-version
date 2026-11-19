@@ -2208,7 +2208,6 @@ const Knitting = () => {
                                                     <div title={isNumber ? undefined : String(currentValue || "")} style={{ ...clampStyle, textAlign: 'center', opacity: currentValue ? 1 : 0.5 }}>
                                                         {isNumber ? (Number(currentValue) > 0 ? Number(currentValue).toFixed(2) : "-") : (currentValue || "-")}
                                                     </div>
-                                                    XXX
                                                 </td>
                                             );
                                         })}

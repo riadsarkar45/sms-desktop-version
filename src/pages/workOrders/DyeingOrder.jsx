@@ -280,7 +280,7 @@ const DyeingOrder = ({
                                         <div onDoubleClick={() => handleInlineEdit(wo.id, wo.factoryName, "workOrder", "factoryName", 0)} className={`${cellPad} cursor-pointer`}>
                                             {isEdit.updatedFieldName === "factoryName" && isEdit.rowId === wo.id ? (
                                                 <input type="text" name="factoryName" className="p-2 outline-none border rounded-md w-full" value={updatedFields.currentValue} onChange={(e) => handleOnChange(e)} />
-                                            ) : <span onClick={() => handleEditRowData(wo.id)}>{wo.factoryName}</span>}
+                                            ) : <span onClick={() => handleEditRowData(wo.id, "dyeingOrder")}>{wo.factoryName}</span>}
                                         </div>
                                     )}
                                 </td>
@@ -319,7 +319,7 @@ const DyeingOrder = ({
 
                             {/* COLOR (per composition) */}
                             <td style={stickyTd(7, isHovered)}>
-                                <div onClick={() => handleEditRowData(comp?.id)} className={cellPad} style={{ cursor: "pointer" }}>
+                                <div className={cellPad} style={{ cursor: "pointer" }}>
                                     {comp?.color || "-"}
                                 </div>
                             </td>

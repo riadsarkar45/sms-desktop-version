@@ -493,7 +493,7 @@ const KnittingOrder = ({
                                                         onChange={(e) => handleOnChange(e)}
                                                     />
                                                 ) : (
-                                                    <span onClick={() => handleEditRowData(wo.id)}>
+                                                    <span onClick={() => handleEditRowData(wo.id, "knittingOrder")}>
                                                         {wo.factoryName}
                                                     </span>
                                                 )}
@@ -556,12 +556,7 @@ const KnittingOrder = ({
                             {/* COL 7 — COLOR */}
                             <td style={stickyTd(7, isHovered)}>
                                 <div
-                                    onClick={(e) => {
-                                        e.stopPropagation();
-                                        if (comp?.id) {
-                                            handleEditRowData(comp.id);
-                                        }
-                                    }}
+                                    
                                     className={`${cellPad} cursor-pointer hover:text-blue-500`}
                                     style={cancellationTextStyle}
                                 >

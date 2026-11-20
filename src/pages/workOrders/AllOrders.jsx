@@ -183,6 +183,7 @@ const AllOrders = ({ orderType }) => {
     // ---------- work order preview + REVISED ----------
     const [previewData, setPreviewData] = useState(null); // { job, wo }
     const [revisions, setRevisions] = useState(() => getSavedRevisions(orderType));
+    const [isYarnDyeSelected, setIsYarnDyeSelected] = useState("")
 
     useEffect(() => {
         setRevisions(getSavedRevisions(orderType));
@@ -742,7 +743,7 @@ const AllOrders = ({ orderType }) => {
     };
     // ---------- END REFRESH ----------
 
-    const handleEditRowData = async (id) => {
+    const handleEditRowData = async (id, orderTypeForYarnDye) => {
         const singleWorkOrderId = Array.isArray(id) ? id[0] : id;
         setLoadingDeliveries(true);
         setIsEditing(true);
@@ -750,6 +751,9 @@ const AllOrders = ({ orderType }) => {
         setChangedField({});
         setDuplicateChallan([]);
         setChallanIssue([]);
+
+        setIsYarnDyeSelected(orderTypeForYarnDye)
+        console.log(orderTypeForYarnDye, "orderType");
 
         fetchData(`/api/deliveries/${orderType}`, {
             params: { workOrderIds: singleWorkOrderId }
@@ -950,6 +954,41 @@ const AllOrders = ({ orderType }) => {
         }
     };
 
+    // called by YarnDeliveryModal after a successful save
+    const handleYarnDyeSaved = async ({ savedYarnIds = [], workOrderIds = [] }) => {
+        // mark the work orders as REVISED
+        workOrderIds.forEach((woId) => {
+            const wo = findWorkOrder(null, woId);
+            if (wo) markRevised(wo);
+        });
+
+        // clear the typed inputs of the saved colors
+        setChangedField((prev) => {
+            const next = { ...prev };
+            savedYarnIds.forEach((id) => delete next[id]);
+            return next;
+        });
+
+        // reload the table (and the deliveries, in case the modal is reopened)
+        await Promise.all([
+            fetchData(`/api/work-order/${orderType}`, {
+                params: { page, limit, filters: filtersParam }
+            }).then((res) => {
+                if (res) {
+                    setOrders(res.data ?? []);
+                    if (res.pagination) setPagination(res.pagination);
+                }
+            }).catch((err) => console.log("Failed to refresh orders:", err)),
+
+            workOrderId
+                ? fetchData(`/api/deliveries/${orderType}`, {
+                    params: { workOrderIds: workOrderId }
+                }).then((dev) => setDeliveries(dev))
+                    .catch((err) => console.log("Failed to refresh deliveries:", err))
+                : Promise.resolve(),
+        ]);
+    };
+
     const handleClearFilters = () => {
         setFilters({});
         setFilterOptions({});
@@ -1078,94 +1117,94 @@ const AllOrders = ({ orderType }) => {
 
             {/* everything above the table box (watched for size changes) */}
             <div ref={topRef}>
-            <div className="flex gap-2 mb-0.5">
-                {/* NEW: REFRESH button */}
-                <button
-                    onClick={handleRefresh}
-                    disabled={isRefreshing}
-                    title="Refresh"
-                    className={`bg-gray-700 text-white rounded-md p-2 text-lg flex items-center gap-2 ${isRefreshing ? "opacity-70 cursor-wait" : "hover:bg-gray-800"}`}
-                >
-                    <RefreshCw className={isRefreshing ? "animate-spin" : ""} />
-                    {isRefreshing ? "Refreshing..." : "Refresh"}
-                </button>
-                {isEdit?.isEditing && (
-                    <button onClick={() => handleEditedSubmitWithRevision()} title="Save Changes" className="bg-blue-700 text-white rounded-md p-2 text-lg">
-                        <Save />
-                    </button>
-                )}
-                {isInlineEditingLoading && (
-                    <button title="Saving..." className="bg-blue-700 text-white rounded-md p-2 text-lg cursor-wait">
-                        <Loader />
-                    </button>
-                )}
-                {Object.keys(filters).length > 0 && (
-                    <button onClick={() => handleClearFilters()} title="Clear Filter" className="bg-red-600 text-white rounded-md p-2 text-lg flex items-center gap-2">
-                        <FunnelX /> Clear Filters
-                    </button>
-                )}
-                {isChallanDowloading.isLoading === false && prepareForChallan?.length > 0 && (
-                    <button onClick={() => handlePDFchallanDownload()} title="Download Challan" className="bg-blue-700 text-white rounded-md p-2 text-lg flex gap-2 items-center">
-                        <DownloadCloudIcon /> Download Challan ({prepareForChallan?.length})
-                    </button>
-                )}
-                {(isChallanDowloading.isLoading || isChallanDowloading.isError !== null) && (
+                <div className="flex gap-2 mb-0.5">
+                    {/* NEW: REFRESH button */}
                     <button
-                        title="Download Status"
-                        className={`${isChallanDowloading.isError ? "bg-red-400 text-red-700" : "bg-blue-700 text-white"} rounded-md p-2 text-lg flex gap-2 items-center`}
+                        onClick={handleRefresh}
+                        disabled={isRefreshing}
+                        title="Refresh"
+                        className={`bg-gray-700 text-white rounded-md p-2 text-lg flex items-center gap-2 ${isRefreshing ? "opacity-70 cursor-wait" : "hover:bg-gray-800"}`}
                     >
-                        {isChallanDowloading.isLoading && <span className="animate-spin"><Loader /></span>}
-                        {isChallanDowloading.isLoading === true ? "Downloading..." : isChallanDowloading.isError === true && "Download Failed"}
+                        <RefreshCw className={isRefreshing ? "animate-spin" : ""} />
+                        {isRefreshing ? "Refreshing..." : "Refresh"}
                     </button>
-                )}
-            </div>
-
-            {Object.keys(filters).length > 0 && (
-                <div style={filterHeaderStyle}>
-                    <div style={activeFiltersContainerStyle}>
-                        <Filter size={18} style={filterIconStyle} />
-                        <span style={{ fontWeight: "700", color: "#0F172A", fontSize: "14px" }}>
-                            Active Filters:
-                        </span>
-                        {Object.entries(filters).map(([columnName, values]) => {
-                            const column = COLUMNS.find(c => c.inputName === columnName);
-                            const columnHeader = column ? column.header : columnName;
-                            const displayValues = Array.isArray(values) ? values : [values];
-
-                            return (
-                                <div key={columnName} style={filterTagStyle}>
-                                    <span style={filterTagLabelStyle}>{columnHeader}:</span>
-                                    <span style={filterTagValueStyle}>
-                                        {displayValues.length > 2
-                                            ? `${displayValues.slice(0, 2).join(", ")} +${displayValues.length - 2}`
-                                            : displayValues.join(", ")
-                                        }
-                                    </span>
-                                    <button
-                                        onClick={() => handleRemoveFilter(columnName)}
-                                        style={removeFilterButtonStyle}
-                                        title={`Remove ${columnHeader} filter`}
-                                        onMouseEnter={(e) => e.currentTarget.style.background = "rgba(255,255,255,0.4)"}
-                                        onMouseLeave={(e) => e.currentTarget.style.background = "rgba(255,255,255,0.2)"}
-                                    >
-                                        <X size={14} strokeWidth={3} />
-                                    </button>
-                                </div>
-                            );
-                        })}
-                    </div>
+                    {isEdit?.isEditing && (
+                        <button onClick={() => handleEditedSubmitWithRevision()} title="Save Changes" className="bg-blue-700 text-white rounded-md p-2 text-lg">
+                            <Save />
+                        </button>
+                    )}
+                    {isInlineEditingLoading && (
+                        <button title="Saving..." className="bg-blue-700 text-white rounded-md p-2 text-lg cursor-wait">
+                            <Loader />
+                        </button>
+                    )}
+                    {Object.keys(filters).length > 0 && (
+                        <button onClick={() => handleClearFilters()} title="Clear Filter" className="bg-red-600 text-white rounded-md p-2 text-lg flex items-center gap-2">
+                            <FunnelX /> Clear Filters
+                        </button>
+                    )}
+                    {isChallanDowloading.isLoading === false && prepareForChallan?.length > 0 && (
+                        <button onClick={() => handlePDFchallanDownload()} title="Download Challan" className="bg-blue-700 text-white rounded-md p-2 text-lg flex gap-2 items-center">
+                            <DownloadCloudIcon /> Download Challan ({prepareForChallan?.length})
+                        </button>
+                    )}
+                    {(isChallanDowloading.isLoading || isChallanDowloading.isError !== null) && (
+                        <button
+                            title="Download Status"
+                            className={`${isChallanDowloading.isError ? "bg-red-400 text-red-700" : "bg-blue-700 text-white"} rounded-md p-2 text-lg flex gap-2 items-center`}
+                        >
+                            {isChallanDowloading.isLoading && <span className="animate-spin"><Loader /></span>}
+                            {isChallanDowloading.isLoading === true ? "Downloading..." : isChallanDowloading.isError === true && "Download Failed"}
+                        </button>
+                    )}
                 </div>
-            )}
 
-            <div className="mb-5 p-2 rounded-sm" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                {(!orders || orders.length < 1) && !isRefetching && <div className="text-gray-600 font-medium">No order found</div>}
-                {isRefetching && (
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#6b7280", fontSize: 13 }}>
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        <span>Updating...</span>
+                {Object.keys(filters).length > 0 && (
+                    <div style={filterHeaderStyle}>
+                        <div style={activeFiltersContainerStyle}>
+                            <Filter size={18} style={filterIconStyle} />
+                            <span style={{ fontWeight: "700", color: "#0F172A", fontSize: "14px" }}>
+                                Active Filters:
+                            </span>
+                            {Object.entries(filters).map(([columnName, values]) => {
+                                const column = COLUMNS.find(c => c.inputName === columnName);
+                                const columnHeader = column ? column.header : columnName;
+                                const displayValues = Array.isArray(values) ? values : [values];
+
+                                return (
+                                    <div key={columnName} style={filterTagStyle}>
+                                        <span style={filterTagLabelStyle}>{columnHeader}:</span>
+                                        <span style={filterTagValueStyle}>
+                                            {displayValues.length > 2
+                                                ? `${displayValues.slice(0, 2).join(", ")} +${displayValues.length - 2}`
+                                                : displayValues.join(", ")
+                                            }
+                                        </span>
+                                        <button
+                                            onClick={() => handleRemoveFilter(columnName)}
+                                            style={removeFilterButtonStyle}
+                                            title={`Remove ${columnHeader} filter`}
+                                            onMouseEnter={(e) => e.currentTarget.style.background = "rgba(255,255,255,0.4)"}
+                                            onMouseLeave={(e) => e.currentTarget.style.background = "rgba(255,255,255,0.2)"}
+                                        >
+                                            <X size={14} strokeWidth={3} />
+                                        </button>
+                                    </div>
+                                );
+                            })}
+                        </div>
                     </div>
                 )}
-            </div>
+
+                <div className="mb-5 p-2 rounded-sm" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    {(!orders || orders.length < 1) && !isRefetching && <div className="text-gray-600 font-medium">No order found</div>}
+                    {isRefetching && (
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#6b7280", fontSize: 13 }}>
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            <span>Updating...</span>
+                        </div>
+                    )}
+                </div>
             </div>
 
             <div className="bg-white rounded-lg border border-gray-200" style={{ borderTop: "3px solid #217346", overflow: "hidden" }}>
@@ -1395,7 +1434,7 @@ const AllOrders = ({ orderType }) => {
                         .se-zero { background: #F3F4F6; border-color: #D6DAE1; color: #6B7280; }
                     `}</style>
 
-                    { isEditing && (
+                    {orderType === "knittingOrder" || orderType === "dyeingOrder" || orderType === "aopOrder" ||isEditing && (
                         <Modal
                             workOrderId={workOrderId}
                             isLoading={isLoading}
@@ -1415,21 +1454,22 @@ const AllOrders = ({ orderType }) => {
                         />
                     )}
 
-                    {/* {orderType === "yarnDyeingOrder && (
+
+                    {orderType === "yarnDyeingOrder" && isEditing && (
                         <YarnDeliveryModal
+                            isOpen={true}
+                            onClose={() => {
+                                setIsEditing(false);
+                                setIsYarnDyeSelected("");
+                            }}
                             deliveries={deliveries}
+                            changedField={changedField}
+                            handleEditOnChange={handleEditOnChange}
+                            isFetching={loadingDeliveries}
+                            onSaved={handleYarnDyeSaved}
                         />
-                    )} */}
+                    )}
 
-                    {
-                        orderType === "yarnDyeingOrder" && isEditing && (
-                            <YarnDeliveryModal 
-                                deliveries={deliveries}
-                            />
-                        )
-                    }
-
-                    
 
                     {
                         isCancelModalOpen && (

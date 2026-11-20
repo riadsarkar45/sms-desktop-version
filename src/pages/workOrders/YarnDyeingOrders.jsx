@@ -140,7 +140,7 @@ const YarnDyeOrders = ({
                                         <div onDoubleClick={() => handleInlineEdit(wo.id, wo.factoryName, "workOrder", "factoryName", 0)} className="cursor-pointer px-3 py-1.5">
                                             {isEdit.updatedFieldName === "factoryName" && isEdit.rowId === wo.id ? (
                                                 <input type="text" name="factoryName" className="p-2 outline-none border rounded-md w-full" value={updatedFields.currentValue} onChange={(e) => handleOnChange(e)} />
-                                            ) : <span onClick={() => handleEditRowData(wo.id)}>{wo.factoryName}</span>}
+                                            ) : <span onClick={() => handleEditRowData(wo.id, "yarnDyeingOrder")}>{wo.factoryName}</span>}
                                         </div>
                                     )}
                                 </td>

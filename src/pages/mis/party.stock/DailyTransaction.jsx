@@ -9,6 +9,12 @@ const FINISH_IN_BALANCE = false;
 const PAGE_SIZE = 100;
 const MAX_PAGES = 200;
 
+// Backend deliveryType values per order type (exactly what challanMovement returns, see getDeliveryTypes):
+//   knittingOrder:   Yarn Delivery | Yarn Return | Grey Received | Grey Fabric Received | Finish Received
+//   dyeingOrder:     Grey Delivery | Grey Return | Grey Received | Finish Received
+//   aopOrder:        Sent For Aop | Received From Aop | AOP Finish Fabric Rcvd | Return From Aop
+//   yarnDyeingOrder: Yarn Delivery For Yarn Dye | Yarn Return From Yarn Dye | Yarn Received From Yarn Dye
+//                    | Finish Received | Finish Return
 const ORDER_CONFIG = {
   knittingOrder: {
     title: "Knitting",
@@ -16,6 +22,7 @@ const ORDER_CONFIG = {
     ret: "Yarn Return",
     received: "Greige Received",
     finish: null,
+    finishReturn: null,
     filePrefix: "Knitting_Daily_Transaction",
   },
   dyeingOrder: {
@@ -24,6 +31,7 @@ const ORDER_CONFIG = {
     ret: "Grey Return",
     received: "Grey Received",
     finish: "Finish Received",
+    finishReturn: null,
     filePrefix: "Dyeing_Daily_Transaction",
   },
   aopOrder: {
@@ -32,9 +40,24 @@ const ORDER_CONFIG = {
     ret: "AOP Return",
     received: "Received From AOP",
     finish: "AOP Finish Fabric Rcvd",
+    finishReturn: null,
     filePrefix: "AOP_Daily_Transaction",
   },
+  // Yarn Dyed tab (same API: /api/challan-movement/yarnDyeingOrder)
+  yarnDyeingOrder: {
+    title: "Yarn Dyed",
+    delivery: "Yarn Delivery For Yarn Dye",
+    ret: "Yarn Return From Yarn Dye",
+    received: "Yarn Received From Yarn Dye",
+    finish: "Finish Received",
+    finishReturn: "Finish Return",
+    filePrefix: "Yarn_Dyed_Daily_Transaction",
+  },
 };
+
+// every quantity field a row can carry
+const QTY_KEYS = ["yarnDelivery", "yarnReturn", "greyFabricReceived", "finishReceived", "finishReturn"];
+const zeroTotals = () => ({ yarnDelivery: 0, yarnReturn: 0, greyFabricReceived: 0, finishReceived: 0, finishReturn: 0 });
 
 // The quantity columns (= transaction types) of the selected order type.
 // key = the field on every row that holds the quantity.
@@ -43,6 +66,7 @@ const getQtyTypes = (cfg) => [
   { key: "yarnReturn", header: cfg.ret },
   { key: "greyFabricReceived", header: cfg.received },
   ...(cfg.finish ? [{ key: "finishReceived", header: cfg.finish }] : []),
+  ...(cfg.finishReturn ? [{ key: "finishReturn", header: cfg.finishReturn }] : []),
 ];
 
 // Columns of the Details table / Excel "Daily Details" sheet.
@@ -154,7 +178,7 @@ const getDayKey = (val) => {
 };
 const localDayKey = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 
-// The backend filters by month only: ?challanMonths=2026-09,2026-10 (max 60 months).
+// The backend filters by month only: ?challanMonths=2026-09,2026-10 (max 60 months, matched on deliveryDate in UTC).
 // The exact From / To days are applied in the browser on top of that.
 const MAX_MONTHS = 60;
 // "2026-09-05" .. "2026-11-20" -> ["2026-09","2026-10","2026-11"]
@@ -180,10 +204,11 @@ const unwrapResponse = (res) => {
   return { items, hasMore: !!body?.hasMore, nextCursor: body?.nextCursor ?? null };
 };
 
+// The backend only selects deliveryDate on a delivery (no challanDate / date / createdAt), so deliveryDate is the date.
 const pickChallanDate = (source, parent) => {
   const primary = source?.deliveryDate || source?.challanDate || parent?.deliveryDate || parent?.challanDate;
   if (primary) return { date: normalizeDate(primary), fallback: false };
-  const last = source?.date || parent?.date || source?.challanDate || parent?.challanDate;
+  const last = source?.date || parent?.date || source?.createdAt || parent?.createdAt;
   if (last) return { date: normalizeDate(last), fallback: true };
   return { date: "", fallback: false };
 };
@@ -192,9 +217,53 @@ const cleanFactoryName = (name) => String(name || "").replace(/\s+/g, " ").trim(
 const factoryKey = (name) => String(name || "Unknown").replace(/\s+/g, " ").trim().toLowerCase();
 const extractFactoryName = (item) => cleanFactoryName(item?.workOrder?.factoryName || item?.factoryName || "");
 
+// ===================== DELIVERY TYPE CLASSIFIER (single source of truth) =====================
+// Maps the backend deliveryType to the quantity field it belongs to.
+// Key = deliveryType lower-cased with spaces / "_" / "-" removed.
+const EXACT_KIND = {
+  // delivery
+  yarndelivery: "yarnDelivery",
+  greydelivery: "yarnDelivery",
+  sentforaop: "yarnDelivery",
+  yarndeliveryforyarndye: "yarnDelivery",
+  // return
+  yarnreturn: "yarnReturn",
+  greyreturn: "yarnReturn",
+  aopreturn: "yarnReturn",
+  returnfromaop: "yarnReturn",
+  yarnreturnfromyarndye: "yarnReturn",
+  // received
+  greyfabricreceived: "greyFabricReceived",
+  greigereceived: "greyFabricReceived",
+  greyreceived: "greyFabricReceived",
+  receivedfromaop: "greyFabricReceived",
+  yarnreceivedfromyarndye: "greyFabricReceived",
+  // finish
+  finishreceived: "finishReceived",
+  aopfinishfabricrcvd: "finishReceived",
+  finishreturn: "finishReturn",
+};
+const normType = (dv) => String(dv?.deliveryType || "").trim().toLowerCase().replace(/[\s_-]+/g, "");
+
+const classifyKind = (dv) => {
+  const type = normType(dv);
+  if (EXACT_KIND[type]) return EXACT_KIND[type];
+  // fallbacks for unknown / slightly different spellings
+  if (type.includes("finish") && type.includes("return")) return "finishReturn";
+  if (type.includes("finish")) return "finishReceived";
+  if (type.includes("return")) return "yarnReturn";
+  if (type.includes("received") || type.includes("rcvd")) return "greyFabricReceived";
+  if (type.includes("delivery") || type.includes("sentfor")) return "yarnDelivery";
+  return "greyFabricReceived";
+};
+
+// true when this order type has no column for that kind (the delivery is then skipped instead of showing an empty row)
+const isKindHidden = (kind, cfg) =>
+  (kind === "finishReceived" && !cfg.finish) || (kind === "finishReturn" && !cfg.finishReturn);
+
 // Which factory a transaction counts for (uses the challan's toFactory / fromFactory from the backend):
-//   delivery  (Yarn Delivery / Grey Delivery / Sent For Aop)                      -> toFactory   (goods go TO that factory)
-//   return / received / finish (Yarn Return, Grey Received, Return From Aop, ...)  -> fromFactory (goods come FROM that factory)
+//   delivery  (Yarn Delivery / Grey Delivery / Sent For Aop / Yarn Delivery For Yarn Dye) -> toFactory   (goods go TO that factory)
+//   return / received / finish (Yarn Return, Grey Received, Return From Aop, Finish Return, ...) -> fromFactory (goods come FROM that factory)
 // Only if that factory is empty, the work order's factory name is used instead.
 const resolveParty = (row) => {
   const primary = cleanFactoryName(row.kind === "yarnDelivery" ? row.toFactory : row.fromFactory);
@@ -203,12 +272,9 @@ const resolveParty = (row) => {
 };
 
 const sumRows = (rows) => {
-  const t = { yarnDelivery: 0, yarnReturn: 0, greyFabricReceived: 0, finishReceived: 0 };
+  const t = zeroTotals();
   rows.forEach((r) => {
-    t.yarnDelivery += Number(r.yarnDelivery) || 0;
-    t.yarnReturn += Number(r.yarnReturn) || 0;
-    t.greyFabricReceived += Number(r.greyFabricReceived) || 0;
-    t.finishReceived += Number(r.finishReceived) || 0;
+    QTY_KEYS.forEach((k) => { t[k] += Number(r[k]) || 0; });
   });
   Object.keys(t).forEach((k) => { t[k] = round2(t[k]); });
   return t;
@@ -231,19 +297,7 @@ const buildDayGroups = (entries) => {
   });
 };
 
-// ===================== NEW: SUMMARY TAB HELPERS =====================
-const ORDER_KEYS = ["knittingOrder", "dyeingOrder", "aopOrder"];
-
-const monthLabel = (ym) => {
-  const [y, m] = String(ym).split("-").map(Number);
-  return `${MONTH_SHORT[m - 1]}-${y}`;
-};
-const monthEndDay = (ym) => {
-  const [y, m] = String(ym).split("-").map(Number);
-  return `${ym}-${pad2(new Date(y, m, 0).getDate())}`;
-};
-
-const sumExtractQty = (dv) => {
+const extractQtyOf = (dv) => {
   if (dv?.deliveryQty !== undefined && dv?.deliveryQty !== null) {
     const num = Number(dv.deliveryQty);
     if (!isNaN(num)) return num;
@@ -257,43 +311,55 @@ const sumExtractQty = (dv) => {
   return 0;
 };
 
-// same classification as applyDelivery inside the component
-const sumKindOf = (dv) => {
-  const type = String(dv?.deliveryType || "").trim().toLowerCase().replace(/[\s_-]+/g, "");
-  if (type.includes("finish")) return "finishReceived";
-  if (type === "yarndelivery" || type === "greydelivery" || type === "sentforaop" || type.includes("sentfor") || (type.includes("delivery") && !type.includes("received"))) return "yarnDelivery";
-  if (type === "yarnreturn" || type === "greyreturn" || type === "aopreturn" || type.includes("return")) return "yarnReturn";
-  return "greyFabricReceived";
+// Every API record (composition) has deliveries[] (already filtered by the backend to the order's delivery types
+// and the requested months). Walks all of them and calls cb(dv, record).
+// If a record has no deliveries[] but carries a challanNo itself, the record is treated as the delivery.
+const forEachDelivery = (movements, cb) => {
+  (Array.isArray(movements) ? movements : []).forEach((item) => {
+    if (!item) return;
+    if (Array.isArray(item.deliveries) && item.deliveries.length > 0) {
+      item.deliveries.forEach((dv) => {
+        if (!dv) return;
+        cb(dv, item, true);
+      });
+    } else if (item.challanNo !== undefined && item.challanNo !== null) {
+      cb(item, null, false);
+    }
+  });
+};
+
+// ===================== SUMMARY TAB HELPERS =====================
+const ORDER_KEYS = ["knittingOrder", "dyeingOrder", "aopOrder", "yarnDyeingOrder"];
+const emptySumData = () => ({ knittingOrder: [], dyeingOrder: [], aopOrder: [], yarnDyeingOrder: [] });
+
+const monthLabel = (ym) => {
+  const [y, m] = String(ym).split("-").map(Number);
+  return `${MONTH_SHORT[m - 1]}-${y}`;
+};
+const monthEndDay = (ym) => {
+  const [y, m] = String(ym).split("-").map(Number);
+  return `${ym}-${pad2(new Date(y, m, 0).getDate())}`;
 };
 
 // API records of one order type -> [{ day, party, partyKey, challanNo, kind, qty }]
-const buildSummaryEntries = (movements, hasFinish) => {
+const buildSummaryEntries = (movements, cfg) => {
   const out = [];
-  const push = (challanNo, source, parent, factoryName) => {
-    const kind = sumKindOf(source);
-    if (!hasFinish && kind === "finishReceived") return;
-    const { date } = pickChallanDate(source, parent);
+  forEachDelivery(movements, (dv, parent) => {
+    const challanNo = dv?.challanNo;
+    if (challanNo === undefined || challanNo === null) return;
+    const kind = classifyKind(dv);
+    if (isKindHidden(kind, cfg)) return;
+    const record = parent || dv;
+    const { date } = pickChallanDate(dv, parent);
     const day = getDayKey(date);
     if (!day) return;
     const { party } = resolveParty({
       kind,
-      toFactory: source?.toFactory || parent?.toFactory || "",
-      fromFactory: source?.fromFactory || parent?.fromFactory || "",
-      factoryName,
+      toFactory: dv?.toFactory || parent?.toFactory || "",
+      fromFactory: dv?.fromFactory || parent?.fromFactory || "",
+      factoryName: extractFactoryName(record),
     });
-    out.push({ day, party, partyKey: factoryKey(party), challanNo: String(challanNo), kind, qty: sumExtractQty(source) });
-  };
-  (Array.isArray(movements) ? movements : []).forEach((item) => {
-    if (!item) return;
-    const factoryName = extractFactoryName(item);
-    if (Array.isArray(item.deliveries) && item.deliveries.length > 0) {
-      item.deliveries.forEach((dv) => {
-        if (dv?.challanNo === undefined || dv?.challanNo === null) return;
-        push(dv.challanNo, dv, item, factoryName);
-      });
-    } else if (item.challanNo !== undefined && item.challanNo !== null) {
-      push(item.challanNo, item, null, factoryName);
-    }
+    out.push({ day, party, partyKey: factoryKey(party), challanNo: String(challanNo), kind, qty: extractQtyOf(dv) });
   });
   return out;
 };
@@ -307,7 +373,7 @@ const groupSummary = (entries, mode, range) => {
       map.set(id, {
         id,
         label: mode === "party" ? e.party : mode === "day" ? formatShortDate(e.day) : monthLabel(id),
-        t: { yarnDelivery: 0, yarnReturn: 0, greyFabricReceived: 0, finishReceived: 0 },
+        t: zeroTotals(),
         ch: new Set(),
       });
     }
@@ -419,14 +485,14 @@ const DailyTransaction = () => {
   // DEFAULT TO KNITTING ORDER
   const [selectOrderType, setSelectOrderType] = useState("knittingOrder");
 
-  // ---------- NEW: Summary tab state ----------
-  // true  = the new "Summary" tab is open (Knitting + Dyeing + AOP together)
-  // false = one of the order tabs (Knitting / Dyeing / AOP) is open = your original page
+  // ---------- Summary tab state ----------
+  // true  = the "Summary" tab is open (Knitting + Dyeing + AOP + Yarn Dyed together)
+  // false = one of the order tabs (Knitting / Dyeing / AOP / Yarn Dyed) is open
   const [showSummary, setShowSummary] = useState(true);
   const [sumMode, setSumMode] = useState("day"); // "party" | "day" | "month"
   const [sumFrom, setSumFrom] = useState(() => { const n = new Date(); return localDayKey(new Date(n.getFullYear(), n.getMonth(), 1)); });
   const [sumTo, setSumTo] = useState(() => localDayKey(new Date()));
-  const [sumData, setSumData] = useState({ knittingOrder: [], dyeingOrder: [], aopOrder: [] });
+  const [sumData, setSumData] = useState(emptySumData);
   const [sumFetching, setSumFetching] = useState(false);
   const [sumError, setSumError] = useState(null);
   const [sumRefresh, setSumRefresh] = useState(0);
@@ -481,9 +547,8 @@ const DailyTransaction = () => {
           qp.append("limit", String(PAGE_SIZE));
           if (cursor !== null && cursor !== undefined) qp.append("cursor", String(cursor));
           if (monthList.length > 0 && monthList.length <= MAX_MONTHS) qp.append("challanMonths", monthList.join(","));
-
+          console.log(selectOrderType, "selected order type")
           const res = await fetchData(`/api/challan-movement/${selectOrderType}?${qp.toString()}`);
-          console.log(res.data, "fetched movement data")
           if (cancelled) return;
 
           const { items, hasMore, nextCursor } = unwrapResponse(res);
@@ -509,46 +574,11 @@ const DailyTransaction = () => {
   }, [fetchData, selectOrderType, fetchRange.from, fetchRange.to, refreshKey]);
 
   // ===================== DATA PROCESSING =====================
-  const extractQty = (dv) => {
-    if (dv?.deliveryQty !== undefined && dv?.deliveryQty !== null) {
-      const num = Number(dv.deliveryQty);
-      if (!isNaN(num)) return num;
-    }
-    const fallbacks = ["totalQty", "qty", "quantity", "weight", "kg", "amount"];
-    for (const f of fallbacks) {
-      if (dv[f] !== undefined && dv[f] !== null) {
-        const num = Number(dv[f]);
-        if (!isNaN(num)) return num;
-      }
-    }
-    return 0;
-  };
-
-  // Backend deliveryType values:
-  //  knitting: Yarn Delivery | Yarn Return | Grey Received | Grey Fabric Received | Finish Received
-  //  dyeing:   Grey Delivery | Grey Return | Grey Received | Finish Received
-  //  aop:      Sent For Aop | Received From Aop | AOP Finish Fabric Rcvd | Return From Aop
   // row.kind = the quantity field this delivery belongs to (used for the click-through details)
   const applyDelivery = (row, dv) => {
-    const qty = extractQty(dv);
-    const type = String(dv?.deliveryType || "").trim().toLowerCase().replace(/[\s_-]+/g, "");
-
-    if (type.includes("finish")) {
-      row.finishReceived += qty;
-      row.kind = "finishReceived";
-    } else if (type === "yarndelivery" || type === "greydelivery" || type === "sentforaop" || type.includes("sentfor") || (type.includes("delivery") && !type.includes("received"))) {
-      row.yarnDelivery += qty;
-      row.kind = "yarnDelivery";
-    } else if (type === "yarnreturn" || type === "greyreturn" || type === "aopreturn" || type.includes("return")) {
-      row.yarnReturn += qty;
-      row.kind = "yarnReturn";
-    } else if (type === "greyfabricreceived" || type === "greigereceived" || type === "greyreceived" || type === "receivedfromaop" || type.includes("received") || type.includes("rcvd")) {
-      row.greyFabricReceived += qty;
-      row.kind = "greyFabricReceived";
-    } else {
-      row.greyFabricReceived += qty;
-      row.kind = "greyFabricReceived";
-    }
+    const kind = classifyKind(dv);
+    row[kind] += extractQtyOf(dv);
+    row.kind = kind;
 
     if (!row.toFactory && dv?.toFactory) row.toFactory = dv.toFactory;
     if (!row.fromFactory && dv?.fromFactory) row.fromFactory = dv.fromFactory;
@@ -556,52 +586,46 @@ const DailyTransaction = () => {
   };
 
   const allRows = useMemo(() => {
-    if (!Array.isArray(movements)) return [];
     const rows = [];
     const extractJobNo = (item) => item?.workOrder?.jobNo || (typeof item?.workOrder === "string" ? item.workOrder : null);
 
-    const makeRow = (challanNo, jobNo, comp, color, source, parent, mvId, deliveryId, factoryName) => {
-      const stableId = deliveryId ?? mvId ?? source?.id ?? null;
-      const { date, fallback } = pickChallanDate(source, parent);
-      return {
-        rowKey: `${challanNo}|${jobNo}|${comp}|${color}|${stableId ?? ""}`,
+    forEachDelivery(movements, (dv, parent) => {
+      const challanNo = dv?.challanNo;
+      if (challanNo === undefined || challanNo === null) return;
+      const record = parent || dv;
+      const jobNo = extractJobNo(record) || "-";
+      const comp = dv?.composition || record?.composition || "-";
+      const color = dv?.color || record?.color || "-";
+      const factoryName = extractFactoryName(record);
+      const stableId = dv?.id ?? record?.id ?? "";
+      const { date, fallback } = pickChallanDate(dv, parent);
+
+      const row = {
+        rowKey: `${challanNo}|${jobNo}|${comp}|${color}|${stableId}`,
         challanNo, jobNo, composition: comp || "-", color: color || "-",
         challanDate: date, dateFallback: fallback, factoryName,
-        toFactory: source?.toFactory || parent?.toFactory || "",
-        fromFactory: source?.fromFactory || parent?.fromFactory || "",
-        yarnDelivery: 0, yarnReturn: 0, greyFabricReceived: 0, finishReceived: 0,
+        toFactory: dv?.toFactory || parent?.toFactory || "",
+        fromFactory: dv?.fromFactory || parent?.fromFactory || "",
+        ...zeroTotals(),
         kind: "greyFabricReceived", // overwritten by applyDelivery
       };
-    };
-
-    // Knitting has no Finish column: a "Finish Received" delivery would show as an empty row, so skip it
-    const isEmptyFinishOnly = (row) => !hasFinish && row.kind === "finishReceived";
-
-    movements.forEach((item) => {
-      if (!item) return;
-      const jobNo = extractJobNo(item) || "-";
-      const factoryName = extractFactoryName(item);
-
-      if (Array.isArray(item.deliveries) && item.deliveries.length > 0) {
-        item.deliveries.forEach((dv) => {
-          const challanNo = dv?.challanNo;
-          if (challanNo === undefined || challanNo === null) return;
-          const comp = dv?.composition || item?.composition || "-";
-          const color = dv?.color || item?.color || "-";
-          const row = makeRow(challanNo, jobNo, comp, color, dv, item, item.id, dv.id, factoryName);
-          applyDelivery(row, dv);
-          if (isEmptyFinishOnly(row)) return;
-          rows.push(row);
-        });
-      } else if (item.challanNo !== undefined && item.challanNo !== null) {
-        const row = makeRow(item.challanNo, jobNo, item.composition, item.color, item, null, item.id, item.id, factoryName);
-        applyDelivery(row, item);
-        if (isEmptyFinishOnly(row)) return;
-        rows.push(row);
-      }
+      applyDelivery(row, dv);
+      // a delivery type that has no column in this order type would show as an empty row, so skip it
+      if (isKindHidden(row.kind, cfg)) return;
+      rows.push(row);
     });
     return rows;
-  }, [movements, hasFinish]);
+  }, [movements, cfg]);
+
+  // delivery types the API returned that are not in the known list (they still get classified by the fallback rules)
+  const unknownTypes = useMemo(() => {
+    const set = new Set();
+    forEachDelivery(movements, (dv) => {
+      const t = String(dv?.deliveryType || "").trim();
+      if (t && !EXACT_KIND[normType(dv)]) set.add(t);
+    });
+    return [...set];
+  }, [movements]);
 
   const { entries, undatedCount, fallbackDateCount, noFactoryNameCount } = useMemo(() => {
     const list = [];
@@ -677,7 +701,7 @@ const DailyTransaction = () => {
     return { ...t, challans, rows: detailEntries.length };
   }, [detailEntries]);
 
-  // ===================== NEW: SUMMARY TAB (Knitting + Dyeing + AOP) =====================
+  // ===================== SUMMARY TAB (Knitting + Dyeing + AOP + Yarn Dyed) =====================
   const sumRange = useMemo(() => {
     if (!sumFrom && !sumTo) return { from: "", to: "" };
     let f = sumFrom || sumTo;
@@ -686,13 +710,13 @@ const DailyTransaction = () => {
     return { from: f, to: t };
   }, [sumFrom, sumTo]);
 
-  // loads all three order types for the selected period (only while the Summary tab is open)
+  // loads all order types for the selected period (only while the Summary tab is open)
   useEffect(() => {
     if (!showSummary) return undefined;
     let cancelled = false;
 
     if (!sumRange.from) {
-      setSumData({ knittingOrder: [], dyeingOrder: [], aopOrder: [] });
+      setSumData(emptySumData());
       setSumError(null);
       setSumFetching(false);
       return undefined;
@@ -709,6 +733,7 @@ const DailyTransaction = () => {
         qp.append("limit", String(PAGE_SIZE));
         if (cursor !== null && cursor !== undefined) qp.append("cursor", String(cursor));
         if (months.length > 0 && months.length <= MAX_MONTHS) qp.append("challanMonths", months.join(","));
+        console.log(orderKey)
         const res = await fetchData(`/api/challan-movement/${orderKey}?${qp.toString()}`);
         if (cancelled) return [];
         const { items, hasMore, nextCursor } = unwrapResponse(res);
@@ -716,7 +741,7 @@ const DailyTransaction = () => {
         pages += 1;
         cursor = hasMore && nextCursor !== null && nextCursor !== undefined ? nextCursor : null;
       } while (cursor !== null && pages < MAX_PAGES);
-      return buildSummaryEntries(all, !!ORDER_CONFIG[orderKey].finish);
+      return buildSummaryEntries(all, ORDER_CONFIG[orderKey]);
     };
 
     (async () => {
@@ -744,7 +769,7 @@ const DailyTransaction = () => {
   const sumSections = useMemo(() => ORDER_KEYS.map((key) => {
     const entriesOfOrder = (sumData[key] || []).filter((e) => sumRange.from && e.day >= sumRange.from && e.day <= sumRange.to);
     const groups = groupSummary(entriesOfOrder, sumMode, sumRange);
-    const gt = { yarnDelivery: 0, yarnReturn: 0, greyFabricReceived: 0, finishReceived: 0 };
+    const gt = zeroTotals();
     entriesOfOrder.forEach((e) => { gt[e.kind] += e.qty; });
     Object.keys(gt).forEach((k) => { gt[k] = round2(gt[k]); });
     gt.challans = new Set(entriesOfOrder.map((e) => `${e.day}|${e.challanNo}`)).size;
@@ -783,7 +808,7 @@ const DailyTransaction = () => {
         ? "yesterday"
         : "";
 
-  // Click on a quantity in the Summary tab -> jump to that order's tab (Knitting / Dyeing / AOP)
+  // Click on a quantity in the Summary tab -> jump to that order's tab (Knitting / Dyeing / AOP / Yarn Dyed)
   // with the dates, party and transaction type already filtered, showing the Details.
   const openFromSummary = (orderKey, from, to, partyKey, typeKey) => {
     setSelectOrderType(orderKey);
@@ -833,7 +858,7 @@ const DailyTransaction = () => {
       const gRow = summaryWs.addRow(["GRAND TOTAL", grand.challans, ...qtyTypes.map((t) => grand[t.key])]);
       styleSpecialRow(gRow, sumNumeric, XL.total, true);
       gRow.getCell(2).numFmt = "#,##0";
-      [34, 11, 16, 16, 18, ...(hasFinish ? [22] : [])].forEach((w, i) => { summaryWs.getColumn(i + 1).width = w; });
+      [34, 11, ...qtyTypes.map(() => 22)].forEach((w, i) => { summaryWs.getColumn(i + 1).width = w; });
       summaryWs.pageSetup = { orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0 };
 
       // ---------- Daily Details Sheet ----------
@@ -921,8 +946,7 @@ const DailyTransaction = () => {
     );
   }
 
-  const orderTypes = ["knittingOrder", "dyeingOrder", "aopOrder"];
-  const negColor = (n) => (Number(n) < -0.005 ? { color: "#b91c1c" } : {});
+  const orderTypes = ["knittingOrder", "dyeingOrder", "aopOrder", "yarnDyeingOrder"];
   const summaryHeaders = ["Party / Factory", "Challans", ...qtyTypes.map((t) => t.header)];
   const numericCols = DETAIL_COLUMNS.filter((c) => c.numeric);
   const labelSpan = DETAIL_COLUMNS.length - numericCols.length; // all text columns before the quantities
@@ -959,7 +983,7 @@ const DailyTransaction = () => {
 
   return (
     <div style={{ width: "100%", padding: 24, fontFamily: FONT_STACK, color: theme.colors.textMain }}>
-      {/* Tabs: NEW "Summary" tab + your original Knitting / Dyeing / AOP tabs (same design) */}
+      {/* Tabs: "Summary" tab + Knitting / Dyeing / AOP / Yarn Dyed tabs (same design) */}
       <div className="border-b flex gap-3 pb-2 mb-3">
         <div className={`p-2 text-white cursor-pointer font-bold rounded-md ${showSummary ? "bg-blue-900" : "bg-slate-800 "}`}>
           <span onClick={() => setShowSummary(true)}>Summary</span>
@@ -971,7 +995,7 @@ const DailyTransaction = () => {
         ))}
       </div>
 
-      {/* ===================== NEW: SUMMARY TAB ===================== */}
+      {/* ===================== SUMMARY TAB ===================== */}
       {showSummary && (
         <>
           <div style={{ display: "flex", gap: 10, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
@@ -1006,7 +1030,7 @@ const DailyTransaction = () => {
             <div style={{ marginBottom: 12, padding: "10px 16px", background: "#ecfdf5", border: "1px solid #a7f3d0", borderRadius: theme.radius, display: "flex", flexWrap: "wrap", gap: 16, fontSize: "0.875rem", color: "#065f46" }}>
               <strong>{sumModeTitle} Summary: {sumPeriodText}</strong>
               {sumFetching && <span style={{ color: "#1d4ed8" }}>Loading...</span>}
-              <span>Click any quantity to open its details in the Knitting / Dyeing / AOP tab</span>
+              <span>Click any quantity to open its details in the Knitting / Dyeing / AOP / Yarn Dyed tab</span>
             </div>
           )}
 
@@ -1089,7 +1113,7 @@ const DailyTransaction = () => {
         </>
       )}
 
-      {/* ===================== YOUR ORIGINAL PAGE (Knitting / Dyeing / AOP tabs) - unchanged ===================== */}
+      {/* ===================== ORDER TABS (Knitting / Dyeing / AOP / Yarn Dyed) ===================== */}
       {!showSummary && (
         <>
           <div style={{ display: "flex", gap: 10, marginBottom: 16, alignItems: "center", flexWrap: "wrap" }}>
@@ -1127,7 +1151,6 @@ const DailyTransaction = () => {
               <strong>{cfg.title} Daily Transaction: {periodText}</strong>
               <span>{visibleParties.length} part{visibleParties.length === 1 ? "y" : "ies"}</span>
               <span>{dayGroups.length} day{dayGroups.length === 1 ? "" : "s"} with challans</span>
-              {/* <span>Net Movement = {cfg.delivery} - {cfg.ret} - {cfg.received}</span> */}
               {hasFinish && !FINISH_IN_BALANCE && <span>{cfg.finish} is shown for information</span>}
               {view === "summary" && <span>Click a quantity to see its From / To factory details</span>}
             </div>
@@ -1141,6 +1164,7 @@ const DailyTransaction = () => {
             {noFactoryNameCount > 0 && <span style={{ color: "#b45309" }}>{noFactoryNameCount} entr{noFactoryNameCount === 1 ? "y has" : "ies have"} no From/To factory (work order factory used)</span>}
             {fallbackDateCount > 0 && <span style={{ color: "#b45309" }}>{fallbackDateCount} entr{fallbackDateCount === 1 ? "y uses" : "ies use"} created date</span>}
             {undatedCount > 0 && <span style={{ color: "#b91c1c" }}>{undatedCount} entr{undatedCount === 1 ? "y has" : "ies have"} no date</span>}
+            {unknownTypes.length > 0 && <span style={{ color: "#b45309" }}>Unrecognised delivery type: {unknownTypes.join(", ")}</span>}
           </div>
 
           {view === "summary" && (

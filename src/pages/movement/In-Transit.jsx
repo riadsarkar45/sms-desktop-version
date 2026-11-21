@@ -604,9 +604,286 @@ const FilterHeaderCell = ({ col, active, onFilter }) => (
 );
 
 /* ================================================================== */
+/* ===== ADDED ===== SUMMARY TAB (Knitting + Dyeing + AOP + Yarn Dyed) */
+/* ================================================================== */
+
+// Loads ALL in-transit rows of ONE order type (page by page, same API as the other tabs)
+const loadAllRowsOfType = async (axiosInstance, type, signal) => {
+  const map = new Map();
+  let cursor = null;
+  let capped = false;
+
+  for (;;) {
+    const params = { limit: PAGE_LIMIT };
+    if (cursor !== null && cursor !== undefined) params.cursor = cursor;
+
+    const res = await axiosInstance.get(`/api/movement/${type}/inTransit`, {
+      params,
+      signal,
+    });
+
+    const page = unwrapPage(res);
+    flattenDeliveries(page.items, type).forEach((r) => map.set(r.rowKey, r));
+
+    const more =
+      !!page.hasMore && page.nextCursor !== null && page.nextCursor !== undefined;
+    if (!more) break;
+    if (map.size >= MAX_LOADED_ROWS) {
+      capped = true;
+      break;
+    }
+    cursor = page.nextCursor;
+  }
+
+  return { rows: Array.from(map.values()), capped };
+};
+
+// tabs   = the same button bar (Summary / Knitting / Dyeing / AOP / Yarn Dyed)
+// onOpen = (modeKey) => opens that tab (click-through, like DailyTransaction)
+const SummaryView = ({ axiosRef, tabs, onOpen }) => {
+  const [loading, setLoading] = useState(true);
+  const [errors, setErrors] = useState([]);
+  const [capped, setCapped] = useState(false);
+  // { [modeKey]: rows[] }
+  const [dataByType, setDataByType] = useState({});
+  const [reloadKey, setReloadKey] = useState(0);
+
+  const wrapRef = useRef(null);
+  const tableHeight = useFitHeight(wrapRef, [loading, errors.length]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let cancelled = false;
+
+    const run = async () => {
+      setLoading(true);
+      setErrors([]);
+      setCapped(false);
+
+      const results = await Promise.allSettled(
+        MODES.map((m) =>
+          loadAllRowsOfType(axiosRef.current, m.orderType, controller.signal),
+        ),
+      );
+      if (cancelled) return;
+
+      const next = {};
+      const errs = [];
+      let anyCapped = false;
+      results.forEach((r, i) => {
+        const m = MODES[i];
+        if (r.status === "fulfilled") {
+          next[m.key] = r.value.rows;
+          if (r.value.capped) anyCapped = true;
+        } else {
+          next[m.key] = [];
+          errs.push(
+            `${m.label}: ${
+              r.reason?.response?.status === 403
+                ? "Permission denied"
+                : r.reason?.response?.data?.message ||
+                  r.reason?.message ||
+                  "Failed to load"
+            }`,
+          );
+        }
+      });
+
+      setDataByType(next);
+      setErrors(errs);
+      setCapped(anyCapped);
+      setLoading(false);
+    };
+
+    run();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [axiosRef, reloadKey]);
+
+  // one row per order type: factory count, challan count, total in-transit qty
+  const summaryRows = useMemo(
+    () =>
+      MODES.map((m) => {
+        const list = dataByType[m.key] || [];
+        const factories = new Set();
+        const challans = new Set();
+        let qty = 0;
+
+        list.forEach((row) => {
+          factories.add(getFactoryName(row) || "Unknown");
+          challans.add(String(row.challanNo));
+          qty += row.challanQty;
+        });
+
+        return {
+          key: m.key,
+          label: m.label,
+          factories,
+          factoryCount: factories.size,
+          challanCount: challans.size,
+          qty,
+        };
+      }),
+    [dataByType],
+  );
+
+  const totals = useMemo(() => {
+    const allFactories = new Set();
+    summaryRows.forEach((r) => r.factories.forEach((f) => allFactories.add(f)));
+    return {
+      factoryCount: allFactories.size,
+      challanCount: summaryRows.reduce((s, r) => s + r.challanCount, 0),
+      qty: summaryRows.reduce((s, r) => s + r.qty, 0),
+    };
+  }, [summaryRows]);
+
+  const linkBtn =
+    "font-semibold text-blue-700 underline hover:text-blue-900 cursor-pointer";
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        {tabs}
+
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => setReloadKey((k) => k + 1)}
+            disabled={loading}
+            title="Refresh data"
+            className="flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-xs font-bold text-slate-700 transition hover:bg-slate-100 disabled:opacity-60"
+          >
+            <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      {errors.length > 0 && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-xs font-semibold text-red-600">
+          {errors.join(" | ")}
+        </div>
+      )}
+
+      <div>
+        <div className={T.card}>
+          <div
+            ref={wrapRef}
+            className="overflow-auto"
+            style={{ maxHeight: tableHeight }}
+          >
+            <table className={T.table}>
+              <thead>
+                <tr>
+                  <th className={`${T.th} text-left`}>Type</th>
+                  <th className={`${T.th} text-right`}>Factory Count</th>
+                  <th className={`${T.th} text-right`}>Challan Count</th>
+                  <th className={`${T.th} text-right`}>Total Transit Qty</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {loading ? (
+                  <tr>
+                    <td colSpan={4} className="px-4 py-8 text-center text-slate-400">
+                      Loading...
+                    </td>
+                  </tr>
+                ) : (
+                  summaryRows.map((item) => (
+                    <tr key={item.key} className={T.tr}>
+                      <td className={T.td}>
+                        <button
+                          type="button"
+                          onClick={() => onOpen(item.key)}
+                          title={`Open ${item.label} in-transit`}
+                          className={linkBtn}
+                        >
+                          {item.label}
+                        </button>
+                      </td>
+                      <td className={T.tdRight}>
+                        <button
+                          type="button"
+                          onClick={() => onOpen(item.key)}
+                          title={`Open ${item.label} in-transit`}
+                          className={linkBtn}
+                        >
+                          {formatNumber(item.factoryCount)}
+                        </button>
+                      </td>
+                      <td className={T.tdRight}>
+                        <button
+                          type="button"
+                          onClick={() => onOpen(item.key)}
+                          title={`Open ${item.label} in-transit`}
+                          className={linkBtn}
+                        >
+                          {formatNumber(item.challanCount)}
+                        </button>
+                      </td>
+                      <td className={T.tdRight}>
+                        <button
+                          type="button"
+                          onClick={() => onOpen(item.key)}
+                          title={`Open ${item.label} in-transit`}
+                          className={linkBtn}
+                        >
+                          {formatNumber(item.qty)}
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+
+              {!loading && (
+                <tfoot>
+                  <tr>
+                    <td className={T.tfCell}>Total</td>
+                    <td className={`${T.tfCell} text-right tabular-nums`}>
+                      {formatNumber(totals.factoryCount)}
+                    </td>
+                    <td className={`${T.tfCell} text-right tabular-nums`}>
+                      {formatNumber(totals.challanCount)}
+                    </td>
+                    <td className={`${T.tfCell} text-right tabular-nums`}>
+                      {formatNumber(totals.qty)}
+                    </td>
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </div>
+        </div>
+
+        <div className="mt-2 flex min-h-[24px] flex-wrap items-center justify-center gap-3 text-center text-xs text-slate-500">
+          {loading ? (
+            <span className="inline-flex items-center gap-2 font-semibold text-blue-600">
+              <RefreshCw size={14} className="animate-spin" /> Loading...
+            </span>
+          ) : capped ? (
+            <span className="font-semibold text-amber-700">
+              Some types have more than {MAX_LOADED_ROWS} rows: counts cover the first {MAX_LOADED_ROWS} rows only.
+            </span>
+          ) : (
+            <span>Click any type or number to open its in-transit challans.</span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/* ================================================================== */
 
 const InTransit = () => {
   const [mode, setMode] = useState("knitting");
+  // ===== ADDED ===== true = Summary tab is open, false = one of the 4 original tabs
+  const [showSummary, setShowSummary] = useState(true);
   const [rows, setRows] = useState([]);
   const [error, setError] = useState("");
   const [selectedFactory, setSelectedFactory] = useState(null);
@@ -1211,6 +1488,50 @@ const InTransit = () => {
     </div>
   );
 
+  /* ---------------- ADDED: SUMMARY TAB RENDER ---------------- */
+
+  const summaryTabButtonClass = (active) =>
+    `rounded-lg border px-5 py-2 text-xs font-bold tracking-wide transition ${active
+      ? "border-slate-800 bg-slate-800 text-white shadow"
+      : "border-slate-300 bg-white text-slate-600 hover:bg-slate-100"
+    }`;
+
+  if (showSummary) {
+    return (
+      <SummaryView
+        axiosRef={axiosRef}
+        onOpen={(modeKey) => {
+          setMode(modeKey);
+          setShowSummary(false);
+        }}
+        tabs={
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowSummary(true)}
+              className={summaryTabButtonClass(true)}
+            >
+              SUMMARY
+            </button>
+            {MODES.map((m) => (
+              <button
+                key={m.key}
+                type="button"
+                onClick={() => {
+                  setMode(m.key);
+                  setShowSummary(false);
+                }}
+                className={summaryTabButtonClass(false)}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+        }
+      />
+    );
+  }
+
   /* ---------------- render ---------------- */
 
   return (
@@ -1218,11 +1539,23 @@ const InTransit = () => {
       {/* ================= MODE BUTTONS + SEARCH + REFRESH ================= */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
+          {/* ADDED: Summary tab button */}
+          <button
+            type="button"
+            onClick={() => setShowSummary(true)}
+            className="rounded-lg border border-slate-300 bg-white px-5 py-2 text-xs font-bold tracking-wide text-slate-600 transition hover:bg-slate-100"
+          >
+            SUMMARY
+          </button>
+
           {MODES.map((m) => (
             <button
               key={m.key}
               type="button"
-              onClick={() => setMode(m.key)}
+              onClick={() => {
+                setShowSummary(false);
+                setMode(m.key);
+              }}
               className={`rounded-lg border px-5 py-2 text-xs font-bold tracking-wide transition ${mode === m.key
                 ? "border-slate-800 bg-slate-800 text-white shadow"
                 : "border-slate-300 bg-white text-slate-600 hover:bg-slate-100"

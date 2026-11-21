@@ -50,6 +50,7 @@ import QuarterlyBalance from "../pages/mis/QuaterlyBalanceRep";
 import PrivateRoutes from "../components/private.routes/PrivateRoute";
 import DailyTransaction from "../pages/mis/party.stock/DailyTransaction";
 import InTransit from "../pages/movement/In-Transit";
+import YarnDyeing from "../pages/movement/YarnDyed";
 
 const routers = createBrowserRouter([
   {
@@ -271,6 +272,10 @@ const routers = createBrowserRouter([
               {
                 path: "in-transit",
                 element: <InTransit/>,
+              },
+              {
+                path: "challan/yarn-dyed",
+                element: <YarnDyeing/>,
               },
 
             ],

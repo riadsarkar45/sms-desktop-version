@@ -26,8 +26,9 @@ const ORDER_CONFIG = {
   knittingOrder: { title: "Knitting", delivery: "Yarn Delivery", ret: "Yarn Return", received: "Greige Received", finish: null, filePrefix: "Knitting_Quarterly_Balance" },
   dyeingOrder: { title: "Dyeing", delivery: "Grey Delivery", ret: "Grey Return", received: "Grey Received", finish: "Finish Received", filePrefix: "Dyeing_Quarterly_Balance" },
   aopOrder: { title: "AOP", delivery: "Sent For AOP", ret: "AOP Return", received: "Received From AOP", finish: "AOP Finish Fabric Rcvd", filePrefix: "AOP_Quarterly_Balance" },
+  yarnDyeingOrder: { title: "Yarn Dyeing", delivery: "Yarn Delivery For Yarn Dye", ret: "Yarn Return From Yarn Dye", received: "Yarn Received From Yarn Dye", finish: "Finish Received", filePrefix: "Yarn_Dyeing_Quarterly_Balance" },
 };
-const ORDER_TYPES = ["knittingOrder", "dyeingOrder", "aopOrder"];
+const ORDER_TYPES = ["knittingOrder", "dyeingOrder", "aopOrder", "yarnDyeingOrder"];
 
 // Quick filters for the Summary tab ("quarter" = default quarter wise rows)
 const QUICK_FILTERS = [
@@ -46,13 +47,13 @@ const getDetailColumns = (cfg, typeKey = "") => [
   { header: "Job No", key: "jobNo", width: 140 },
   { header: "Composition", key: "composition", width: 270 },
   { header: "Color", key: "color", width: 180 },
-  { header: cfg.delivery, key: "yarnDelivery", width: 120, qty: true },
-  { header: cfg.ret, key: "yarnReturn", width: 120, qty: true },
-  { header: cfg.received, key: "greyFabricReceived", width: 130, qty: true },
-  ...(cfg.finish ? [{ header: cfg.finish, key: "finishReceived", width: 140, qty: true }] : []),
+  { header: cfg.delivery, key: "yarnDelivery", width: 150, qty: true },
+  { header: cfg.ret, key: "yarnReturn", width: 150, qty: true },
+  { header: cfg.received, key: "greyFabricReceived", width: 150, qty: true },
+  ...(cfg.finish ? [{ header: cfg.finish, key: "finishReceived", width: 150, qty: true }] : []),
   { header: "Balance", key: "balance", width: 130 },
 ].filter((c) => !c.qty || !typeKey || c.key === typeKey);
-const getXlDetailWidths = (cfg) => [13, 14, 18, 34, 22, 15, 15, 17, ...(cfg.finish ? [20] : []), 16];
+const getXlDetailWidths = (cfg) => [13, 14, 18, 34, 22, 20, 20, 20, ...(cfg.finish ? [20] : []), 16];
 
 // ===================== THEME =====================
 const theme = {
@@ -350,7 +351,7 @@ const addHeaderRow = (ws, headers, numericIdx) => {
     cell.border = xlBorder;
     cell.alignment = { vertical: "middle", horizontal: numericIdx.has(i) ? "right" : "center", wrapText: true };
   });
-  row.height = 26;
+  row.height = 36;
 };
 
 const styleBodyRow = (row, idx, numericIdx) => {
@@ -376,7 +377,7 @@ const styleSpecialRow = (row, numericIdx, fillArgb, topMedium = false) => {
   row.height = 24;
 };
 
-// same look as addHeaderRow but on any row number (Summary sheet has 3 sections)
+// same look as addHeaderRow but on any row number (Summary sheet has several sections)
 const addHeaderRowAt = (ws, rowNo, headers, numericIdx) => {
   const row = ws.getRow(rowNo);
   headers.forEach((h, i) => {
@@ -387,7 +388,7 @@ const addHeaderRowAt = (ws, rowNo, headers, numericIdx) => {
     cell.border = xlBorder;
     cell.alignment = { vertical: "middle", horizontal: numericIdx.has(i) ? "right" : "center", wrapText: true };
   });
-  row.height = 26;
+  row.height = 36;
 };
 
 // ===================== SERVER ROWS -> PARTY TIMELINES =====================
@@ -426,7 +427,7 @@ const QuarterlyBalance = () => {
   const [fyStartMonth, setFyStartMonth] = useState(1);
   const [selectedQuarterKey, setSelectedQuarterKey] = useState(ALL_KEY); // default: everything
   const [selectedParty, setSelectedParty] = useState("ALL");
-  // "overview" = Summary tab (Knitting + Dyeing + AOP together) | "summary" = Party Summary | "detail" = Challan Detail
+  // "overview" = Summary tab (all order types together) | "summary" = Party Summary | "detail" = Challan Detail
   const [view, setView] = useState("overview");
   const [isExporting, setIsExporting] = useState(false);
   const [nonce, setNonce] = useState(0); // bump = drop cache + refetch
@@ -550,7 +551,7 @@ const QuarterlyBalance = () => {
       .filter((p) => p.rows.length > 0);
   }, [view, detailApi.data, visibleParties, activeType]);
 
-  // ===================== SUMMARY TAB (Knitting + Dyeing + AOP together) =====================
+  // ===================== SUMMARY TAB (Knitting + Dyeing + AOP + Yarn Dyeing together) =====================
   const overviewEnabled = view === "overview";
   const quickMode = quickFilter !== "quarter";
   const quickRange = useMemo(() => getQuickRange(quickFilter), [quickFilter]);
@@ -560,13 +561,15 @@ const QuarterlyBalance = () => {
   const mKnitting = useApi(axiosRef, `m|knittingOrder|${nonce}`, `${API_BASE}/knittingOrder/months`, mParams, overviewEnabled);
   const mDyeing = useApi(axiosRef, `m|dyeingOrder|${nonce}`, `${API_BASE}/dyeingOrder/months`, mParams, overviewEnabled);
   const mAop = useApi(axiosRef, `m|aopOrder|${nonce}`, `${API_BASE}/aopOrder/months`, mParams, overviewEnabled);
-  const overviewMonthsApis = { knittingOrder: mKnitting, dyeingOrder: mDyeing, aopOrder: mAop };
+  const mYarnDye = useApi(axiosRef, `m|yarnDyeingOrder|${nonce}`, `${API_BASE}/yarnDyeingOrder/months`, mParams, overviewEnabled);
+  const overviewMonthsApis = { knittingOrder: mKnitting, dyeingOrder: mDyeing, aopOrder: mAop, yarnDyeingOrder: mYarnDye };
 
   const quartersByType = useMemo(() => ({
     knittingOrder: quartersFromMonths(mKnitting.data?.data, fyStartMonth),
     dyeingOrder: quartersFromMonths(mDyeing.data?.data, fyStartMonth),
     aopOrder: quartersFromMonths(mAop.data?.data, fyStartMonth),
-  }), [mKnitting.data, mDyeing.data, mAop.data, fyStartMonth]);
+    yarnDyeingOrder: quartersFromMonths(mYarnDye.data?.data, fyStartMonth),
+  }), [mKnitting.data, mDyeing.data, mAop.data, mYarnDye.data, fyStartMonth]);
 
   const batchItems = useMemo(
     () => ORDER_TYPES.flatMap((t) => (quartersByType[t] || []).map((q) => ({
@@ -584,7 +587,8 @@ const QuarterlyBalance = () => {
   const ovKnitting = useApi(axiosRef, `o|knittingOrder|${quickRange.start}|${quickRange.next}|${nonce}`, `${API_BASE}/knittingOrder/summary`, overviewParams, quickEnabled);
   const ovDyeing = useApi(axiosRef, `o|dyeingOrder|${quickRange.start}|${quickRange.next}|${nonce}`, `${API_BASE}/dyeingOrder/summary`, overviewParams, quickEnabled);
   const ovAop = useApi(axiosRef, `o|aopOrder|${quickRange.start}|${quickRange.next}|${nonce}`, `${API_BASE}/aopOrder/summary`, overviewParams, quickEnabled);
-  const overviewApis = { knittingOrder: ovKnitting, dyeingOrder: ovDyeing, aopOrder: ovAop };
+  const ovYarnDye = useApi(axiosRef, `o|yarnDyeingOrder|${quickRange.start}|${quickRange.next}|${nonce}`, `${API_BASE}/yarnDyeingOrder/summary`, overviewParams, quickEnabled);
+  const overviewApis = { knittingOrder: ovKnitting, dyeingOrder: ovDyeing, aopOrder: ovAop, yarnDyeingOrder: ovYarnDye };
 
   const overview = useMemo(() => {
     const out = {};
@@ -597,7 +601,7 @@ const QuarterlyBalance = () => {
     });
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ovKnitting.data, ovDyeing.data, ovAop.data]);
+  }, [ovKnitting.data, ovDyeing.data, ovAop.data, ovYarnDye.data]);
 
   // Rows shown in each table: quarter rows (default) or one quick filter row.
   // row.period = the period object used when a quantity of that row is clicked (opens the Challan Detail for it)
@@ -622,15 +626,18 @@ const QuarterlyBalance = () => {
     return out;
   }, [quickMode, quickRange, overview, quartersByType, nonce, batch.tick]);
 
+  const monthsAnyLoading = mKnitting.loading || mDyeing.loading || mAop.loading || mYarnDye.loading;
   const overviewReady =
     ORDER_TYPES.some((t) => (overviewRows[t] || []).length > 0) &&
     ORDER_TYPES.every((t) => (overviewRows[t] || []).every((r) => r.loaded)) &&
-    (quickMode || (batch.pending === 0 && !mKnitting.loading && !mDyeing.loading && !mAop.loading));
+    (quickMode || (batch.pending === 0 && !monthsAnyLoading));
   const overviewLoading = overviewEnabled && (quickMode
-    ? ovKnitting.loading || ovDyeing.loading || ovAop.loading
-    : mKnitting.loading || mDyeing.loading || mAop.loading || (batch.pending > 0 && !batch.error));
+    ? ovKnitting.loading || ovDyeing.loading || ovAop.loading || ovYarnDye.loading
+    : monthsAnyLoading || (batch.pending > 0 && !batch.error));
   const overviewError = overviewEnabled
-    ? (quickMode ? ovKnitting.error || ovDyeing.error || ovAop.error : mKnitting.error || mDyeing.error || mAop.error || batch.error)
+    ? (quickMode
+      ? ovKnitting.error || ovDyeing.error || ovAop.error || ovYarnDye.error
+      : mKnitting.error || mDyeing.error || mAop.error || mYarnDye.error || batch.error)
     : null;
 
   // ===================== WINDOWED DETAIL VIEW =====================
@@ -793,7 +800,7 @@ const QuarterlyBalance = () => {
       const gRow = summaryWs.addRow(["GRAND TOTAL", grand.challans, grand.opening, grand.yarnDelivery, grand.yarnReturn, grand.greyFabricReceived, ...(hasFinish ? [grand.finishReceived] : []), grand.closing, "", "", ""]);
       styleSpecialRow(gRow, sumNumeric, XL.total, true);
       gRow.getCell(2).numFmt = "#,##0";
-      [34, 11, 17, 16, 16, 18, ...(hasFinish ? [22] : []), 17, 20, 14, 30].forEach((w, i) => { summaryWs.getColumn(i + 1).width = w; });
+      [34, 11, 17, 20, 20, 22, ...(hasFinish ? [22] : []), 17, 20, 14, 30].forEach((w, i) => { summaryWs.getColumn(i + 1).width = w; });
       summaryWs.pageSetup = { orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0 };
 
       const buffer = await wb.xlsx.writeBuffer();
@@ -827,7 +834,7 @@ const QuarterlyBalance = () => {
       const periodText = quickMode ? `${quickRange.label}  (${quickRange.range})` : "Quarter Wise";
       const firstHeader = quickMode ? "Period (Details)" : "Quarter (Details)";
 
-      // ---- Summary sheet: Knitting / Dyeing / AOP sections ----
+      // ---- Summary sheet: one section per order type ----
       const ws = wb.addWorksheet("Summary", { views: [{ showGridLines: false }] });
       addTitleRow(ws, `Quick Summary  |  ${periodText}`, 7);
       let rowNo = 3;
@@ -865,7 +872,7 @@ const QuarterlyBalance = () => {
 
         rowNo = r + 1;
       });
-      [30, 17, 16, 16, 18, 22, 16].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+      [30, 17, 22, 22, 24, 22, 16].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
       ws.pageSetup = { orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0 };
 
       // ---- Party-wise details sheet for each order type ----
@@ -889,7 +896,7 @@ const QuarterlyBalance = () => {
           styleSpecialRow(tr, numIdx, XL.total, true);
           tr.getCell(3).numFmt = "#,##0";
         });
-        [26, 34, 11, 17, 16, 16, 18, ...(fin ? [22] : []), 17].forEach((w, i) => { pws.getColumn(i + 1).width = w; });
+        [26, 34, 11, 17, 22, 22, 24, ...(fin ? [22] : []), 17].forEach((w, i) => { pws.getColumn(i + 1).width = w; });
         pws.pageSetup = { orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0 };
       });
 
@@ -920,7 +927,7 @@ const QuarterlyBalance = () => {
     setSelectedParty("ALL");
     setSelectOrderType(type);
   };
-  // click on the Knitting / Dyeing / AOP tab: leaves the Summary tab and shows that order's Party Summary
+  // click on the Knitting / Dyeing / AOP / Yarn Dyeing tab: leaves the Summary tab and shows that order's Party Summary
   const handleOrderTab = (type) => {
     if (view === "overview") setView("summary");
     handleSelectOrderType(type);
@@ -932,7 +939,7 @@ const QuarterlyBalance = () => {
     setNonce((n) => n + 1);
   };
 
-  // Click on a quantity (or a row label) in the Summary tab -> jump to that order's tab (Knitting / Dyeing / AOP)
+  // Click on a quantity (or a row label) in the Summary tab -> jump to that order's tab
   // with the period, party and transaction type already filtered, showing the Challan Detail.
   const openFromOverview = (type, period, partyKey, typeKey) => {
     setSelectOrderType(type);
@@ -1039,7 +1046,7 @@ const QuarterlyBalance = () => {
     </div>
   );
 
-  // one table (Knitting / Dyeing / AOP) of the Summary tab
+  // one table (Knitting / Dyeing / AOP / Yarn Dyeing) of the Summary tab
   const renderOverviewSection = (type) => {
     const c = ORDER_CONFIG[type];
     const fin = !!c.finish;
@@ -1075,9 +1082,9 @@ const QuarterlyBalance = () => {
         </div>
         {monthsLoading ? inlineLoader(`Loading ${c.title} data...`) : (
           <div style={tableBoxStyle}>
-            <table style={{ width: "100%", minWidth: 1000, borderCollapse: "separate", borderSpacing: 0, tableLayout: "fixed" }}>
+            <table style={{ width: "100%", minWidth: 1150, borderCollapse: "separate", borderSpacing: 0, tableLayout: "fixed" }}>
               <thead>
-                <tr>{headers.map((h, i) => (<th key={`${h}-${i}`} style={{ ...thStickyStyle, width: i === 0 ? 260 : 130 }}>{h}</th>))}</tr>
+                <tr>{headers.map((h, i) => (<th key={`${h}-${i}`} style={{ ...thStickyStyle, width: i === 0 ? 260 : 150 }}>{h}</th>))}</tr>
               </thead>
               <tbody>
                 {rows.map((row, idx) => {
@@ -1115,9 +1122,9 @@ const QuarterlyBalance = () => {
                         <tr>
                           <td colSpan={headers.length} style={{ padding: 12, background: "#f8fafc", borderBottom: `1px solid ${theme.colors.border}` }}>
                             <div style={{ ...tableBoxStyle, maxHeight: "20rem" }}>
-                              <table style={{ width: "100%", minWidth: 900, borderCollapse: "separate", borderSpacing: 0, tableLayout: "fixed" }}>
+                              <table style={{ width: "100%", minWidth: 1050, borderCollapse: "separate", borderSpacing: 0, tableLayout: "fixed" }}>
                                 <thead>
-                                  <tr>{partyHeaders.map((h, i) => (<th key={`${h}-${i}`} style={{ ...thStickyStyle, width: i === 0 ? 260 : 130 }}>{h}</th>))}</tr>
+                                  <tr>{partyHeaders.map((h, i) => (<th key={`${h}-${i}`} style={{ ...thStickyStyle, width: i === 0 ? 260 : 150 }}>{h}</th>))}</tr>
                                 </thead>
                                 <tbody>
                                   {row.parties.map((p, pi) => (
@@ -1174,8 +1181,8 @@ const QuarterlyBalance = () => {
 
   return (
     <div style={{ width: "100%", padding: 24, fontFamily: FONT_STACK, color: theme.colors.textMain }}>
-      {/* Tabs: Summary tab + Knitting / Dyeing / AOP tabs (same design as the Daily Transaction page) */}
-      <div className="border-b flex gap-3 pb-2 mb-3">
+      {/* Tabs: Summary tab + Knitting / Dyeing / AOP / Yarn Dyeing tabs (same design as the Daily Transaction page) */}
+      <div className="border-b flex gap-3 pb-2 mb-3 flex-wrap">
         <button
           type="button"
           onClick={() => setView("overview")}
@@ -1263,7 +1270,7 @@ const QuarterlyBalance = () => {
         </div>
       )}
 
-      {/* ===== SUMMARY TAB (Knitting + Dyeing + AOP, quarter wise) ===== */}
+      {/* ===== SUMMARY TAB (Knitting + Dyeing + AOP + Yarn Dyeing, quarter wise) ===== */}
       {view === "overview" && (
         <>
           {/* Quick filter (top of the tables) */}
@@ -1277,7 +1284,7 @@ const QuarterlyBalance = () => {
             <strong>{quickMode ? quickRange.title : "Quarter Wise"}</strong>
             <span>{quickMode ? "Opening = auto carried from all dates before this period" : "Opening = auto carried from the previous quarter"}</span>
             <span>Party Stock = Opening + Delivery - Return - Received</span>
-            <span>Click a quantity to see its details in the Knitting / Dyeing / AOP tab</span>
+            <span>Click a quantity to see its details in the Knitting / Dyeing / AOP / Yarn Dyeing tab</span>
           </div>
           {ORDER_TYPES.map(renderOverviewSection)}
         </>
@@ -1287,9 +1294,9 @@ const QuarterlyBalance = () => {
       {view === "summary" && (
         summaryApi.loading ? inlineLoader(`Loading ${cfg.title} data...`) : (
           <div style={tableBoxStyle}>
-            <table style={{ width: "100%", minWidth: 1000, borderCollapse: "separate", borderSpacing: 0, tableLayout: "fixed" }}>
+            <table style={{ width: "100%", minWidth: 1150, borderCollapse: "separate", borderSpacing: 0, tableLayout: "fixed" }}>
               <thead>
-                <tr>{summaryHeaders.map((h, i) => (<th key={`${h}-${i}`} style={{ ...thStickyStyle, width: i === 0 ? 260 : 130 }}>{h}</th>))}</tr>
+                <tr>{summaryHeaders.map((h, i) => (<th key={`${h}-${i}`} style={{ ...thStickyStyle, width: i === 0 ? 260 : 150 }}>{h}</th>))}</tr>
               </thead>
               <tbody>
                 {visibleParties.map((p, idx) => (

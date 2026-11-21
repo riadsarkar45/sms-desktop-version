@@ -160,6 +160,7 @@ const PERMISSION_SECTIONS = [
             yes('aopOrder', 'VIEW AOP INFO'),
             yes('knittingOrder', 'VIEW KNITTING INFO'),
             yes('dyeingOrder', 'VIEW DYEING INFO'),
+            yes('yarnDyeingOrder', 'VIEW YARN DYEING INFO'),
             edit('qtyEdit', 'QTY EDIT (ALL)'),
             yes('billingMake', 'BILLING MAKE (ALL)'),
             yes('billApproved', 'BILL APPROVED'),

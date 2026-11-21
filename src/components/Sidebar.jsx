@@ -48,6 +48,7 @@ import {
 import UseUserRoles from "../hooks/all-users/UseUserRoles";
 import { useAuth } from "../auth/AuthContext";
 import Logo from "../assets/image.png";
+import { Spool } from "lucide";
 
 // --------------------------------------------------
 // CONSTANTS
@@ -111,6 +112,7 @@ const PAGE_TITLES = {
   "/dashboard/challan/aop": "AOP Movement",
   "/dashboard/challan/dyeing": "Dyeing Movement",
   "/dashboard/challan/knitting": "Knitting Movement",
+  "/dashboard/challan/yarn-dyed": "Yarn Dyeing Movement",
 
   "/dashboard/challan/others/compacting": "Compacting",
   "/dashboard/challan/others/heat-set": "Heat Set",
@@ -738,11 +740,12 @@ export default function Sidebar() {
       icon: ModernThreadIcon,
     },
     {
-      label: "Quarterly Balance",
-      path: "/dashboard/quarterly-balance",
-      permission: "knittingOrder",
-      icon: ClipboardCheck,
+      label: "Yarn Dyeing",
+      path: "/dashboard/challan/yarn-dyed",
+      permission: "yarnDyeingOrder",
+      icon: ModernThreadIcon,
     },
+    
   ].filter((item) => sections.movementBilling?.[item.permission] === true);
 
   const otherMovementItems = [
@@ -770,7 +773,13 @@ export default function Sidebar() {
 
     const misItems = sections.mis
     ? [
-        {
+      {
+      label: "Quarterly Balance",
+      path: "/dashboard/quarterly-balance",
+      permission: "knittingOrder",
+      icon: ClipboardCheck,
+    },  
+      {
           label: "At A Glance (Stock)",
           path: "/dashboard/mis/glance",
           icon: ChartNoAxesCombined,

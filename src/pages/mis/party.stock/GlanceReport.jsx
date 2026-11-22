@@ -9,6 +9,21 @@ const BORDER_COLOR = "#b9c2c7";
 const HEADER_BG = "#1E6B3A";
 const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
+/* ===================================================================
+   NEW LOCATIONS (edit here only)
+   YARN_STORE_KEY = the :orderType used in /api/mis-party-stock/:orderType for the Yarn Store location
+   YARN_STORE_METRICS = movement type names of the store (lowercase, letters/digits only)
+   =================================================================== */
+const YARN_STORE_KEY = "yarnStoreOrder";
+const YARN_STORE_METRICS = {
+    yarnReceived: ["yarnreceived"],
+    yarnIssued: ["yarnissued"],
+    yarnReturned: ["yarnreturned"],
+};
+/* keys that must not break the Summary tab when the API fails (a warning is shown instead) */
+const OPTIONAL_KEYS = new Set([YARN_STORE_KEY, "finishFabric"]);
+
+
 /* ---------- helpers ---------- */
 const round2 = (v) => {
     const n = Math.round((Number(v) || 0) * 100) / 100;
@@ -122,7 +137,7 @@ const factoryMetrics = (list, metrics) => {
 
 const hasActivity = (m) => Object.values(m).some((v) => v !== 0);
 
-/* rows of a normal order tab (Knitting / Dyeing / AOP): drops factories with no activity on that tab */
+/* rows of a normal order tab: drops factories with no activity on that tab */
 const standardBuild = (orderKey, metrics, derive) => (ds) => {
     const rows = [];
     factoryMetrics(ds[orderKey], metrics).forEach(({ name, m }) => {
@@ -163,7 +178,7 @@ const headerCellStyle = {
 };
 
 /* ===================================================================
-   GENERIC TABLE BODY (used by the Summary and Finish Fabric tabs)
+   GENERIC TABLE BODY (used by Summary, Finish Fabric, Yarn Store, Yarn Stock Y/D tabs)
    renders <tbody> + <tfoot> like KnittingGlance / DyeingGlance / AopGlance
    kinds: text | serial | count | num | pct | stock | open (Opening Qty)
    =================================================================== */
@@ -264,9 +279,11 @@ const StaticBody = ({ rows, totals, columns, showTotal = true, onRowClick }) => 
 
    IMPORTANT: aliases are STRICT per tab. The API returns every factory on
    every tab, and knitting / dyeing factories use similar names:
-     Knitting  -> "Grey Fabric Received"
-     Dyeing    -> "Grey Received", "Finish Received"
-     AOP       -> "AOP Finish Fabric Rcvd"
+     Knitting     -> "Grey Fabric Received"
+     Dyeing       -> "Grey Received", "Finish Received"
+     AOP          -> "AOP Finish Fabric Rcvd"
+     Yarn Dyeing  -> "Yarn Delivery For Yarn Dye", "Yarn Return From Yarn Dye",
+                     "Yarn Received From Yarn Dye", "Finish Received"
    Sharing aliases between tabs double counts quantities.
 
    needs  = which order APIs this tab loads (/api/mis-party-stock/:orderKey)
@@ -291,6 +308,12 @@ const AOP_METRICS = {
     receivedFromAop: ["receivedfromaop"],
     finishReceived: ["aopfinishfabricrcvd", "finishreceivedfromaop", "aopfinishreceived"],
 };
+const YD_METRICS = {
+    ydDelivery: ["yarndeliveryforyarndye"],
+    ydReturn: ["yarnreturnfromyarndye"],
+    ydReceived: ["yarnreceivedfromyarndye"],
+    ydFinish: ["finishreceived"],
+};
 
 const deriveKnit = (m) => ({
     partyStock: round2(m.yarnDelivery - m.yarnReturn - m.greyReceived),
@@ -301,6 +324,13 @@ const deriveDye = (m) => ({
 });
 const deriveAop = (m) => ({
     partyStock: round2(m.sentForAop - m.returnFromAop - m.receivedFromAop),
+});
+const deriveYd = (m) => ({
+    partyStock: round2(m.ydDelivery - m.ydReturn - m.ydReceived),
+});
+/* store stock = received + returned - issued */
+const deriveStore = (m) => ({
+    partyStock: round2(m.yarnReceived + m.yarnReturned - m.yarnIssued),
 });
 
 const KNITTING_TAB = {
@@ -369,49 +399,90 @@ const AOP_TAB = {
     ],
 };
 
-/* FINISH FABRIC (factory wise) = Dyeing "Finish Received" + AOP "Finish Fabric Rcvd" */
+/* YARN STOCK (Y/D) = yarn lying with the yarn dyeing factories */
+const YARN_DYE_TAB = {
+    key: "yarnDyeingOrder",
+    label: "Yarn Stock (Y/D)",
+    title: "Yarn Stock (Y/D) - Yarn Dyeing Party Stock",
+    fileName: "Yarn_Stock_YD",
+    unit: "factories",
+    Component: StaticBody,
+    needs: ["yarnDyeingOrder"],
+    sumKeys: Object.keys(YD_METRICS),
+    derive: deriveYd,
+    build: standardBuild("yarnDyeingOrder", YD_METRICS, deriveYd),
+    columns: [
+        { key: "serial", label: "SL", kind: "serial" },
+        { key: "factoryName", label: "Factory Name", kind: "text" },
+        { key: "ydDelivery", label: "Yarn Delivery For Yarn Dye", kind: "num" },
+        { key: "ydReturn", label: "Yarn Return From Yarn Dye", kind: "num" },
+        { key: "ydReceived", label: "Yarn Received From Yarn Dye", kind: "num" },
+        { key: "ydFinish", label: "Finish Received", kind: "num" },
+        { key: "partyStock", label: "Party Stock", kind: "stock" },
+    ],
+};
+
+/* YARN STORE STOCK = yarn lying in the yarn store location */
+const YARN_STORE_TAB = {
+    key: "yarnStore",
+    label: "Yarn Store Stock",
+    title: "Yarn Store Stock",
+    fileName: "Yarn_Store_Stock",
+    unit: "stores",
+    Component: StaticBody,
+    needs: [YARN_STORE_KEY],
+    sumKeys: Object.keys(YARN_STORE_METRICS),
+    derive: deriveStore,
+    build: standardBuild(YARN_STORE_KEY, YARN_STORE_METRICS, deriveStore),
+    columns: [
+        { key: "serial", label: "SL", kind: "serial" },
+        { key: "factoryName", label: "Store / Location", kind: "text" },
+        { key: "yarnReceived", label: "Yarn Received", kind: "num" },
+        { key: "yarnIssued", label: "Yarn Issued", kind: "num" },
+        { key: "yarnReturned", label: "Yarn Returned", kind: "num" },
+        { key: "partyStock", label: "Store Stock", kind: "stock" },
+    ],
+};
+
+/* FINISH FABRIC (factory wise) = finish fabric received INTO our garments factories
+   API: /api/mis-party-stock/finishFabric  (grouped by the "To" garments factory of the challan;
+   the garments factory list and the AOP rule are applied in the backend)
+   Dyeing Finish Received + AOP Finish Received */
+const FINISH_METRICS = {
+    dyeingFinish: ["dyeingfinishreceived"],
+    aopFinish: ["aopfinishreceived"],
+};
 const FINISH_TAB = {
     key: "finishFabric",
     label: "Finish Fabric",
-    title: "Finish Fabric Received (Factory Wise)",
-    fileName: "Finish_Fabric_Received",
+    title: "Finish Fabric Stock (Garments Factory Wise)",
+    fileName: "Finish_Fabric_Stock",
     unit: "factories",
     Component: StaticBody,
-    needs: ["dyeingOrder", "aopOrder"],
-    sumKeys: ["dyeingFinish", "aopFinish"],
+    needs: ["finishFabric"],
+    sumKeys: Object.keys(FINISH_METRICS),
     derive: (m) => ({ totalFinish: round2(m.dyeingFinish + m.aopFinish) }),
     build: (ds) => {
-        const dye = factoryMetrics(ds.dyeingOrder, { finish: DYE_METRICS.finishReceived });
-        const aop = factoryMetrics(ds.aopOrder, { finish: AOP_METRICS.finishReceived });
-        const keys = new Set([...dye.keys(), ...aop.keys()]);
         const rows = [];
-        keys.forEach((k) => {
-            const d = dye.get(k);
-            const a = aop.get(k);
-            const dyeingFinish = d ? d.m.finish : 0;
-            const aopFinish = a ? a.m.finish : 0;
-            if (dyeingFinish === 0 && aopFinish === 0) return;
-            rows.push({
-                factoryName: (d && d.name) || (a && a.name) || "",
-                dyeingFinish,
-                aopFinish,
-                totalFinish: round2(dyeingFinish + aopFinish),
-            });
+        factoryMetrics(ds.finishFabric, FINISH_METRICS).forEach(({ name, m }) => {
+            if (!hasActivity(m)) return;
+            rows.push({ factoryName: name, ...m, totalFinish: round2(m.dyeingFinish + m.aopFinish) });
         });
         return rows.sort((x, y) => x.factoryName.toLowerCase().localeCompare(y.factoryName.toLowerCase()));
     },
     columns: [
         { key: "serial", label: "SL", kind: "serial" },
-        { key: "factoryName", label: "Factory Name", kind: "text" },
+        { key: "factoryName", label: "Garments Factory", kind: "text" },
         { key: "dyeingFinish", label: "Dyeing Finish Received", kind: "num" },
         { key: "aopFinish", label: "AOP Finish Received", kind: "num" },
         { key: "totalFinish", label: "Total Finish Fabric Rcvd", kind: "stock" },
     ],
 };
 
-/* SUMMARY = Yarn stock + Dyeing stock + AOP stock + Finish fabric stock
+/* SUMMARY = Yarn Store + Yarn stock (Knitting) + Yarn stock (Y/D) + Dyeing + AOP + Finish fabric
    Opening Qty  = party stock of all transactions BEFORE the selected period
-   Party Stock  = Opening Qty + (Delivery - Return - Received) of the selected period (closing) */
+   Party Stock  = Opening Qty + (Delivery - Return - Received) of the selected period (closing)
+   Yarn Store row: Delivery / Sent = Yarn Issued, Return = Yarn Returned, Received = Yarn Received */
 const SUMMARY_TAB = {
     key: "summary",
     label: "Summary",
@@ -421,13 +492,15 @@ const SUMMARY_TAB = {
     Component: StaticBody,
     showTotal: false, // different stock types (yarn / fabric) are not added together
     rowTab: true, // click a row = open that tab
-    needs: ["knittingOrder", "dyeingOrder", "aopOrder"],
+    needs: ["knittingOrder", "dyeingOrder", "aopOrder", "yarnDyeingOrder", YARN_STORE_KEY, "finishFabric"],
     sumKeys: ["factories", "opening", "delivery", "ret", "received", "finishReceived", "stock"],
     derive: () => ({}),
     build: (ds, openDs = {}) => {
         const k = KNITTING_TAB.build(ds);
         const d = DYEING_TAB.build(ds);
         const a = AOP_TAB.build(ds);
+        const y = YARN_DYE_TAB.build(ds);
+        const s = YARN_STORE_TAB.build(ds);
         const f = FINISH_TAB.build(ds);
         const finishTotal = sumOf(f, "totalFinish");
 
@@ -435,18 +508,34 @@ const SUMMARY_TAB = {
         const ok = KNITTING_TAB.build(openDs);
         const od = DYEING_TAB.build(openDs);
         const oa = AOP_TAB.build(openDs);
+        const oy = YARN_DYE_TAB.build(openDs);
+        const os = YARN_STORE_TAB.build(openDs);
         const of = FINISH_TAB.build(openDs);
         const openYarn = sumOf(ok, "partyStock");
         const openDye = sumOf(od, "partyStock");
         const openAop = sumOf(oa, "partyStock");
+        const openYd = sumOf(oy, "partyStock");
+        const openStore = sumOf(os, "partyStock");
         const openFinish = sumOf(of, "totalFinish");
 
         return [
+            {
+                id: "store", tabKey: YARN_STORE_TAB.key, label: "Yarn Store Stock", factories: s.length,
+                opening: openStore,
+                delivery: sumOf(s, "yarnIssued"), ret: sumOf(s, "yarnReturned"), received: sumOf(s, "yarnReceived"),
+                finishReceived: 0, stock: round2(openStore + sumOf(s, "partyStock")),
+            },
             {
                 id: "yarn", tabKey: KNITTING_TAB.key, label: "Yarn Stock (Knitting)", factories: k.length,
                 opening: openYarn,
                 delivery: sumOf(k, "yarnDelivery"), ret: sumOf(k, "yarnReturn"), received: sumOf(k, "greyReceived"),
                 finishReceived: 0, stock: round2(openYarn + sumOf(k, "partyStock")),
+            },
+            {
+                id: "yd", tabKey: YARN_DYE_TAB.key, label: "Yarn Stock (Y/D)", factories: y.length,
+                opening: openYd,
+                delivery: sumOf(y, "ydDelivery"), ret: sumOf(y, "ydReturn"), received: sumOf(y, "ydReceived"),
+                finishReceived: sumOf(y, "ydFinish"), stock: round2(openYd + sumOf(y, "partyStock")),
             },
             {
                 id: "dyeing", tabKey: DYEING_TAB.key, label: "Dyeing Stock", factories: d.length,
@@ -481,7 +570,7 @@ const SUMMARY_TAB = {
     ],
 };
 
-const TABS = [SUMMARY_TAB, KNITTING_TAB, DYEING_TAB, AOP_TAB, FINISH_TAB];
+const TABS = [SUMMARY_TAB, YARN_STORE_TAB, KNITTING_TAB, YARN_DYE_TAB, DYEING_TAB, AOP_TAB, FINISH_TAB];
 
 /* ---------- filter helpers ---------- */
 const textOf = (col, row) => {
@@ -743,10 +832,11 @@ const MonthPicker = ({ options, selected, onApply }) => {
    =================================================================== */
 const PartyStockGlance = () => {
     const [activeKey, setActiveKey] = useState(TABS[0].key); // Summary tab first
-    const [datasets, setDatasets] = useState({}); // { knittingOrder: [...], dyeingOrder: [...], aopOrder: [...] }
+    const [datasets, setDatasets] = useState({}); // { knittingOrder: [...], dyeingOrder: [...], ... }
     const [openingDatasets, setOpeningDatasets] = useState({}); // same shape, data BEFORE the selected period (Summary only)
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState("");
+    const [warning, setWarning] = useState(""); // Summary: an optional location (Yarn Store) failed to load
     const [filters, setFilters] = useState({});
     const [sort, setSort] = useState(null);
     const [openFilter, setOpenFilter] = useState(null); // { key, rect }
@@ -816,7 +906,8 @@ const PartyStockGlance = () => {
     }, [measure]);
 
     /* ---------------- API: /api/mis-party-stock/:orderType?fromDate&toDate&months ----------------
-       Summary loads knitting + dyeing + aop, Finish Fabric loads dyeing + aop, other tabs load their own order.
+       Summary loads knitting + dyeing + aop + yarn dyeing + yarn store, Finish Fabric loads dyeing + aop,
+       other tabs load their own order.
        Summary also loads the same orders with toDate = (period start - 1 day) for the Opening Qty. */
     const load = useCallback(async () => {
         if (dateFrom && dateTo && dateFrom > dateTo) return; // invalid range, wait for the user
@@ -825,6 +916,7 @@ const PartyStockGlance = () => {
         const id = ++reqId.current;
         setLoading(true);
         setError("");
+        setWarning("");
         setDatasets({});
         setOpeningDatasets({});
         try {
@@ -838,28 +930,37 @@ const PartyStockGlance = () => {
             const needOpening = tab.key === "summary" && !!openingTo;
             const openQs = needOpening ? `?toDate=${openingTo}` : "";
 
-            const [responses, openResponses] = await Promise.all([
-                Promise.all(
-                    tab.needs.map((orderKey) =>
-                        fetchRef.current(`/api/mis-party-stock/${orderKey}${qs ? `?${qs}` : ""}`)
-                    )
-                ),
+            /* one request; on the Summary tab an optional location that fails gives an empty list + a warning */
+            const warns = [];
+            const tolerant = tab.key === "summary";
+            const fetchOne = async (orderKey, query) => {
+                try {
+                    const res = await fetchRef.current(`/api/mis-party-stock/${orderKey}${query}`);
+                    const body = extractBody(res);
+                    if (body.success === false || (body.type && body.type !== "success")) {
+                        throw new Error(body.message || "API returned an error");
+                    }
+                    return body;
+                } catch (e) {
+                    if (tolerant && OPTIONAL_KEYS.has(orderKey)) {
+                        warns.push(`${orderKey}: ${e?.response?.data?.message || e?.message || "failed to load"}`);
+                        return { data: [] };
+                    }
+                    throw e;
+                }
+            };
+
+            const [bodies, openBodies] = await Promise.all([
+                Promise.all(tab.needs.map((orderKey) => fetchOne(orderKey, qs ? `?${qs}` : ""))),
                 needOpening
-                    ? Promise.all(
-                          tab.needs.map((orderKey) =>
-                              fetchRef.current(`/api/mis-party-stock/${orderKey}${openQs}`)
-                          )
-                      )
+                    ? Promise.all(tab.needs.map((orderKey) => fetchOne(orderKey, openQs)))
                     : Promise.resolve([]),
             ]);
 
             const next = {};
             const monthMap = new Map();
             tab.needs.forEach((orderKey, i) => {
-                const body = extractBody(responses[i]);
-                if (body.success === false || (body.type && body.type !== "success")) {
-                    throw new Error(body.message || "API returned an error");
-                }
+                const body = bodies[i];
                 next[orderKey] = Array.isArray(body.data) ? body.data : [];
                 if (Array.isArray(body.months)) body.months.forEach((mo) => monthMap.set(mo.key, mo));
             });
@@ -867,17 +968,14 @@ const PartyStockGlance = () => {
             const nextOpen = {};
             if (needOpening) {
                 tab.needs.forEach((orderKey, i) => {
-                    const body = extractBody(openResponses[i]);
-                    if (body.success === false || (body.type && body.type !== "success")) {
-                        throw new Error(body.message || "Opening data API returned an error");
-                    }
-                    nextOpen[orderKey] = Array.isArray(body.data) ? body.data : [];
+                    nextOpen[orderKey] = Array.isArray(openBodies[i]?.data) ? openBodies[i].data : [];
                 });
             }
 
             if (id !== reqId.current) return;
             setDatasets(next);
             setOpeningDatasets(nextOpen);
+            setWarning(Array.from(new Set(warns)).join("  |  "));
             if (monthMap.size) setMonthOptions(Array.from(monthMap.values()));
         } catch (e) {
             if (id !== reqId.current) return;
@@ -997,7 +1095,7 @@ const PartyStockGlance = () => {
             const center = { vertical: "middle", horizontal: "center" };
 
             ws.columns = columns.map((c) => ({
-                width: c.kind === "text" ? 34 : c.kind === "serial" ? 7 : 20,
+                width: c.kind === "text" ? 34 : c.kind === "serial" ? 7 : 22,
             }));
 
             ws.mergeCells(1, 1, 1, n);
@@ -1016,7 +1114,7 @@ const PartyStockGlance = () => {
             const s = ws.getCell(2, 1);
             s.value =
                 `Generated: ${new Date().toLocaleString("en-GB")}   |   ` +
-                `${cfg.unit === "stock types" ? "Stock types" : "Factories"}: ${filteredRows.length} of ${allRows.length}` +
+                `${cfg.unit === "stock types" ? "Stock types" : cfg.unit === "stores" ? "Stores" : "Factories"}: ${filteredRows.length} of ${allRows.length}` +
                 (periodText ? `   |   Period (challan date): ${periodText}` : "") +
                 (monthLabels ? `   |   Months: ${monthLabels}` : "") +
                 (openingText ? `   |   ${openingText}` : "") +
@@ -1035,7 +1133,7 @@ const PartyStockGlance = () => {
                 cell.alignment = { ...center, wrapText: true };
                 cell.border = border;
             });
-            hr.height = 24;
+            hr.height = 36;
 
             const numFmt = (c) =>
                 c.kind === "stock" || c.kind === "open"
@@ -1109,6 +1207,7 @@ const PartyStockGlance = () => {
 
     /* ---------------- render ---------------- */
     const openCol = openFilter ? columns.find((c) => c.key === openFilter.key) : null;
+    const countLabel = cfg.unit === "stores" ? "Stores" : "Factories";
 
     return (
         <div style={{ padding: 16, fontFamily: "inherit" }}>
@@ -1157,7 +1256,7 @@ const PartyStockGlance = () => {
                 .ps-card-value { font-size: 20px; font-weight: 700; color: #1F2937; font-variant-numeric: tabular-nums; margin-top: 2px; }
             `}</style>
 
-            {/* ---------- tabs: Summary / Knitting / Dyeing / AOP / Finish Fabric ---------- */}
+            {/* ---------- tabs: Summary / Yarn Store / Knitting / Yarn (Y/D) / Dyeing / AOP / Finish Fabric ---------- */}
             <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
                 {TABS.map((o) => (
                     <button
@@ -1252,11 +1351,29 @@ const PartyStockGlance = () => {
                 </div>
             </div>
 
+            {/* ---------- warning: an optional location could not be loaded (Summary still shows the rest) ---------- */}
+            {warning && (
+                <div
+                    style={{
+                        marginBottom: 12,
+                        padding: "10px 16px",
+                        background: "#FFFBEB",
+                        border: "1px solid #FDE68A",
+                        borderRadius: 10,
+                        fontSize: 13,
+                        color: "#92400E",
+                        fontWeight: 600,
+                    }}
+                >
+                    Some data could not be loaded and is shown as empty: {warning}
+                </div>
+            )}
+
             {/* ---------- cards ---------- */}
             <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 12 }}>
                 {cfg.key !== "summary" && (
                     <div className="ps-card ps-card-count">
-                        <div className="ps-card-label">Factories</div>
+                        <div className="ps-card-label">{countLabel}</div>
                         <div className="ps-card-value">{filteredRows.length}</div>
                     </div>
                 )}

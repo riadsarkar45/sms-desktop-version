@@ -29,6 +29,10 @@ const getPoNo = (wo, comp) => {
 
 const num = (v) => (Number(v) || 0);
 
+// NEW: natural text compare used to order the print rows (composition -> color -> yarn count -> lot)
+const cmp = (a, b) =>
+    String(a ?? "").localeCompare(String(b ?? ""), undefined, { numeric: true, sensitivity: "base" });
+
 const WorkOrderPreviewModal = ({ data, orderType, revisionCount = 0, onClose }) => {
     const job = data?.job;
     const wo = data?.wo;
@@ -58,6 +62,41 @@ const WorkOrderPreviewModal = ({ data, orderType, revisionCount = 0, onClose }) 
             : num(comp.workOrderQty);
         return { comp, color, qty };
     });
+
+    // NEW: print rows grouped composition wise, then color, yarn count and lot
+    // (same rows as before, only ordered; repeated Fabrication / Color cells are merged with rowSpan)
+    const printRows = rowsData
+        .map((r, idx) => ({ ...r, idx }))
+        .sort((a, b) =>
+            cmp(a.comp?.composition, b.comp?.composition) ||
+            cmp(a.color, b.color) ||
+            cmp(lineValue(wo, a.comp, "yarnCount"), lineValue(wo, b.comp, "yarnCount")) ||
+            cmp(lineValue(wo, a.comp, "lotNo"), lineValue(wo, b.comp, "lotNo")) ||
+            a.idx - b.idx
+        )
+        .map((r, i, arr) => {
+            const prev = arr[i - 1];
+            const sameComp = prev && (prev.comp?.composition || "") === (r.comp?.composition || "");
+            const sameColor = sameComp && prev.color === r.color;
+
+            let compSpan = 1;
+            if (!sameComp) {
+                for (let j = i + 1; j < arr.length && (arr[j].comp?.composition || "") === (r.comp?.composition || ""); j++) compSpan++;
+            } else {
+                compSpan = 0;
+            }
+
+            let colorSpan = 1;
+            if (!sameColor) {
+                for (let j = i + 1; j < arr.length
+                    && (arr[j].comp?.composition || "") === (r.comp?.composition || "")
+                    && arr[j].color === r.color; j++) colorSpan++;
+            } else {
+                colorSpan = 0;
+            }
+
+            return { ...r, compSpan, colorSpan };
+        });
 
     const totalQty = rowsData.reduce((s, r) => s + r.qty, 0);
     const styleNo = wo.styleRequirement?.styleNo || wo.styleNo || "-";
@@ -180,49 +219,52 @@ const WorkOrderPreviewModal = ({ data, orderType, revisionCount = 0, onClose }) 
                         <thead>
                             <tr>
                                 <th style={th}>STYLE</th>
-                                <th style={th}>PO NO.</th>
+                                <th style={th}>PO NO.</th>                                
+                                <th style={th}>HOD</th>
                                 <th style={th}>Color</th>
                                 <th style={th}>Fabrication</th>
+                                <th style={th}>Finished fab. Width</th>
+                                <th style={th}>WORK Order Qnty (Kg)</th>
                                 <th style={th}>Yarn count</th>
                                 <th style={th}>YARN LOT NUMBER</th>
                                 <th style={th}>SL</th>
-                                <th style={th}>Order Qnty (Kg)</th>
-                                <th style={th}>HOD</th>
-                                <th style={th}>PRICE/ DT/kg</th>
-                                <th style={th}>Finished fab. Width</th>
-                                <th style={th}>M/D</th>
+                                 <th style={th}>M/D</th>
+                                <th style={th}>PRICE/ DT/kg</th>              
                                 <th style={th}>production start date</th>
                                 <th style={th}>production close date</th>
                                 <th style={th}>REMARKS</th>
                             </tr>
                         </thead>
                         <tbody>
-                            {rowsData.length === 0 && (
+                            {printRows.length === 0 && (
                                 <tr><td style={td} colSpan={15}>No compositions found</td></tr>
                             )}
-                            {rowsData.map(({ comp, color, qty }, i) => (
+                            {printRows.map(({ comp, color, qty, compSpan, colorSpan }, i) => (
                                 <tr key={comp?.id ?? i}>
-                                    {i === 0 && <td style={td} rowSpan={rowsData.length}>{styleNo}</td>}
-                                    <td style={td}>{getPoNo(wo, comp)}</td>
-                                    <td style={td}>{color}</td>
-                                    <td style={td}>{comp?.composition || "-"}</td>
+                                    {i === 0 && <td style={td} rowSpan={printRows.length}>{styleNo}</td>}
+                                    <td style={td}>{getPoNo(wo, comp)}</td>                                    
+                                    {i === 0 && <td style={td} rowSpan={printRows.length}>{wo.month || "-"}</td>}
+                                    {colorSpan > 0 && <td style={td} rowSpan={colorSpan}>{color}</td>}
+                                    {compSpan > 0 && <td style={td} rowSpan={compSpan}>{comp?.composition || "-"}</td>}
+                                    <td style={td}>{getFinishDia(wo, comp)}</td>
+                                    <td style={td}>{qty ? qty.toFixed(2) : "-"}</td>
                                     <td style={td}>{lineValue(wo, comp, "yarnCount")}</td>
                                     <td style={td}>{lineValue(wo, comp, "lotNo")}</td>
                                     <td style={td}>{lineValue(wo, comp, "stichLength")}</td>
-                                    <td style={td}>{qty ? qty.toFixed(2) : "-"}</td>
-                                    {i === 0 && <td style={td} rowSpan={rowsData.length}>{wo.month || "-"}</td>}
+                                    <td style={td}>{lineValue(wo, comp, "machineDia")}</td>                                 
+                                    
                                     <td style={td}>{comp?.unitePrice != null ? Number(comp.unitePrice).toFixed(2) : "-"}</td>
-                                    <td style={td}>{getFinishDia(wo, comp)}</td>
-                                    <td style={td}>{lineValue(wo, comp, "machineDia")}</td>
-                                    {i === 0 && <td style={td} rowSpan={rowsData.length}>{wo.productionStartDate ? formatWorkOrderDate(wo.productionStartDate) : "-"}</td>}
-                                    {i === 0 && <td style={td} rowSpan={rowsData.length}>{wo.productionCloseDate ? formatWorkOrderDate(wo.productionCloseDate) : "-"}</td>}
-                                    {i === 0 && <td style={td} rowSpan={rowsData.length}>{wo.remarks || "Body"}</td>}
+                                    
+                                    
+                                    {i === 0 && <td style={td} rowSpan={printRows.length}>{wo.productionStartDate ? formatWorkOrderDate(wo.productionStartDate) : "-"}</td>}
+                                    {i === 0 && <td style={td} rowSpan={printRows.length}>{wo.productionCloseDate ? formatWorkOrderDate(wo.productionCloseDate) : "-"}</td>}
+                                    {i === 0 && <td style={td} rowSpan={printRows.length}>{wo.remarks || "Body"}</td>}
                                 </tr>
                             ))}
                             <tr>
-                                <td style={{ ...td, textAlign: "left", fontWeight: 700, background: "#d1d5db" }} colSpan={7}>Grand Total =</td>
+                                <td style={{ ...td, textAlign: "left", fontWeight: 700, background: "#d1d5db" }} colSpan={6}>Grand Total =</td>
                                 <td style={{ ...td, fontWeight: 700, background: "#d1d5db" }}>{totalQty.toFixed(2)}</td>
-                                <td style={{ ...td, background: "#d1d5db" }} colSpan={7} />
+                                <td style={{ ...td, background: "#d1d5db" }} colSpan={8} />
                             </tr>
                         </tbody>
                     </table>
@@ -243,8 +285,8 @@ const WorkOrderPreviewModal = ({ data, orderType, revisionCount = 0, onClose }) 
                             <div>If any claim arises from buyer side that situation total liabilities will go through on your shoulder</div>
                         </div>
                         <div style={{ width: "38%", border: "1px solid #000", background: "#d1d5db", fontSize: 10, fontWeight: 700, padding: 6, display: "flex", gap: 8, alignSelf: "flex-start" }}>
-                            <div style={{ alignSelf: "center" }}>NOTE</div>
-                            <div>After {shortTitle.charAt(0) + shortTitle.slice(1).toLowerCase()} Grey Fabric will directly deliver to Advanced Composite Textile Store for Inspection &amp; on each Grey Fabric roll should be written by Yellow Marker.</div>
+                            <div style={{ alignSelf: "center" }}>NOTE:</div>
+                            <div>After {shortTitle.charAt(0) + shortTitle.slice(1).toLowerCase()} Grey Fabric will directly deliver to Bscic Grey Store for Inspection &amp; on each Grey Fabric roll should be written by Yellow Marker.</div>
                         </div>
                     </div>
 

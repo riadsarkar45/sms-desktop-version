@@ -142,6 +142,14 @@ const getAllCounts = (inventory) =>
 const getAllPis = (inventory) =>
     uniqSorted(inventory.map((entry) => entry.piNo));
 
+// The yarn counts that really exist inside one lot
+const getCountsForLot = (inventory, lotNo) =>
+    uniqSorted(
+        inventory
+            .filter((entry) => entry.lotNo === lotNo)
+            .map((entry) => entry.yarnCount)
+    );
+
 const getPisForPair = (inventory, lotNo, yarnCount) =>
     inventory
         .filter(
@@ -166,10 +174,34 @@ const hasInventoryEntry = (inventory, piNo, lotNo, yarnCount) =>
             entry.yarnCount === yarnCount
     );
 
+// PI of a lot + count pair:
+//  - the current PI stays when it still belongs to the pair
+//  - the only PI of the pair is selected automatically
+//  - several PIs: nothing is selected, the user picks one
+//  - the pair is not in the list at all (value typed / filled by hand): unchanged
+const pickPiForPair = (inventory, lotNo, yarnCount, currentPi) => {
+    if (!lotNo || !yarnCount) return "";
+
+    const pis = getPisForPair(inventory, lotNo, yarnCount).map(
+        (entry) => entry.piNo
+    );
+
+    if (pis.length === 0) return currentPi;
+    if (pis.includes(currentPi)) return currentPi;
+
+    return pis.length === 1 ? pis[0] : "";
+};
+
 // Applies a Lot / Count / PI change to a line or yarn color.
-// Every lot, count and PI is offered, so nothing is cascaded: each field keeps
-// exactly what the user picked. Only the default values are handled.
-const applyInventoryChange = (item, field, value) => {
+//  - LOT picked first      -> the yarn count of that lot is selected automatically,
+//                             then the PI of that lot + count is selected automatically
+//                             (only when just ONE count / PI is possible; otherwise the
+//                             user picks from the matching values)
+//  - COUNT picked first    -> nothing else is selected (no lot, no PI)
+//  - COUNT changed while a lot is chosen -> the PI of that lot + count is re-selected
+//  - PI picked             -> nothing else changes
+// Only the default values are handled separately.
+const applyInventoryChange = (item, field, value, inventory = []) => {
     // Picking the default lot / count / PI selects ALL THREE defaults
     if (
         (field === "lotNo" && value === DEFAULT_LOT) ||
@@ -192,6 +224,32 @@ const applyInventoryChange = (item, field, value) => {
         if (field !== "piNo" && next.piNo === DEFAULT_PI) next.piNo = "";
     }
 
+    // LOT picked: select the yarn count, then the PI
+    if (field === "lotNo" && value) {
+        const counts = getCountsForLot(inventory, value);
+
+        if (counts.length > 0) {
+            const yarnCount = counts.includes(next.yarnCount)
+                ? next.yarnCount
+                : counts.length === 1
+                    ? counts[0]
+                    : "";
+
+            next.yarnCount = yarnCount;
+            next.piNo = pickPiForPair(inventory, value, yarnCount, next.piNo);
+        }
+    }
+
+    // COUNT changed while a lot is chosen: re-select the PI of that pair
+    if (
+        field === "yarnCount" &&
+        value &&
+        next.lotNo &&
+        next.lotNo !== DEFAULT_LOT
+    ) {
+        next.piNo = pickPiForPair(inventory, next.lotNo, value, next.piNo);
+    }
+
     return next;
 };
 
@@ -207,10 +265,11 @@ const getYdCounts = (ydLots, ydBatch) =>
             .filter(Boolean)
     );
 
-const getYdBookedQty = (ydLots, ydBatch) =>
+// qty of a Y/D batch that is still free (booked qty minus what earlier orders used)
+const getYdAvailableQty = (ydLots, ydBatch) =>
     ydLots
         .filter((entry) => entry.ydBatch === ydBatch)
-        .reduce((sum, entry) => sum + toNum(entry.bookedQuantity), 0);
+        .reduce((sum, entry) => sum + toNum(entry.availableQuantity), 0);
 
 const hasValue = (value) =>
     value !== "" && value !== null && value !== undefined;
@@ -312,25 +371,39 @@ const getRules = (orderType) =>
 // AOP / Dyeing lot helpers
 // They use the SAME lot list as the other order types: the full yarn stock
 // when the job has no knitting / yarn dyeing order yet, otherwise only the
-// lots of the job's first (base) order. When a Lot + Count is chosen, the
-// balance of the PIs that really exist for that pair is attached.
+// lots of the job's first (base) order.
+// Lot is picked first: its yarn count and PI are selected automatically.
 // Each PI option: { piNo, totalQuantity } (null when unknown).
 // ---------------------------------------------------------
 const getAllCompactLots = (inventory) => getAllLots(inventory);
 
 const getAllCompactCounts = (inventory) => getAllCounts(inventory);
 
-const getCompactPiOptions = (inventory, lotNo, yarnCount) => {
-    const options = new Map(getAllPis(inventory).map((piNo) => [piNo, null]));
-
-    if (lotNo && yarnCount) {
-        getPisForPair(inventory, lotNo, yarnCount).forEach((entry) => {
-            options.set(entry.piNo, entry.totalQuantity);
-        });
+// Yarn counts of the chosen lot (all counts when no lot is chosen yet)
+const getCompactCountOptions = (inventory, lotNo) => {
+    if (lotNo) {
+        const counts = getCountsForLot(inventory, lotNo);
+        if (counts.length > 0) return counts;
     }
 
-    return [...options.entries()]
-        .map(([piNo, totalQuantity]) => ({ piNo, totalQuantity }))
+    return getAllCompactCounts(inventory);
+};
+
+// PIs of the chosen lot + count (all PIs until both are chosen)
+const getCompactPiOptions = (inventory, lotNo, yarnCount) => {
+    if (lotNo && yarnCount) {
+        const pairEntries = getPisForPair(inventory, lotNo, yarnCount);
+
+        if (pairEntries.length > 0) {
+            return pairEntries.map((entry) => ({
+                piNo: entry.piNo,
+                totalQuantity: entry.totalQuantity,
+            }));
+        }
+    }
+
+    return getAllPis(inventory)
+        .map((piNo) => ({ piNo, totalQuantity: null }))
         .sort((a, b) => a.piNo.localeCompare(b.piNo));
 };
 
@@ -698,8 +771,7 @@ const JobLotSelect = ({
 };
 
 // PI No field used by AOP / Dyeing (compact design).
-//  - a dropdown with the PI numbers of the list (balance shown when the chosen
-//    Lot + Count has one)
+//  - a dropdown with the PI numbers of the chosen lot + count (balance shown)
 // `usage` is a Map(inventoryKey -> qty requested by ALL lines of this order).
 const CompactPiField = ({ item, options, loading, usage, onChange }) => {
     // A PI filled automatically from the base work order stays selectable
@@ -775,6 +847,7 @@ const CompactPiField = ({ item, options, loading, usage, onChange }) => {
 // `usage` is a Map(inventoryKey -> qty requested by ALL lines of this order)
 // so each card can show a live stock bar for its PI.
 // `noLots` = nothing found for this job: DEFAULT LOT / DEFAULT COUNT / DEFAULT PI are offered.
+// Order of selection: LOT first -> its yarn count and PI are selected automatically.
 const LotCountPiFields = ({
     item,
     onChange,
@@ -795,22 +868,33 @@ const LotCountPiFields = ({
 
     const ydLabel = (batch) => {
         const counts = getYdCounts(ydLots, batch);
-        const booked = getYdBookedQty(ydLots, batch);
+        const available = getYdAvailableQty(ydLots, batch);
 
         return (
             batch +
             (counts.length ? ` — ${counts.join(", ")}` : "") +
-            (booked > 0 ? ` (${formatKg(booked)} KG booked)` : "")
+            (available > 0 ? ` (${formatKg(available)} KG available)` : "")
         );
     };
 
-    // Every lot / count / PI of the list is offered, whatever is picked in the other fields
+    // Every lot is offered
     let lotOptions = getAllLots(inventory);
 
     const ydCounts = hasYd ? getYdCounts(ydLots, item.ydBatch) : [];
 
+    // Once a lot is picked, only the yarn counts of that lot are offered.
+    // Count picked first (no lot yet): every count is offered.
+    const lotCounts =
+        item.lotNo && !isDefault && !hasYd
+            ? getCountsForLot(inventory, item.lotNo)
+            : [];
+
     let countOptions =
-        ydCounts.length > 0 ? ydCounts : getAllCounts(inventory);
+        ydCounts.length > 0
+            ? ydCounts
+            : lotCounts.length > 0
+                ? lotCounts
+                : getAllCounts(inventory);
 
     // Nothing found for this job: offer the defaults
     if ((noLots || item.lotNo === DEFAULT_LOT) && !lotOptions.includes(DEFAULT_LOT)) {
@@ -834,21 +918,24 @@ const LotCountPiFields = ({
         countOptions = [...countOptions, item.yarnCount];
     }
 
-    // ALL PI numbers; the balance is shown when the chosen Lot + Count has one
+    // PI numbers: the PIs of the chosen lot + count (with their balance).
+    // Until both are chosen, every PI is listed without a balance.
+    const pairEntries =
+        !isDefault && item.lotNo && item.yarnCount
+            ? getPisForPair(inventory, item.lotNo, item.yarnCount)
+            : [];
+
     const basePiOptions = isDefault
         ? []
-        : getAllPis(inventory).map((piNo) => ({
-            piNo,
-            totalQuantity:
-                item.lotNo && item.yarnCount
-                    ? inventory.find(
-                        (entry) =>
-                            entry.piNo === piNo &&
-                            entry.lotNo === item.lotNo &&
-                            entry.yarnCount === item.yarnCount
-                    )?.totalQuantity ?? null
-                    : null,
-        }));
+        : pairEntries.length > 0
+            ? pairEntries.map((entry) => ({
+                piNo: entry.piNo,
+                totalQuantity: entry.totalQuantity,
+            }))
+            : getAllPis(inventory).map((piNo) => ({
+                piNo,
+                totalQuantity: null,
+            }));
 
     const piOptions =
         !isDefault &&
@@ -1460,7 +1547,7 @@ const NewOrder = () => {
     //      * the job already has a knitting / yarn dyeing order: ONLY the lots
     //        of the first (base) order, qty = base qty - qty already used by
     //        earlier orders of this type
-    //  - ydLots: yarn dyeing lots booked for this job (knitting only)
+    //  - ydLots: yarn dyeing lots / batches booked for this job (with the qty still available)
     //  - jobLots: lots + counts (+ PI numbers) already used by any work order
     //    of this job (AOP + dyeing)
     //  - prefill: the base order's lot / count / PI / remaining qty per composition
@@ -1696,14 +1783,25 @@ const NewOrder = () => {
 
                 setYdLots(
                     toList(body.ydLots)
-                        .map((item) => ({
-                            ydBatch: String(item?.ydBatch ?? item?.lotNo ?? "").trim(),
-                            yarnCount: String(item?.yarnCount ?? "").trim(),
-                            colors: toList(item?.colors)
-                                .map((color) => String(color).trim())
-                                .filter(Boolean),
-                            bookedQuantity: toNum(item?.bookedQuantity),
-                        }))
+                        .map((item) => {
+                            const booked = toNum(item?.bookedQuantity);
+
+                            return {
+                                ydBatch: String(item?.ydBatch ?? item?.lotNo ?? "").trim(),
+                                yarnCount: String(item?.yarnCount ?? "").trim(),
+                                piNo: String(item?.piNo ?? "").trim(),
+                                colors: toList(item?.colors)
+                                    .map((color) => String(color).trim())
+                                    .filter(Boolean),
+                                bookedQuantity: booked,
+                                // qty still free (older backends only send the booked qty)
+                                availableQuantity:
+                                    item?.availableQuantity === undefined ||
+                                    item?.availableQuantity === null
+                                        ? booked
+                                        : toNum(item.availableQuantity),
+                            };
+                        })
                         .filter((item) => item.ydBatch)
                 );
 
@@ -2475,12 +2573,10 @@ const NewOrder = () => {
                 };
             }
 
-            if (
-                INVENTORY_FIELDS.has(field) &&
-                !getRules(orderType).compact &&
-                !lot.ydBatch
-            ) {
-                return applyInventoryChange(lot, field, value);
+            // Lot / Count / PI (every order type, AOP + Dyeing included):
+            // picking a LOT selects its yarn count and PI automatically
+            if (INVENTORY_FIELDS.has(field) && !lot.ydBatch) {
+                return applyInventoryChange(lot, field, value, lotsAndCounts);
             }
 
             return {
@@ -2588,8 +2684,9 @@ const NewOrder = () => {
         setLotQtyAlert("");
 
         const updateColor = (color) => {
+            // picking a LOT selects its yarn count and PI automatically
             if (INVENTORY_FIELDS.has(field)) {
-                return applyInventoryChange(color, field, value);
+                return applyInventoryChange(color, field, value, lotsAndCounts);
             }
 
             return {
@@ -2794,9 +2891,9 @@ const NewOrder = () => {
                         return fail(`PI No is required for ${where}`);
                     }
 
-                    // Y/D batch lines have no PI bucket. When the job's base order is
-                    // the yarn dyeing order, their qty is checked against the booked qty.
-                    if (usesYdBatch && lotSource.restricted) {
+                    // Y/D batch lines have no PI bucket. Their qty is checked against the
+                    // qty of that Y/D batch that is still available.
+                    if (usesYdBatch) {
                         const ydKey = JSON.stringify([
                             str(lot.ydBatch),
                             str(lot.yarnCount),
@@ -2870,7 +2967,7 @@ const NewOrder = () => {
             }
         }
 
-        // Knitting after yarn dyeing: the qty of a Y/D batch cannot exceed what was booked
+        // Knitting with a Y/D batch: the qty of a Y/D batch cannot exceed what is still available
         for (const requested of requestedByYd.values()) {
             const entry =
                 ydLots.find(
@@ -2881,11 +2978,11 @@ const NewOrder = () => {
 
             if (!entry) continue;
 
-            if (requested.requestedQty > entry.bookedQuantity) {
+            if (requested.requestedQty > entry.availableQuantity) {
                 const message =
                     `Insufficient quantity for Y/D Batch ${requested.ydBatch}` +
                     `${requested.yarnCount ? ` / Yarn Count ${requested.yarnCount}` : ""}. ` +
-                    `Available: ${entry.bookedQuantity.toLocaleString()} KG, ` +
+                    `Available: ${entry.availableQuantity.toLocaleString()} KG, ` +
                     `Requested: ${requested.requestedQty.toLocaleString()} KG.`;
                 setLotQtyAlert(message);
                 return fail(message);
@@ -3808,18 +3905,20 @@ const NewOrder = () => {
 
                                     // AOP / Dyeing: the lots / counts / PIs of the list
                                     // (full stock the first time, otherwise the base order's lots).
+                                    // Lot is picked first: its yarn count and PI are selected automatically.
                                     const chosenCompactLot = String(lotList[0]?.lotNo ?? "").trim();
                                     const chosenCompactCount = String(lotList[0]?.yarnCount ?? "").trim();
 
+                                    // only the yarn counts of the chosen lot (every count until a lot is chosen)
                                     const compactCountOptions = isCompact
-                                        ? getAllCompactCounts(lotsAndCounts)
+                                        ? getCompactCountOptions(lotsAndCounts, chosenCompactLot)
                                         : [];
 
                                     const compactLotOptions = isCompact
                                         ? getAllCompactLots(lotsAndCounts)
                                         : [];
 
-                                    // All PI numbers (balance attached for the chosen lot + count)
+                                    // PIs of the chosen lot + count (balance attached)
                                     const compactPiOptions = isCompact
                                         ? getCompactPiOptions(
                                             lotsAndCounts,
@@ -3988,7 +4087,7 @@ const NewOrder = () => {
                                                                         : isLimitedToBase
                                                                             ? `Limited to the ${baseOrderLabel} work order's lots. Available qty = ${baseOrderLabel} qty minus qty already used by earlier ${currentOrderLabel} work orders.`
                                                                             : lotsAndCounts.length > 0
-                                                                                ? "One set of details for this composition. Yarn count, lot and PI No list every available value."
+                                                                                ? "One set of details for this composition. Pick the yarn lot first: its yarn count and PI No are selected automatically."
                                                                                 : "No yarn lot found in the yarn stock."}
                                                                 </p>
                                                             </div>
@@ -4031,18 +4130,7 @@ const NewOrder = () => {
                                                                 isShowOutLabel
                                                             />
 
-                                                            <JobLotSelect
-                                                                label="Yarn Count"
-                                                                value={lotList[0]?.yarnCount ?? ""}
-                                                                options={compactCountOptions}
-                                                                loading={isLotsAndCountsLoading}
-                                                                placeholder="Select count"
-                                                                emptyText="No yarn count in stock"
-                                                                onChange={(value) =>
-                                                                    handleLotChange(index, 0, "yarnCount", value)
-                                                                }
-                                                            />
-
+                                                            {/* LOT first: it selects the yarn count + PI No */}
                                                             <JobLotSelect
                                                                 label="Yarn Lot"
                                                                 value={lotList[0]?.lotNo ?? ""}
@@ -4052,6 +4140,18 @@ const NewOrder = () => {
                                                                 emptyText="No yarn lot in stock"
                                                                 onChange={(value) =>
                                                                     handleLotChange(index, 0, "lotNo", value)
+                                                                }
+                                                            />
+
+                                                            <JobLotSelect
+                                                                label="Yarn Count"
+                                                                value={lotList[0]?.yarnCount ?? ""}
+                                                                options={compactCountOptions}
+                                                                loading={isLotsAndCountsLoading}
+                                                                placeholder="Select count"
+                                                                emptyText="No yarn count in stock"
+                                                                onChange={(value) =>
+                                                                    handleLotChange(index, 0, "yarnCount", value)
                                                                 }
                                                             />
                                                         </div>

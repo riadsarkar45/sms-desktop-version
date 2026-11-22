@@ -1,4 +1,3 @@
-
 import React, {
   useMemo,
   useState,
@@ -24,8 +23,6 @@ import {
   Pencil,
   AlertCircle,
   Loader2,
-  FileText,
-  Hash,
 } from 'lucide-react'
 
 import useAxiosPrivate from '../../hooks/UseAxiosPrivate'
@@ -101,7 +98,7 @@ const COLUMNS = [
 
   {
     key: 'physicalBalance',
-    label: 'Calculated Physical Balance',
+    label: 'Total Physical Stock',
     width: 145,
     numeric: true,
   },
@@ -133,6 +130,7 @@ const fmt = (value) => num(value).toFixed(2)
 const normalizeText = (value) =>
   String(value ?? '').trim().toLowerCase()
 
+// Fallback only: used when NO stock has been entered.
 const calcPhysicalBalance = ({
   received,
   returnSpinning,
@@ -144,6 +142,7 @@ const calcPhysicalBalance = ({
   num(deliveryKnitting) +
   num(returnFromKnitting)
 
+// Fallback only: used when NO stock has been entered.
 const calcAssignBalance = ({
   assignQty,
   deliveryKnitting,
@@ -153,29 +152,38 @@ const calcAssignBalance = ({
   num(deliveryKnitting) +
   num(returnFromKnitting)
 
-// Normalize API rows without trusting the API's
-// calculated balance values.
-const normalizeRow = (row) => ({
-  ...row,
+// Rows from the API.
+// If stock was entered for the lot (balanceSource === 'entered'),
+// the API values are used. Otherwise the calculation is the fallback.
+const normalizeRow = (row) => {
+  const hasEnteredStock = row.balanceSource === 'entered'
 
-  piNo: row.piNo ?? '',
-  lcNo: row.lcNo ?? '',
+  return {
+    ...row,
 
-  supplierName: row.supplierName ?? '',
-  yarnCount: row.yarnCount ?? '',
-  composition: row.composition ?? '',
-  lot: row.lot ?? '',
+    piNo: row.piNo ?? '',
+    lcNo: row.lcNo ?? '',
 
-  received: num(row.received),
-  returnSpinning: num(row.returnSpinning),
-  assignQty: num(row.assignQty),
-  deliveryKnitting: num(row.deliveryKnitting),
-  returnFromKnitting: num(row.returnFromKnitting),
+    supplierName: row.supplierName ?? '',
+    yarnCount: row.yarnCount ?? '',
+    composition: row.composition ?? '',
+    lot: row.lot ?? '',
 
-  assignBalance: calcAssignBalance(row),
+    received: num(row.received),
+    returnSpinning: num(row.returnSpinning),
+    assignQty: num(row.assignQty),
+    deliveryKnitting: num(row.deliveryKnitting),
+    returnFromKnitting: num(row.returnFromKnitting),
 
-  physicalBalance: calcPhysicalBalance(row),
-})
+    assignBalance: hasEnteredStock
+      ? num(row.assignBalance)
+      : calcAssignBalance(row),
+
+    physicalBalance: hasEnteredStock
+      ? num(row.calculatedPhysicalBalance)
+      : calcPhysicalBalance(row),
+  }
+}
 
 const monthLabel = (ym) => {
   if (!ym) return ''
@@ -660,48 +668,18 @@ const StockStatus = () => {
   // SUMMARY CARDS
   // --------------------------------------------------
 
-  const summaryValues = useMemo(() => {
-    const received = num(
-      stockSummary?.spinningMovement?.received,
-    )
-
-    const returnSpinning = num(
-      stockSummary?.spinningMovement?.returned,
-    )
-
-    const assignQty = num(
-      stockSummary?.assignedStock?.totalQty,
-    )
-
-    const deliveryKnitting = num(
-      stockSummary?.yarnMovement?.delivered,
-    )
-
-    const returnFromKnitting = num(
-      stockSummary?.yarnMovement?.returned,
-    )
-
-    return {
-      received,
-      returnSpinning,
-      assignQty,
-      deliveryKnitting,
-      returnFromKnitting,
-
-      assignBalance: calcAssignBalance({
-        assignQty,
-        deliveryKnitting,
-        returnFromKnitting,
-      }),
-
-      physicalBalance: calcPhysicalBalance({
-        received,
-        returnSpinning,
-        deliveryKnitting,
-        returnFromKnitting,
-      }),
-    }
-  }, [stockSummary])
+  // Summary values are authoritative backend calculations.
+  // Do not recalculate them in the frontend: doing so mixes
+  // unrelated deliveries with assigned quantities.
+  const summaryValues = useMemo(() => ({
+    received: num(stockSummary?.spinningMovement?.received),
+    returnSpinning: num(stockSummary?.spinningMovement?.returned),
+    assignQty: num(stockSummary?.assignedStock?.totalQty),
+    assignBalance: num(stockSummary?.reservedStock?.totalQty),
+    deliveryKnitting: num(stockSummary?.yarnMovement?.delivered),
+    returnFromKnitting: num(stockSummary?.yarnMovement?.returned),
+    physicalBalance: num(stockSummary?.totalStock?.totalQty),
+  }), [stockSummary])
 
   // --------------------------------------------------
   // FILTER ACTIONS
@@ -805,7 +783,7 @@ const StockStatus = () => {
   }
 
   // --------------------------------------------------
-  // SUMMARY CARDS
+  // SUMMARY CARD LIST
   // --------------------------------------------------
 
   const summaryCards = [
@@ -857,7 +835,7 @@ const StockStatus = () => {
     },
     {
       key: 'physicalBalance',
-      label: 'Calculated Physical Balance',
+      label: 'Total Physical Stock',
       icon: Scale,
       color: 'teal',
       value: summaryValues.physicalBalance,

@@ -5,12 +5,11 @@ import useAxiosPrivate from "../../hooks/UseAxiosPrivate";
 const DELIVERY_TYPES = [
   "Yarn Delivery For Yarn Dye",
   "Yarn Return From Yarn Dye",
-  "Yarn Received From Yarn Dye",
   "Finish Received",
-  "Finish Return",
 ];
 
-// Local date (not UTC) so Dhaka mornings don't get yesterday's date
+const FINISH_RECEIVED = "Finish Received";
+
 const todayStr = () => {
   const d = new Date();
   return new Date(d.getTime() - d.getTimezoneOffset() * 60000)
@@ -266,6 +265,13 @@ const YarnDeliveryModal = ({
       return { error: `Please enter a valid Challan No (whole number) for ${label}` };
     }
 
+    const isFinishReceived = values.deliveryType === FINISH_RECEIVED;
+    const batchNo = String(values.batchNo ?? "").trim();
+
+    if (isFinishReceived && !batchNo) {
+      return { error: `Please enter Batch No for ${label}` };
+    }
+
     const receiveOrReturn = isReceiveOrReturnType(values.deliveryType);
     const toFactory = String(
       values.toFactory ?? (receiveOrReturn ? "" : row.factoryName)
@@ -285,6 +291,8 @@ const YarnDeliveryModal = ({
         fromFactory,
         date: values.date || todayStr(),
         challanNo,
+        // batchNo is only sent for Finish Received
+        ...(isFinishReceived ? { batchNo } : {}),
         deliveries: [{ deliveryType: values.deliveryType, qty }],
       },
     };
@@ -523,6 +531,9 @@ const YarnDeliveryModal = ({
                     rowChangedField.deliveryType
                   );
 
+                  const isFinishReceived =
+                    rowChangedField.deliveryType === FINISH_RECEIVED;
+
                   const toFactoryValue =
                     rowChangedField.toFactory ??
                     (receiveOrReturn ? "" : group.factoryName || "");
@@ -702,6 +713,23 @@ const YarnDeliveryModal = ({
                               ))}
                             </select>
                           </div>
+
+                          {/* Batch No: only for Finish Received */}
+                          {isFinishReceived && (
+                            <div className="flex flex-col gap-1">
+                              <span className="text-[9px] uppercase tracking-wider text-gray-400">
+                                Batch No
+                              </span>
+                              <input
+                                onChange={(e) => handleEditOnChange(row.yarnId, e)}
+                                name="batchNo"
+                                value={rowChangedField.batchNo ?? ""}
+                                className="outline-none border border-gray-200 p-3 rounded-md w-40 text-xs"
+                                type="text"
+                                placeholder="Batch No"
+                              />
+                            </div>
+                          )}
 
                           <button
                             type="button"

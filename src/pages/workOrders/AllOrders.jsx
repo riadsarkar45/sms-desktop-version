@@ -824,6 +824,32 @@ const AllOrders = ({ orderType }) => {
         const { linkedDeliveries, ...mainPayload } = rawPayload;
         const singleWorkOrderId = Array.isArray(workOrderId) ? workOrderId[0] : workOrderId;
 
+        // Batch No: required for Finish Received, never sent for other types
+        const isFinishReceived = (p) =>
+            Array.isArray(p?.deliveries) &&
+            p.deliveries.some((d) => d.deliveryType === "Finish Received");
+
+        const mainIsFinishReceived =
+            mainPayload.deliveryType === "Finish Received" || isFinishReceived(mainPayload);
+
+        if (mainIsFinishReceived) {
+            const cleanBatch = String(mainPayload.batchNo ?? "").trim();
+            if (!cleanBatch) {
+                setDeliveryIssue([
+                    {
+                        title: `Finish Received (ID ${yarnId})`,
+                        message: "Please enter Batch No",
+                        type: "error",
+                    },
+                ]);
+                setIsLoading(false);
+                return;
+            }
+            mainPayload.batchNo = cleanBatch;
+        } else {
+            delete mainPayload.batchNo;
+        }
+
         // Linked deliveries (e.g. Grey Delivery for the dyeing composition) go FIRST,
         // so if they fail nothing is saved and the user can fix it.
         const linkedSteps = Array.isArray(linkedDeliveries)
@@ -1434,25 +1460,29 @@ const AllOrders = ({ orderType }) => {
                         .se-zero { background: #F3F4F6; border-color: #D6DAE1; color: #6B7280; }
                     `}</style>
 
-                    {orderType === "knittingOrder" || orderType === "dyeingOrder" || orderType === "aopOrder" ||isEditing && (
-                        <Modal
-                            workOrderId={workOrderId}
-                            isLoading={isLoading}
-                            deliveriesLoading={loadingDeliveries}
-                            deliveries={deliveries}
-                            duplicateChallan={duplicateChallan}
-                            setIsEditing={setIsEditing}
-                            handleSubmit={handleSubmit}
-                            handleEditOnChange={handleEditOnChange}
-                            orderId={jobId}
-                            orders={orders}
-                            setJobId={setJobId}
-                            orderType={orderType}
-                            changedField={changedField}
-                            challanIssue={challanIssue}
-                            deliveryIssue={deliveryIssue}
-                        />
-                    )}
+                    {(
+                        orderType === "knittingOrder" ||
+                        orderType === "dyeingOrder" ||
+                        orderType === "aopOrder"
+                    ) && isEditing && (
+                            <Modal
+                                workOrderId={workOrderId}
+                                isLoading={isLoading}
+                                deliveriesLoading={loadingDeliveries}
+                                deliveries={deliveries}
+                                duplicateChallan={duplicateChallan}
+                                setIsEditing={setIsEditing}
+                                handleSubmit={handleSubmit}
+                                handleEditOnChange={handleEditOnChange}
+                                orderId={jobId}
+                                orders={orders}
+                                setJobId={setJobId}
+                                orderType={orderType}
+                                changedField={changedField}
+                                challanIssue={challanIssue}
+                                deliveryIssue={deliveryIssue}
+                            />
+                        )}
 
 
                     {orderType === "yarnDyeingOrder" && isEditing && (

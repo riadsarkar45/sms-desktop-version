@@ -1,4 +1,3 @@
-
 import React, {
   Fragment,
   useCallback,
@@ -79,6 +78,30 @@ const BOOKING_FIELDS = [
   "yarnForDyeQty",
   "knittingWorkOrderQty",
   "knittingAwaitingQty",
+  "delShortExcess",
+  "stock",
+];
+
+const BOOKING_NUMERIC_FIELDS = [
+  "workOrderQty",
+  "yarnForDyeQty",
+  "knittingWorkOrderQty",
+  "knittingAwaitingQty",
+  "delShortExcess",
+  "stock",
+];
+
+const SUMMARY_KEYS = [
+  "workOrderQty",
+  "yarnForDyeQty",
+  "knittingWorkOrderQty",
+  "knittingAwaitingQty",
+  "yarnDeliveryQty",
+  "delShortExcess",
+  "yarnReturnQty",
+  "yarnReceivedGrey",
+  "yarnReceivedFinish",
+  "finishReturnQty",
   "stock",
 ];
 
@@ -162,14 +185,26 @@ const getDeliveryField = (delivery, field) => {
 };
 
 /**
- * Normalize one API record.
+ * Sum of the quantity of all deliveries of one type.
+ * Used only as a fallback when the API does not send a total.
+ */
+const getDeliveryQuantity = (deliveries, type) => {
+  return sumValues(
+    deliveries
+      .filter((delivery) => delivery.deliveryType === type)
+      .map((delivery) => delivery.deliveryQty)
+  );
+};
+
+/**
+ * Normalize one API record (one job).
  *
  * IMPORTANT:
  * Stock is taken directly from API stockSummary.
  * Do not recalculate stock from delivery transactions.
  */
 const mapBooking = (item, index) => {
-  const deliveries = Array.isArray(item?.deliveries)
+  const rawDeliveries = Array.isArray(item?.deliveries)
     ? item.deliveries
     : [];
 
@@ -185,11 +220,58 @@ const mapBooking = (item, index) => {
     .map((color) => color?.color)
     .filter(Boolean);
 
+  // A job can have several compositions: show all distinct names.
+  const compositionNames = Array.isArray(item?.compositions)
+    ? [
+        ...new Set(
+          item.compositions
+            .map((entry) => entry?.composition)
+            .filter(Boolean)
+        ),
+      ]
+    : [];
+
+  const compositionLabel = compositionNames.length
+    ? compositionNames.join(", ")
+    : item?.composition ?? "—";
+
   const summary = item?.stockSummary || {};
 
   const bookingId =
     item?.id ??
     `${jobNumber}-${item?.piId ?? ""}-${item?.lotNo ?? ""}-${index}`;
+
+  const deliveries = rawDeliveries.map((delivery, deliveryIndex) => ({
+    id:
+      delivery?.id ??
+      `${bookingId}-delivery-${deliveryIndex}`,
+
+    deliveryQty: toNumber(delivery?.deliveryQty),
+    deliveryDate: formatDate(delivery?.deliveryDate),
+
+    challanNo: getDeliveryField(delivery, "challanNo"),
+    fromFactory: getDeliveryField(delivery, "fromFactory"),
+    toFactory: getDeliveryField(delivery, "toFactory"),
+    deliveryType: getDeliveryField(delivery, "deliveryType"),
+
+    sourceOrderType: getDeliveryField(delivery, "sourceOrderType"),
+  }));
+
+  const knittingWorkOrderQty = toNumber(
+    summary.knittingWorkOrderQty ?? item?.knittingWorkOrderQty
+  );
+
+  const yarnDeliveryQty = toNumber(summary.yarnDeliveryQty);
+
+  // The API may not send the grey received total: sum it from the deliveries.
+  const yarnReceivedGrey =
+    summary.yarnReceivedGrey !== undefined &&
+    summary.yarnReceivedGrey !== null
+      ? toNumber(summary.yarnReceivedGrey)
+      : getDeliveryQuantity(
+          deliveries,
+          DELIVERY_TYPES.YARN_RECEIVED_GREY
+        );
 
   return {
     id: String(bookingId),
@@ -204,7 +286,7 @@ const mapBooking = (item, index) => {
 
     machineDia: item?.machineDia ?? "—",
     yarnCount: item?.yarnCount ?? "—",
-    composition: item?.composition ?? "—",
+    composition: compositionLabel,
     lot: item?.lotNo ?? "—",
 
     workOrderQty: toNumber(item?.workOrderQty),
@@ -212,41 +294,25 @@ const mapBooking = (item, index) => {
     // API stockSummary values
     yarnForDyeQty: toNumber(summary.yarnForDyeQty),
 
-    knittingWorkOrderQty: toNumber(
-      summary.knittingWorkOrderQty ?? item?.knittingWorkOrderQty
-    ),
+    knittingWorkOrderQty,
 
-    knittingAwaitingQty: toNumber(
-      summary.knittingAwaitingQty
-    ),
+    knittingAwaitingQty: toNumber(summary.knittingAwaitingQty),
 
-    yarnDeliveryQty: toNumber(summary.yarnDeliveryQty),
+    yarnDeliveryQty,
+
+    // Delivered minus knitting work order qty:
+    // negative = short, positive = excess.
+    delShortExcess: yarnDeliveryQty - knittingWorkOrderQty,
+
     yarnReturnQty: toNumber(summary.yarnReturnQty),
-    yarnReceivedGrey: toNumber(summary.yarnReceivedGrey),
+    yarnReceivedGrey,
     yarnReceivedFinish: toNumber(summary.finishReceivedQty),
     finishReturnQty: toNumber(summary.finishReturnQty),
 
     // This is the authoritative stock value from the API.
     stock: toNumber(summary.availableStock),
 
-    deliveries: deliveries.map((delivery, deliveryIndex) => ({
-      id:
-        delivery?.id ??
-        `${bookingId}-delivery-${deliveryIndex}`,
-
-      deliveryQty: toNumber(delivery?.deliveryQty),
-      deliveryDate: formatDate(delivery?.deliveryDate),
-
-      challanNo: getDeliveryField(delivery, "challanNo"),
-      fromFactory: getDeliveryField(delivery, "fromFactory"),
-      toFactory: getDeliveryField(delivery, "toFactory"),
-      deliveryType: getDeliveryField(delivery, "deliveryType"),
-
-      sourceOrderType: getDeliveryField(
-        delivery,
-        "sourceOrderType"
-      ),
-    })),
+    deliveries,
 
     monthKey: jobMeta.monthKey,
     monthLabel: jobMeta.monthLabel,
@@ -254,18 +320,7 @@ const mapBooking = (item, index) => {
 };
 
 /**
- * Get transaction quantity for a single delivery.
- */
-const getDeliveryQuantity = (deliveries, type) => {
-  return sumValues(
-    deliveries
-      .filter((delivery) => delivery.deliveryType === type)
-      .map((delivery) => delivery.deliveryQty)
-  );
-};
-
-/**
- * Get booking totals directly from normalized API summary.
+ * Get booking totals directly from the normalized API summary.
  */
 const getBookingDeliveryTotals = (booking) => ({
   yarnDeliveryQty: booking.yarnDeliveryQty,
@@ -541,6 +596,7 @@ const YarnDyedStock = () => {
               booking.yarnForDyeQty,
               booking.knittingWorkOrderQty,
               booking.knittingAwaitingQty,
+              booking.delShortExcess,
               booking.stock,
 
               ...booking.deliveries.flatMap((delivery) => [
@@ -651,8 +707,7 @@ const YarnDyedStock = () => {
   );
 
   /**
-   * API-based summary totals.
-   *
+   * Summary totals of the visible jobs.
    * No delivery recalculation is performed here.
    */
   const totals = useMemo(() => {
@@ -660,21 +715,8 @@ const YarnDyedStock = () => {
       (group) => group.bookings
     );
 
-    const keys = [
-      "workOrderQty",
-      "yarnForDyeQty",
-      "knittingWorkOrderQty",
-      "knittingAwaitingQty",
-      "yarnDeliveryQty",
-      "yarnReturnQty",
-      "yarnReceivedGrey",
-      "yarnReceivedFinish",
-      "finishReturnQty",
-      "stock",
-    ];
-
     return Object.fromEntries(
-      keys.map((key) => [
+      SUMMARY_KEYS.map((key) => [
         key,
         sumValues(
           visibleBookings.map((booking) => booking[key])
@@ -684,28 +726,13 @@ const YarnDyedStock = () => {
   }, [filteredGroups]);
 
   /**
-   * Booking and group totals.
+   * Totals of one job group.
    */
   const getGroupTotals = useCallback((group) => {
-    const groupBookings = group.bookings;
-
-    const keys = [
-      "workOrderQty",
-      "yarnForDyeQty",
-      "knittingWorkOrderQty",
-      "knittingAwaitingQty",
-      "yarnDeliveryQty",
-      "yarnReturnQty",
-      "yarnReceivedGrey",
-      "yarnReceivedFinish",
-      "finishReturnQty",
-      "stock",
-    ];
-
     return Object.fromEntries(
-      keys.map((key) => [
+      SUMMARY_KEYS.map((key) => [
         key,
-        sumValues(groupBookings.map((booking) => booking[key])),
+        sumValues(group.bookings.map((booking) => booking[key])),
       ])
     );
   }, []);
@@ -781,15 +808,7 @@ const YarnDyedStock = () => {
 
     const value = booking[key];
 
-    if (
-      [
-        "workOrderQty",
-        "yarnForDyeQty",
-        "knittingWorkOrderQty",
-        "knittingAwaitingQty",
-        "stock",
-      ].includes(key)
-    ) {
+    if (BOOKING_NUMERIC_FIELDS.includes(key)) {
       return formatNumber(value);
     }
 
@@ -832,9 +851,6 @@ const YarnDyedStock = () => {
           ? formatNumber(delivery.deliveryQty)
           : "—";
 
-      case "delShortExcess":
-        return "—";
-
       case "fromFactory":
       case "toFactory":
       case "deliveryDate":
@@ -874,7 +890,8 @@ const YarnDyedStock = () => {
           </h1>
 
           <p className="mt-1 text-sm text-gray-500">
-            Job-wise yarn dyed stock and booking details
+            Job-wise yarn dyed stock. Stock = Finish Received − Yarn
+            Delivery to knitting (same job).
           </p>
         </div>
 
@@ -1063,8 +1080,8 @@ const YarnDyedStock = () => {
             </h2>
 
             <p className="mt-1 text-xs text-gray-500">
-              Each booking and delivery is shown separately.
-              Stock values are taken directly from API stockSummary.
+              Each delivery is shown separately. Stock values are taken
+              directly from the API stockSummary.
             </p>
           </div>
 
@@ -1229,11 +1246,10 @@ const YarnDyedStock = () => {
                               }
 
                               // Delivery-level fields
-                              if (DELIVERY_TOTAL_KEYS.includes(column.key) ||
-                                  [
-                                    "delShortExcess",
-                                    ...DELIVERY_FILTER_KEYS,
-                                  ].includes(column.key)) {
+                              if (
+                                DELIVERY_TOTAL_KEYS.includes(column.key) ||
+                                DELIVERY_FILTER_KEYS.includes(column.key)
+                              ) {
                                 const value = getDeliveryCellValue(
                                   delivery,
                                   column.key

@@ -1,0 +1,73 @@
+name: Publish SM Sourcing Beta
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Beta semantic version (example: 4.8.2-beta.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sm-sourcing-beta-release
+  cancel-in-progress: false
+
+jobs:
+  publish-beta:
+    name: Build and publish rolling Beta channel
+    runs-on: windows-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Validate and set beta version
+        shell: pwsh
+        env:
+          BETA_VERSION: ${{ inputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($env:BETA_VERSION -notmatch '^\d+\.\d+\.\d+-beta\.\d+$') {
+            throw "Version must follow x.y.z-beta.n (example: 4.8.2-beta.1)"
+          }
+          node -e "const fs=require('fs'); const p='src-tauri/tauri.beta.conf.json'; const c=JSON.parse(fs.readFileSync(p,'utf8')); c.version=process.env.BETA_VERSION; fs.writeFileSync(p, JSON.stringify(c,null,2)+'\n');"
+          Write-Host "Beta version: $env:BETA_VERSION"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate frontend build
+        run: npm run build
+
+      - name: Remove previous rolling Beta release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release delete beta --yes --cleanup-tag
+        continue-on-error: true
+
+      - name: Build and publish Beta updater feed
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: beta
+          releaseName: "SM Sourcing Beta (${{ inputs.version }})"
+          releaseBody: "Rolling beta channel for selected real-user testing. Install this build only if you are participating in beta testing."
+          releaseDraft: false
+          prerelease: true
+          uploadUpdaterJson: true
+          uploadUpdaterSignatures: true
+          args: --config src-tauri/tauri.beta.conf.json

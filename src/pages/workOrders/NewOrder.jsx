@@ -3416,11 +3416,11 @@ const NewOrder = () => {
             };
             console.log(payload, "payload for creating job");
             // 30s timeout so a hanging server can never leave the UI stuck
-            // const response = await axiosPrivate.post(
-            //     "/api/create-job",
-            //     payload,
-            //     { timeout: 30000 }
-            // );
+            const response = await axiosPrivate.post(
+                "/api/create-job",
+                payload,
+                { timeout: 30000 }
+            );
 
             const responseType = response.data?.type;
             const isSuccess = responseType

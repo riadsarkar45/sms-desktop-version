@@ -4,6 +4,7 @@ import React, {
   useRef,
   useEffect,
   useCallback,
+  useLayoutEffect,
 } from 'react'
 
 import {
@@ -106,6 +107,11 @@ const COLUMNS = [
 
 const REMARKS_WIDTH = 170
 
+// The column widths above are the MINIMUM widths. On a wider screen the
+// columns grow in the same proportion so the table always fills the width.
+const TOTAL_TABLE_WIDTH =
+  COLUMNS.reduce((sum, column) => sum + column.width, 0) + REMARKS_WIDTH
+
 const CARD_COLORS = {
   blue: 'bg-blue-100 text-blue-600',
   red: 'bg-red-100 text-red-600',
@@ -115,6 +121,28 @@ const CARD_COLORS = {
   orange: 'bg-orange-100 text-orange-600',
   teal: 'bg-teal-100 text-teal-600',
 }
+
+// ===== AUTO-FIT LAYOUT CONFIG =====
+// The table box always fills the rest of the screen:
+// bigger screen = taller table, smaller screen = shorter table.
+const MIN_TABLE_HEIGHT = 260 // only a safety minimum
+// Space kept free under the table (the "Showing x of y" line + a little gap)
+const BOTTOM_RESERVE = 56
+
+// The ERP has its own zoom (67% / 100% ...). With CSS zoom / scale the real
+// screen pixels are not the same as the CSS pixels, so the height is corrected
+// by this factor. 1 = no zoom.
+const getZoomScale = (el) => {
+  const rect = el.getBoundingClientRect()
+  const w = el.offsetWidth
+
+  if (!w || !rect.width) return 1
+
+  const scale = rect.width / w
+
+  return scale > 0.2 && scale < 5 ? scale : 1
+}
+// ===== END AUTO-FIT LAYOUT CONFIG =====
 
 // --------------------------------------------------
 // HELPERS
@@ -216,6 +244,8 @@ const rowKey = (row) =>
 
 // --------------------------------------------------
 // COLUMN FILTER DROPDOWN
+// (rendered once, OUTSIDE the table, so the sticky header can never
+//  cover it and it is never clipped by the scrolling table box)
 // --------------------------------------------------
 
 const ColumnFilterDropdown = ({
@@ -240,7 +270,18 @@ const ColumnFilterDropdown = ({
   })
 
   useEffect(() => {
-    const updatePosition = () => {
+    const updatePosition = (event) => {
+      // scrolling the value list INSIDE the dropdown must not move it
+      if (
+        event &&
+        event.type === 'scroll' &&
+        dropdownRef.current &&
+        event.target instanceof Node &&
+        dropdownRef.current.contains(event.target)
+      ) {
+        return
+      }
+
       if (!buttonRef?.current) return
 
       const rect = buttonRef.current.getBoundingClientRect()
@@ -251,10 +292,16 @@ const ColumnFilterDropdown = ({
         Math.min(rect.left, window.innerWidth - width - 8),
       )
 
-      setPosition({
-        top: rect.bottom + 4,
-        left,
-      })
+      // open under the header; when there is no room below, open above it
+      const height = dropdownRef.current?.offsetHeight || 380
+      let top = rect.bottom + 4
+
+      if (top + height > window.innerHeight - 8) {
+        const above = rect.top - height - 4
+        top = above > 8 ? above : Math.max(8, window.innerHeight - height - 8)
+      }
+
+      setPosition({ top, left })
     }
 
     updatePosition()
@@ -457,6 +504,14 @@ const StockStatus = () => {
   const [summaryLoading, setSummaryLoading] = useState(true)
   const [summaryError, setSummaryError] = useState('')
 
+  // ===== AUTO-FIT (screen size) refs / state =====
+  const topRef = useRef(null) // everything above the table (watched for size changes)
+  const scrollContainerRef = useRef(null) // the scrolling table box
+  // invisible element pinned to the screen: its bottom = bottom of the visible screen
+  const viewportProbeRef = useRef(null)
+  const [fit, setFit] = useState({ height: 480 })
+  // ===============================================
+
   const axiosSecure = useAxiosPrivate()
 
   // --------------------------------------------------
@@ -535,6 +590,142 @@ const StockStatus = () => {
       cancelled = true
     }
   }, [axiosSecure])
+
+  // --------------------------------------------------
+  // AUTO-FIT MEASURING
+  // --------------------------------------------------
+  // Table box height = (bottom of the visible screen - top of the table box)
+  // - the space kept free under the table.
+  // Nothing is hard-coded: a bigger screen gives a taller table, a smaller
+  // screen gives a shorter one. Everything is measured with
+  // getBoundingClientRect (one coordinate space), so it works the same with
+  // the ERP zoom (67% / 100% / ...), browser zoom, phones and tablets.
+  const measureFit = useCallback(() => {
+    const el = scrollContainerRef.current
+
+    if (!el) return
+
+    const rect = el.getBoundingClientRect()
+
+    // zoom factor measured from the box: rendered height / the CSS height we gave it
+    const applied = parseFloat(el.style.height)
+
+    let k =
+      applied > 0 && rect.height > 0
+        ? rect.height / applied
+        : getZoomScale(el)
+
+    if (!(k > 0.2 && k < 5)) k = 1
+
+    // bottom of the visible screen (same coordinate space as `rect`)
+    const probe = viewportProbeRef.current
+    const probeRect = probe ? probe.getBoundingClientRect() : null
+
+    const viewH =
+      (window.visualViewport && window.visualViewport.height) ||
+      window.innerHeight
+
+    const viewportBottom =
+      probeRect && probeRect.height > 0 ? probeRect.bottom : viewH
+
+    // box top measured from the very top of the content, no matter how far
+    // the page / the ERP panel is scrolled
+    const docTop = document.documentElement.getBoundingClientRect().top
+
+    let top = rect.top - docTop
+
+    if (document.body.scrollTop) top += document.body.scrollTop * k
+
+    let node = el.parentElement
+
+    while (
+      node &&
+      node !== document.body &&
+      node !== document.documentElement
+    ) {
+      if (node.scrollTop) top += node.scrollTop * k
+      node = node.parentElement
+    }
+
+    const height = Math.max(
+      MIN_TABLE_HEIGHT,
+      Math.floor((viewportBottom - top) / k - BOTTOM_RESERVE),
+    )
+
+    setFit((previous) =>
+      previous.height === height ? previous : { height },
+    )
+  }, [])
+
+  // measure on mount, window resize, and whenever the area above the table
+  // changes size (filters, errors, editing toolbar, cards wrapping ...)
+  useLayoutEffect(() => {
+    measureFit()
+
+    // the ERP shell / fonts can still move things after the first paint
+    const t1 = setTimeout(measureFit, 100)
+    const t2 = setTimeout(measureFit, 500)
+    const t3 = setTimeout(measureFit, 1500)
+
+    window.addEventListener('resize', measureFit)
+    window.addEventListener('orientationchange', measureFit)
+    window.addEventListener('load', measureFit)
+
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', measureFit)
+    }
+
+    // the ERP zoom control changes a style / class on <html> or <body>
+    // without resizing anything: catch that too
+    let mo = null
+
+    if (typeof MutationObserver !== 'undefined') {
+      mo = new MutationObserver(() => measureFit())
+
+      mo.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['style', 'class'],
+      })
+
+      mo.observe(document.body, {
+        attributes: true,
+        attributeFilter: ['style', 'class'],
+      })
+    }
+
+    // safety net: cheap re-check (state only changes when the number changes)
+    const poll = setInterval(measureFit, 800)
+
+    let ro = null
+
+    if (typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(() => measureFit())
+
+      if (topRef.current) ro.observe(topRef.current)
+      if (scrollContainerRef.current) ro.observe(scrollContainerRef.current)
+
+      ro.observe(document.documentElement)
+      ro.observe(document.body)
+    }
+
+    return () => {
+      clearTimeout(t1)
+      clearTimeout(t2)
+      clearTimeout(t3)
+      clearInterval(poll)
+
+      if (mo) mo.disconnect()
+      if (ro) ro.disconnect()
+
+      window.removeEventListener('resize', measureFit)
+      window.removeEventListener('orientationchange', measureFit)
+      window.removeEventListener('load', measureFit)
+
+      if (window.visualViewport) {
+        window.visualViewport.removeEventListener('resize', measureFit)
+      }
+    }
+  }, [measureFit, summaryLoading, tableLoading])
 
   // --------------------------------------------------
   // REMARKS INPUT FOCUS
@@ -744,6 +935,12 @@ const StockStatus = () => {
     return filterButtonRefs.current[key]
   }
 
+  const closeFilter = useCallback(() => setOpenFilter(null), [])
+
+  const openFilterColumn = openFilter
+    ? COLUMNS.find((column) => column.key === openFilter)
+    : null
+
   // --------------------------------------------------
   // REMARKS
   // --------------------------------------------------
@@ -844,6 +1041,11 @@ const StockStatus = () => {
 
   const totalColumns = COLUMNS.length + 1
 
+  // column width in percent: the table fills the box, never gets narrower
+  // than the sum of the minimum widths (then it scrolls sideways)
+  const widthPercent = (width) =>
+    `${(width / TOTAL_TABLE_WIDTH) * 100}%`
+
   // --------------------------------------------------
   // RENDER
   // --------------------------------------------------
@@ -855,219 +1057,251 @@ const StockStatus = () => {
       }}
       className="w-full p-4 md:p-6"
     >
-      {/* HEADER */}
+      {/* Invisible screen-height probe (used only to measure the bottom of the visible screen) */}
+      <div
+        ref={viewportProbeRef}
+        aria-hidden="true"
+        style={{
+          position: 'fixed',
+          top: 0,
+          bottom: 0,
+          left: 0,
+          width: 1,
+          pointerEvents: 'none',
+          visibility: 'hidden',
+        }}
+      />
 
-      <div className="mb-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 pb-4">
-        <div>
-          <h1 className="text-xl md:text-2xl font-bold tracking-tight text-slate-900 flex items-center gap-2">
-            <PackageSearch
-              className="text-amber-600"
-              size={24}
-            />
+      {/* everything above the table box (watched for size changes) */}
+      <div ref={topRef}>
+        {/* HEADER */}
 
-            YARN STOCK STATUS
-          </h1>
+        <div className="mb-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 pb-4">
+          <div>
+            <h1 className="text-xl md:text-2xl font-bold tracking-tight text-slate-900 flex items-center gap-2">
+              <PackageSearch
+                className="text-amber-600"
+                size={24}
+              />
 
-          <p className="text-sm text-slate-500 mt-1">
-            PI-wise and LC-wise yarn movement, assignment and balance overview
-          </p>
-        </div>
-      </div>
+              YARN STOCK STATUS
+            </h1>
 
-      {/* SUMMARY ERROR */}
-
-      {summaryError && (
-        <div className="mb-3 flex items-center gap-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
-          <AlertCircle size={16} />
-          {summaryError}
-        </div>
-      )}
-
-      {/* SUMMARY CARDS */}
-
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-3 mb-5">
-        {summaryCards.map((card) => {
-          const Icon = card.icon
-
-          return (
-            <div
-              key={card.key}
-              className="bg-slate-50 p-3 rounded-xl border border-slate-200 shadow-sm flex flex-col gap-2 transition hover:shadow-md"
-            >
-              <div
-                className={`p-2 rounded-lg w-fit ${CARD_COLORS[card.color]}`}
-              >
-                <Icon size={18} />
-              </div>
-
-              <div>
-                <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide leading-tight">
-                  {card.label}
-                </p>
-
-                {summaryLoading ? (
-                  <div className="h-6 w-20 mt-1 bg-slate-200 rounded animate-pulse" />
-                ) : (
-                  <p className="text-lg font-bold text-slate-800 mt-0.5">
-                    {fmt(card.value)}
-                  </p>
-                )}
-
-                {card.sub && !summaryLoading && (
-                  <p className="text-[10px] text-slate-400 mt-0.5">
-                    {card.sub}
-                  </p>
-                )}
-              </div>
-            </div>
-          )
-        })}
-      </div>
-
-      {/* FILTERS */}
-
-      <div className="mb-4">
-        <div className="flex flex-col lg:flex-row gap-3 items-stretch lg:items-center rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-          <div className="flex items-center gap-2 text-slate-700 shrink-0 pl-2">
-            <Filter size={16} className="text-slate-500" />
-
-            <span className="text-sm font-bold uppercase tracking-wide">
-              Filters
-            </span>
+            <p className="text-sm text-slate-500 mt-1">
+              PI-wise and LC-wise yarn movement, assignment and balance overview
+            </p>
           </div>
+        </div>
 
-          {/* MONTH FILTER */}
+        {/* SUMMARY ERROR */}
 
-          <select
-            value={monthFilter}
-            onChange={(event) => setMonthFilter(event.target.value)}
-            className="text-sm border border-slate-300 rounded-lg px-3 py-2 bg-slate-50 text-slate-700 focus:outline-none focus:ring-2 focus:ring-amber-400 min-w-[160px]"
-          >
-            <option value="all">All Months</option>
+        {summaryError && (
+          <div className="mb-3 flex items-center gap-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+            <AlertCircle size={16} />
+            {summaryError}
+          </div>
+        )}
 
-            {months.map((month) => (
-              <option key={month} value={month}>
-                {monthLabel(month)}
-              </option>
-            ))}
-          </select>
+        {/* SUMMARY CARDS */}
 
-          {/* GLOBAL SEARCH */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-3 mb-5">
+          {summaryCards.map((card) => {
+            const Icon = card.icon
 
-          <div className="relative flex-1 min-w-[200px]">
-            <Search
-              size={16}
-              className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-            />
-
-            <input
-              type="text"
-              value={searchText}
-              onChange={(event) => setSearchText(event.target.value)}
-              placeholder="Search supplier, PI, LC, yarn count, composition, lot..."
-              className="w-full text-sm border border-slate-300 rounded-lg pl-9 pr-9 py-2 bg-slate-50 text-slate-700 focus:outline-none focus:ring-2 focus:ring-amber-400"
-            />
-
-            {searchText && (
-              <button
-                onClick={() => setSearchText('')}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-red-500 p-1 rounded-full"
-                aria-label="Clear search"
+            return (
+              <div
+                key={card.key}
+                className="bg-slate-50 p-3 rounded-xl border border-slate-200 shadow-sm flex flex-col gap-2 transition hover:shadow-md"
               >
-                <X size={16} />
+                <div
+                  className={`p-2 rounded-lg w-fit ${CARD_COLORS[card.color]}`}
+                >
+                  <Icon size={18} />
+                </div>
+
+                <div>
+                  <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide leading-tight">
+                    {card.label}
+                  </p>
+
+                  {summaryLoading ? (
+                    <div className="h-6 w-20 mt-1 bg-slate-200 rounded animate-pulse" />
+                  ) : (
+                    <p className="text-lg font-bold text-slate-800 mt-0.5">
+                      {fmt(card.value)}
+                    </p>
+                  )}
+
+                  {card.sub && !summaryLoading && (
+                    <p className="text-[10px] text-slate-400 mt-0.5">
+                      {card.sub}
+                    </p>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+
+        {/* FILTERS */}
+
+        <div className="mb-4">
+          <div className="flex flex-col lg:flex-row gap-3 items-stretch lg:items-center rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+            <div className="flex items-center gap-2 text-slate-700 shrink-0 pl-2">
+              <Filter size={16} className="text-slate-500" />
+
+              <span className="text-sm font-bold uppercase tracking-wide">
+                Filters
+              </span>
+            </div>
+
+            {/* MONTH FILTER */}
+
+            <select
+              value={monthFilter}
+              onChange={(event) => setMonthFilter(event.target.value)}
+              className="text-sm border border-slate-300 rounded-lg px-3 py-2 bg-slate-50 text-slate-700 focus:outline-none focus:ring-2 focus:ring-amber-400 min-w-[160px]"
+            >
+              <option value="all">All Months</option>
+
+              {months.map((month) => (
+                <option key={month} value={month}>
+                  {monthLabel(month)}
+                </option>
+              ))}
+            </select>
+
+            {/* GLOBAL SEARCH */}
+
+            <div className="relative flex-1 min-w-[200px]">
+              <Search
+                size={16}
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+              />
+
+              <input
+                type="text"
+                value={searchText}
+                onChange={(event) => setSearchText(event.target.value)}
+                placeholder="Search supplier, PI, LC, yarn count, composition, lot..."
+                className="w-full text-sm border border-slate-300 rounded-lg pl-9 pr-9 py-2 bg-slate-50 text-slate-700 focus:outline-none focus:ring-2 focus:ring-amber-400"
+              />
+
+              {searchText && (
+                <button
+                  onClick={() => setSearchText('')}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-red-500 p-1 rounded-full"
+                  aria-label="Clear search"
+                >
+                  <X size={16} />
+                </button>
+              )}
+            </div>
+
+            {/* CLEAR FILTERS */}
+
+            {hasFilters && (
+              <button
+                onClick={handleClearAll}
+                className="flex items-center justify-center gap-1.5 text-sm font-semibold text-red-600 hover:text-red-700 hover:bg-red-50 px-4 py-2 rounded-lg border border-red-200 shrink-0"
+              >
+                <X size={15} />
+                Clear All Filters
               </button>
             )}
           </div>
 
-          {/* CLEAR FILTERS */}
+          {/* REMARKS EDITING TOOLBAR */}
 
-          {hasFilters && (
-            <button
-              onClick={handleClearAll}
-              className="flex items-center justify-center gap-1.5 text-sm font-semibold text-red-600 hover:text-red-700 hover:bg-red-50 px-4 py-2 rounded-lg border border-red-200 shrink-0"
-            >
-              <X size={15} />
-              Clear All Filters
-            </button>
+          {editingKey && (
+            <div className="mt-3 flex justify-end">
+              <div className="flex items-center gap-2 bg-amber-50 border border-amber-300 rounded-lg px-3 py-2 shadow-sm">
+                <div className="flex items-center gap-1.5 text-amber-800 mr-2">
+                  <Pencil size={14} />
+
+                  <span className="text-xs font-semibold">
+                    Editing remarks
+                  </span>
+                </div>
+
+                <div className="h-4 w-px bg-amber-300" />
+
+                <button
+                  onClick={discardRemark}
+                  className="flex items-center gap-1 text-xs font-medium text-slate-600 hover:bg-white px-2.5 py-1.5 rounded border border-slate-300"
+                >
+                  <XCircle size={13} />
+                  Discard
+                </button>
+
+                <button
+                  onClick={saveRemark}
+                  className="flex items-center gap-1 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded shadow-sm"
+                >
+                  <Save size={13} />
+                  Save
+                </button>
+              </div>
+            </div>
           )}
         </div>
 
-        {/* REMARKS EDITING TOOLBAR */}
+        {/* TABLE ERROR */}
 
-        {editingKey && (
-          <div className="mt-3 flex justify-end">
-            <div className="flex items-center gap-2 bg-amber-50 border border-amber-300 rounded-lg px-3 py-2 shadow-sm">
-              <div className="flex items-center gap-1.5 text-amber-800 mr-2">
-                <Pencil size={14} />
-
-                <span className="text-xs font-semibold">
-                  Editing remarks
-                </span>
-              </div>
-
-              <div className="h-4 w-px bg-amber-300" />
-
-              <button
-                onClick={discardRemark}
-                className="flex items-center gap-1 text-xs font-medium text-slate-600 hover:bg-white px-2.5 py-1.5 rounded border border-slate-300"
-              >
-                <XCircle size={13} />
-                Discard
-              </button>
-
-              <button
-                onClick={saveRemark}
-                className="flex items-center gap-1 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded shadow-sm"
-              >
-                <Save size={13} />
-                Save
-              </button>
-            </div>
+        {tableError && (
+          <div className="mb-3 flex items-center gap-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+            <AlertCircle size={16} />
+            {tableError}
           </div>
         )}
       </div>
 
-      {/* TABLE ERROR */}
+      {/* TABLE
+          The box height is calculated from the screen: it fills everything
+          under the filters. Only the rows scroll; the header stays fixed. */}
 
-      {tableError && (
-        <div className="mb-3 flex items-center gap-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
-          <AlertCircle size={16} />
-          {tableError}
-        </div>
-      )}
-
-      {/* TABLE */}
-
-      <div className="overflow-x-auto rounded-xl border border-slate-200 shadow-sm bg-white">
+      <div
+        ref={scrollContainerRef}
+        className="overflow-auto rounded-xl border border-slate-300 shadow-sm bg-white"
+        style={{
+          height: fit.height,
+          boxSizing: 'border-box',
+        }}
+      >
         <table
-          className="w-full border-collapse text-[12px]"
-          style={{ tableLayout: 'fixed' }}
+          className="text-[12px]"
+          style={{
+            tableLayout: 'fixed',
+            width: '100%',
+            minWidth: TOTAL_TABLE_WIDTH,
+            borderCollapse: 'separate',
+            borderSpacing: 0,
+          }}
         >
           <colgroup>
             {COLUMNS.map((column) => (
               <col
                 key={column.key}
-                style={{ width: column.width }}
+                style={{ width: widthPercent(column.width) }}
               />
             ))}
 
-            <col style={{ width: REMARKS_WIDTH }} />
+            <col style={{ width: widthPercent(REMARKS_WIDTH) }} />
           </colgroup>
 
-          {/* TABLE HEADER */}
+          {/* TABLE HEADER (fixed while the rows scroll) */}
 
           <thead>
             <tr>
               {COLUMNS.map((column) => {
                 const filtered = isColumnFiltered(column.key)
-                const isOpen = openFilter === column.key
 
                 const buttonRef = getFilterButtonRef(column.key)
 
                 return (
                   <th
                     key={column.key}
-                    className="sticky top-0 z-10 bg-white text-slate-900 font-bold px-2 py-2.5 border border-slate-300 whitespace-normal break-words align-middle text-center"
+                    className="sticky top-0 z-20 bg-slate-100 text-slate-900 font-bold px-2 py-2.5 border-b-2 border-b-slate-400 border-r border-r-slate-300 whitespace-normal break-words align-middle text-center"
                     style={{ lineHeight: 1.3 }}
                   >
                     <div className="flex items-center justify-center gap-1.5">
@@ -1078,51 +1312,29 @@ const StockStatus = () => {
                         {column.label}
                       </span>
 
-                      <div className="relative shrink-0">
-                        <button
-                          ref={buttonRef}
-                          onClick={(event) => {
-                            event.stopPropagation()
-                            toggleFilter(column.key)
-                          }}
-                          className={`p-1 rounded transition relative ${
-                            filtered
-                              ? 'text-white bg-blue-600 hover:bg-blue-700'
-                              : 'text-slate-400 hover:text-slate-700 hover:bg-slate-100'
-                          }`}
-                          title={
-                            filtered
-                              ? 'Filter active'
-                              : `Filter by ${column.label}`
-                          }
-                        >
-                          <Filter size={12} />
+                      <button
+                        ref={buttonRef}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          toggleFilter(column.key)
+                        }}
+                        className={`shrink-0 p-1 rounded transition relative ${
+                          filtered
+                            ? 'text-white bg-blue-600 hover:bg-blue-700'
+                            : 'text-slate-400 hover:text-slate-700 hover:bg-slate-200'
+                        }`}
+                        title={
+                          filtered
+                            ? 'Filter active'
+                            : `Filter by ${column.label}`
+                        }
+                      >
+                        <Filter size={12} />
 
-                          {filtered && (
-                            <span className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full border-2 border-white" />
-                          )}
-                        </button>
-
-                        {isOpen && (
-                          <ColumnFilterDropdown
-                            column={column}
-                            uniqueValues={
-                              uniqueValuesByColumn[column.key] || []
-                            }
-                            selectedValues={
-                              columnFilters[column.key] || new Set()
-                            }
-                            onApply={(values) =>
-                              handleColumnFilterApply(
-                                column.key,
-                                values,
-                              )
-                            }
-                            onClose={() => setOpenFilter(null)}
-                            buttonRef={buttonRef}
-                          />
+                        {filtered && (
+                          <span className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full border-2 border-white" />
                         )}
-                      </div>
+                      </button>
                     </div>
 
                     {filtered && (
@@ -1149,7 +1361,7 @@ const StockStatus = () => {
                 )
               })}
 
-              <th className="sticky top-0 z-10 bg-white text-slate-900 font-bold px-2 py-2.5 border border-slate-300 text-center">
+              <th className="sticky top-0 z-20 bg-slate-100 text-slate-900 font-bold px-2 py-2.5 border-b-2 border-b-slate-400 text-center">
                 <span className="text-[11px]">Remarks</span>
               </th>
             </tr>
@@ -1218,7 +1430,7 @@ const StockStatus = () => {
                     {COLUMNS.map((column) => (
                       <td
                         key={column.key}
-                        className={`px-3 py-2.5 border border-slate-200 align-middle whitespace-normal break-words text-center ${
+                        className={`px-3 py-2.5 border-b border-r border-slate-200 align-middle whitespace-normal break-words text-center ${
                           column.numeric
                             ? 'font-mono text-slate-700'
                             : 'text-slate-600 group-hover:text-slate-900'
@@ -1233,7 +1445,7 @@ const StockStatus = () => {
                     {/* REMARKS */}
 
                     <td
-                      className={`px-2 py-2 border border-slate-200 align-middle text-center cursor-text ${
+                      className={`px-2 py-2 border-b border-slate-200 align-middle text-center cursor-text ${
                         isEditing ? 'bg-amber-50' : ''
                       }`}
                       onDoubleClick={() => startEditing(row)}
@@ -1269,15 +1481,15 @@ const StockStatus = () => {
             )}
           </tbody>
 
-          {/* GRAND TOTAL */}
+          {/* GRAND TOTAL (stays visible at the bottom of the box) */}
 
           {!tableLoading && filteredData.length > 0 && (
             <tfoot>
-              <tr className="bg-slate-50 text-slate-800 font-bold">
+              <tr className="text-slate-800 font-bold">
                 {COLUMNS.map((column, index) => (
                   <td
                     key={column.key}
-                    className="px-3 py-3 border border-slate-300 whitespace-normal break-words text-center"
+                    className="sticky bottom-0 z-20 bg-slate-100 px-3 py-3 border-t-2 border-t-slate-400 border-r border-r-slate-300 whitespace-normal break-words text-center"
                   >
                     {index === 0
                       ? 'GRAND TOTAL'
@@ -1287,7 +1499,7 @@ const StockStatus = () => {
                   </td>
                 ))}
 
-                <td className="px-3 py-3 border border-slate-300 text-center" />
+                <td className="sticky bottom-0 z-20 bg-slate-100 px-3 py-3 border-t-2 border-t-slate-400 text-center" />
               </tr>
             </tfoot>
           )}
@@ -1303,6 +1515,22 @@ const StockStatus = () => {
             ? ` for ${monthLabel(monthFilter)}`
             : ''}
         </p>
+      )}
+
+      {/* COLUMN FILTER DROPDOWN (outside the table, never clipped / covered) */}
+
+      {openFilterColumn && (
+        <ColumnFilterDropdown
+          key={openFilterColumn.key}
+          column={openFilterColumn}
+          uniqueValues={uniqueValuesByColumn[openFilterColumn.key] || []}
+          selectedValues={columnFilters[openFilterColumn.key] || new Set()}
+          onApply={(values) =>
+            handleColumnFilterApply(openFilterColumn.key, values)
+          }
+          onClose={closeFilter}
+          buttonRef={getFilterButtonRef(openFilterColumn.key)}
+        />
       )}
     </div>
   )

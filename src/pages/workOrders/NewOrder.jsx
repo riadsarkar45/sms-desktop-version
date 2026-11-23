@@ -349,22 +349,27 @@ const getYdCompositions = (ydLots, ydBatch, yarnCount = "") =>
             .filter(Boolean)
     );
 
-// qty of a Y/D batch that is still free (booked qty minus what earlier orders used)
+// Available quantity belongs to the Finish Received batch itself, not each lot/count
+// inside that batch. Use the maximum quantity so a batch with multiple lots/counts
+// is never accidentally counted several times.
 const getYdAvailableQty = (ydLots, ydBatch) =>
     ydLots
         .filter((entry) => entry.ydBatch === ydBatch)
-        .reduce((sum, entry) => sum + toNum(entry.availableQuantity), 0);
+        .reduce((max, entry) => Math.max(max, toNum(entry.availableQuantity)), 0);
 
 // A yarn composition is required only when the list really offers one for the
 // chosen lot + count (or Y/D batch). Default lines never have one.
 const compositionRequired = (item, inventory, ydLots = []) => {
     if (isDefaultItem(item)) return false;
 
-    if (str(item.ydBatch)) {
-        return getYdCompositions(ydLots, item.ydBatch, item.yarnCount).length > 0;
-    }
+    const ydHasComposition = str(item.ydBatch)
+        ? getYdCompositions(ydLots, item.ydBatch, item.yarnCount).length > 0
+        : false;
+    const lotHasComposition = str(item.lotNo) && item.lotNo !== DEFAULT_LOT
+        ? getCompositionOptions(inventory, item).length > 0
+        : false;
 
-    return getCompositionOptions(inventory, item).length > 0;
+    return ydHasComposition || lotHasComposition;
 };
 
 const hasValue = (value) =>
@@ -975,8 +980,8 @@ const LotCountPiFields = ({
     ydLots = [],
     ydBatchLoading = false,
 }) => {
-    // Knitting only: a line uses EITHER a Lot (raw yarn) OR a Y/D Batch.
-    // Typing a Y/D Batch locks Lot; picking a Lot locks Y/D Batch.
+    // Knitting supports a Lot, a Y/D Batch, or both on the same Composition line.
+    // Lot and Y/D Batch are independent selections.
     const hasYd = showYdBatch && String(item.ydBatch ?? "").trim() !== "";
     const isDefault = isDefaultItem(item);
 
@@ -992,8 +997,11 @@ const LotCountPiFields = ({
         const counts = getYdCounts(ydLots, batch);
         const available = getYdAvailableQty(ydLots, batch);
 
+        const type = ydLots.find((entry) => entry.ydBatch === batch)?.batchType;
+        const prefix = type === "lot" ? "Lot" : "Batch";
+
         return (
-            batch +
+            `${prefix}: ${batch}` +
             (counts.length ? ` — ${counts.join(", ")}` : "") +
             (available > 0 ? ` (${formatKg(available)} KG available)` : "")
         );
@@ -1012,11 +1020,13 @@ const LotCountPiFields = ({
             : [];
 
     let countOptions =
-        ydCounts.length > 0
-            ? ydCounts
-            : lotCounts.length > 0
-                ? lotCounts
-                : getAllCounts(stock);
+        ydCounts.length > 0 && lotCounts.length > 0
+            ? ydCounts.filter((count) => lotCounts.includes(count))
+            : ydCounts.length > 0
+                ? ydCounts
+                : lotCounts.length > 0
+                    ? lotCounts
+                    : getAllCounts(stock);
 
     // Nothing found for this job: offer the defaults
     if ((noLots || item.lotNo === DEFAULT_LOT) && !lotOptions.includes(DEFAULT_LOT)) {
@@ -1042,16 +1052,22 @@ const LotCountPiFields = ({
 
     // YARN COMPOSITION: the compositions that fit the chosen lot + count + PI
     // (all compositions with enough qty until something is chosen).
-    // A Y/D batch line uses the compositions booked for that batch.
-    const baseCompositionOptions = isDefault
+    // When both Lot and Y/D Batch are selected, offer compositions valid for both.
+    const lotCompositionOptions = isDefault
         ? []
+        : getCompositionOptions(stock, {
+            lotNo: item.lotNo,
+            yarnCount: item.yarnCount,
+            piNo: item.piNo,
+        });
+    const ydCompositionOptions = hasYd
+        ? getYdCompositions(ydLots, item.ydBatch, item.yarnCount)
+        : [];
+    const baseCompositionOptions = hasYd && item.lotNo && item.lotNo !== DEFAULT_LOT
+        ? ydCompositionOptions.filter((composition) => lotCompositionOptions.includes(composition))
         : hasYd
-            ? getYdCompositions(ydLots, item.ydBatch, item.yarnCount)
-            : getCompositionOptions(stock, {
-                lotNo: item.lotNo,
-                yarnCount: item.yarnCount,
-                piNo: item.piNo,
-            });
+            ? ydCompositionOptions
+            : lotCompositionOptions;
 
     // A composition filled automatically from the base work order stays selectable
     const compositionOptions =
@@ -1143,11 +1159,11 @@ const LotCountPiFields = ({
 
             <div className="min-w-0">
                 <label className="mb-1.5 block text-xs font-medium text-slate-600">
-                    Lot No {!hasYd && <span className="text-red-500">*</span>}
+                    Lot No <span className="text-red-500">*</span>
                 </label>
                 <select
                     value={item.lotNo}
-                    disabled={loading || (noStock && !noLots) || hasYd}
+                    disabled={loading || (noStock && !noLots)}
                     onChange={(e) => onChange("lotNo", e.target.value)}
                     className={SELECT_CLASS}
                 >
@@ -1165,12 +1181,11 @@ const LotCountPiFields = ({
             {showYdBatch && (
                 <div className="min-w-0">
                     <label className="mb-1.5 block text-xs font-medium text-slate-600">
-                        Y/D Batch {!item.lotNo && <span className="text-red-500">*</span>}
+                        Y/D Batch <span className="text-slate-400">(Optional)</span>
                     </label>
                     <select
                         value={item.ydBatch ?? ""}
                         disabled={
-                            Boolean(item.lotNo) ||
                             ydBatchLoading ||
                             (ydOptions.length === 0 && !item.ydBatch)
                         }
@@ -1178,12 +1193,10 @@ const LotCountPiFields = ({
                         className={SELECT_CLASS}
                     >
                         <option value="">
-                            {item.lotNo
-                                ? "Clear lot to use"
-                                : ydBatchLoading
+                            {ydBatchLoading
                                     ? "Loading..."
                                     : ydOptions.length === 0
-                                        ? "No Y/D batch for this job"
+                                        ? "N/A"
                                         : "Select Y/D batch"}
                         </option>
                         {ydOptions.map((batch) => (
@@ -1244,7 +1257,7 @@ const LotCountPiFields = ({
                                 ? "Loading..."
                                 : compositionOptions.length === 0
                                     ? isFiltered
-                                        ? "No composition with enough qty"
+                                        ? "N/A"
                                         : "No composition found"
                                     : "Select composition"}
                         </option>
@@ -1282,7 +1295,7 @@ const LotCountPiFields = ({
                             {hasYd
                                 ? "Not needed for Y/D batch"
                                 : piOptions.length === 0 && isFiltered
-                                    ? "No PI with enough qty"
+                                    ? "N/A"
                                     : "Select PI No"}
                         </option>
                         {piOptions.map((entry) => (
@@ -1991,35 +2004,81 @@ const NewOrder = () => {
                         )
                 );
 
-                setYdLots(
-                    toList(body.ydLots)
-                        .map((item) => {
-                            const booked = toNum(item?.bookedQuantity);
+                // Prefer Finish Received batches from the backend. Each batch can contain
+                // several lots/counts, so flatten its lot details for the dropdown helpers
+                // while keeping the batch's total quantity on each row (the quantity helper
+                // uses MAX, not SUM, to avoid counting the batch multiple times).
+                const finishReceivedBatches = toList(body.ydBatches)
+                    .map((batch) => {
+                        const batchNo = String(batch?.batchNo ?? batch?.lotNo ?? "").trim();
+                        if (!batchNo) return [];
 
-                            return {
-                                ydBatch: String(item?.ydBatch ?? item?.lotNo ?? "").trim(),
-                                yarnCount: String(item?.yarnCount ?? "").trim(),
-                                // yarn compositions of this batch (single `yarnComposition` or a `yarnCompositions` list)
-                                yarnCompositions: uniqSorted(
-                                    [item?.yarnComposition, ...toList(item?.yarnCompositions)]
-                                        .map(cleanComposition)
-                                        .filter(Boolean)
-                                ),
-                                piNo: String(item?.piNo ?? "").trim(),
-                                colors: toList(item?.colors)
-                                    .map((color) => String(color).trim())
-                                    .filter(Boolean),
-                                bookedQuantity: booked,
-                                // qty still free (older backends only send the booked qty)
-                                availableQuantity:
-                                    item?.availableQuantity === undefined ||
-                                    item?.availableQuantity === null
-                                        ? booked
-                                        : toNum(item.availableQuantity),
-                            };
-                        })
-                        .filter((item) => item.ydBatch)
-                );
+                        const batchType = String(batch?.batchType ?? (batch?.batchNo ? "batch" : "lot"))
+                            .trim()
+                            .toLowerCase();
+                        const finishQty = toNum(batch?.finishReceivedQuantity);
+                        const batchLots = toList(batch?.lots);
+
+                        // Keep an entry even if the backend batch has no lot breakdown.
+                        const details = batchLots.length ? batchLots : [{
+                            lotNo: batch?.lotNo ?? "",
+                            yarnCount: "",
+                            yarnComposition: "",
+                            piNo: batch?.piNo ?? "",
+                        }];
+
+
+                        return details.map((lot) => ({
+                            ydBatch: batchNo,
+                            batchType: batchType === "lot" ? "lot" : "batch",
+                            lotNo: String(lot?.lotNo ?? batch?.lotNo ?? "").trim(),
+                            yarnCount: String(lot?.yarnCount ?? "").trim(),
+                            yarnCompositions: uniqSorted(
+                                [lot?.yarnComposition, ...toList(lot?.yarnCompositions)]
+                                    .map(cleanComposition)
+                                    .filter(Boolean)
+                            ),
+                            piNo: String(lot?.piNo ?? batch?.piNo ?? "").trim(),
+                            colors: [],
+                            bookedQuantity: finishQty,
+                            availableQuantity: finishQty,
+                        }));
+                    })
+                    .flat()
+                    .filter((item) => item.ydBatch);
+
+
+                // Older backend compatibility: if ydBatches is not provided, use ydLots.
+                const legacyYdLots = toList(body.ydLots)
+                    .map((item) => {
+                        const booked = toNum(item?.bookedQuantity);
+
+                        return {
+                            ydBatch: String(item?.ydBatch ?? item?.lotNo ?? "").trim(),
+                            batchType: String(item?.batchType ?? "lot").trim().toLowerCase(),
+                            lotNo: String(item?.lotNo ?? "").trim(),
+                            yarnCount: String(item?.yarnCount ?? "").trim(),
+                            yarnCompositions: uniqSorted(
+                                [item?.yarnComposition, ...toList(item?.yarnCompositions)]
+                                    .map(cleanComposition)
+                                    .filter(Boolean)
+                            ),
+                            piNo: String(item?.piNo ?? "").trim(),
+                            colors: toList(item?.colors)
+                                .map((color) => String(color).trim())
+                                .filter(Boolean),
+                            bookedQuantity: booked,
+                            availableQuantity:
+                                item?.availableQuantity === undefined ||
+                                item?.availableQuantity === null
+                                    ? booked
+                                    : toNum(item.availableQuantity),
+                        };
+                    })
+                    .filter((item) => item.ydBatch);
+
+
+                setYdLots(finishReceivedBatches.length ? finishReceivedBatches : legacyYdLots);
 
                 setJobLots(
                     toList(body.jobLots)
@@ -2776,8 +2835,8 @@ const NewOrder = () => {
         setLotQtyAlert("");
 
         const updateLot = (lot) => {
-            // Knitting: picking a Y/D batch replaces the raw lot + PI
-            // and fills the yarn count and yarn composition when the batch has only one.
+            // Knitting: Y/D Batch is independent of Lot. Keep the selected Lot + PI,
+            // and fill count/composition from the batch when possible.
             if (field === "ydBatch") {
                 if (!value) return { ...lot, ydBatch: "", yarnComposition: "" };
 
@@ -2792,8 +2851,6 @@ const NewOrder = () => {
                 return {
                     ...lot,
                     ydBatch: value,
-                    lotNo: "",
-                    piNo: "",
                     yarnCount,
                     yarnComposition: compositions.includes(lot.yarnComposition)
                         ? lot.yarnComposition
@@ -2803,7 +2860,7 @@ const NewOrder = () => {
                 };
             }
 
-            // Y/D batch line: a new yarn count re-selects the yarn composition of that batch + count
+            // When a Y/D Batch is selected, a new count must be valid for that batch.
             if (lot.ydBatch && field === "yarnCount") {
                 const compositions = getYdCompositions(ydLots, lot.ydBatch, value);
 
@@ -2821,7 +2878,7 @@ const NewOrder = () => {
             // Lot / Count / PI (every order type, AOP + Dyeing included):
             // picking a LOT selects its yarn count, yarn composition and PI automatically.
             // Only the stock that can cover this line's qty is used.
-            if (INVENTORY_FIELDS.has(field) && !lot.ydBatch) {
+            if (INVENTORY_FIELDS.has(field)) {
                 return applyInventoryChange(
                     lot,
                     field,
@@ -3139,14 +3196,10 @@ const NewOrder = () => {
 
                     // Default lot / count: DEFAULT PI, no stock bucket
                     const usesDefault = isDefaultItem(lot);
-                    const skipStock = usesYdBatch || usesDefault;
+                    const skipStock = usesDefault;
 
-                    if (rules.lotNo && !usesYdBatch && !String(lot.lotNo).trim()) {
-                        return fail(
-                            orderType === "knittingOrder"
-                                ? `Lot No or Y/D Batch is required for ${where}`
-                                : `Lot No is required for ${where}`
-                        );
+                    if (rules.lotNo && !String(lot.lotNo).trim()) {
+                        return fail(`Lot No is required for ${where}`);
                     }
 
                     if (rules.yarnCount && !String(lot.yarnCount).trim()) {
@@ -3161,12 +3214,11 @@ const NewOrder = () => {
                         return fail(`Yarn Composition is required for ${where}`);
                     }
 
-                    if (!usesYdBatch && !getPiForPayload(lot)) {
+                    if (!usesDefault && lot.lotNo && !getPiForPayload(lot)) {
                         return fail(`PI No is required for ${where}`);
                     }
 
-                    // Y/D batch lines have no PI bucket. Their qty is checked against the
-                    // qty of that Y/D batch that is still available.
+                    // If Y/D Batch is selected, also validate its available quantity.
                     if (usesYdBatch) {
                         const ydKey = JSON.stringify([
                             str(lot.ydBatch),
@@ -3182,8 +3234,8 @@ const NewOrder = () => {
                         requestedByYd.set(ydKey, entry);
                     }
 
-                    // Y/D batch and default lines have no PI stock bucket to check
-                    if (!skipStock) {
+                    // A line with both Lot and Y/D Batch must satisfy both stock references.
+                    if (!skipStock && lot.lotNo && lot.lotNo !== DEFAULT_LOT) {
                         addRequested(
                             String(lot.piNo).trim(),
                             String(lot.lotNo).trim(),
@@ -3398,8 +3450,8 @@ const NewOrder = () => {
                     piNo: getPiForPayload(lot),
                     stichLength: String(row.stichLength ?? "").trim(),
                     machineDia: String(row.machineDia ?? "").trim(),
-                    ...(orderType === "knittingOrder"
-                        ? { ydBatch: String(lot.ydBatch ?? "").trim() }
+                    ...(orderType === "knittingOrder" && String(lot.ydBatch ?? "").trim()
+                        ? { ydBatch: String(lot.ydBatch).trim() }
                         : {}),
                 }));
             });

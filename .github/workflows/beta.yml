@@ -87,12 +87,6 @@ jobs:
       - name: Validate frontend build
         run: npm run build
 
-      - name: Remove previous rolling Beta release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release delete beta --yes --cleanup-tag
-        continue-on-error: true
-
       - name: Build and publish Beta updater feed
         uses: tauri-apps/tauri-action@v1
         env:

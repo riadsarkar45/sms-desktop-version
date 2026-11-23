@@ -46,6 +46,12 @@ const sanitizeDecimal = (value) =>
         .replace(/[^\d.]/g, "")
         .replace(/(\..*)\./g, "$1");
 
+// Yarn composition from the backend: the "NULL" default of the column is blank
+const cleanComposition = (value) => {
+    const text = str(value);
+    return text.toLowerCase() === "null" ? "" : text;
+};
+
 const formatKg = (value) =>
     toNum(value).toLocaleString(undefined, { maximumFractionDigits: 2 });
 
@@ -70,6 +76,7 @@ const INVENTORY_FIELDS = new Set(["lotNo", "yarnCount", "piNo"]);
 // no lot / yarn count at all.
 // A line that uses them ALWAYS carries DEFAULT PI too, so the backend
 // still receives a PI No. It has no stock bucket.
+// A default line has no yarn composition (the field is locked and empty).
 // ---------------------------------------------------------
 const DEFAULT_LOT = "DEFAULT LOT";
 const DEFAULT_COUNT = "DEFAULT COUNT";
@@ -82,6 +89,10 @@ const isDefaultItem = (item) =>
 const getPiForPayload = (item) =>
     isDefaultItem(item) ? DEFAULT_PI : String(item?.piNo ?? "").trim();
 
+// Yarn composition that is sent to the backend for one line / color
+const getCompositionForPayload = (item) =>
+    isDefaultItem(item) ? "" : str(item?.yarnComposition);
+
 // Stable ids so React keys stay correct when yarn colors are removed
 // `prefilled` = the line was filled automatically from the job's base work order
 // (cleared as soon as the user edits the line)
@@ -93,13 +104,14 @@ const defaultYarnColor = (init = {}) => ({
     price: "",
     lotNo: "",
     yarnCount: "",
+    yarnComposition: "",
     piNo: "",
     prefilled: false,
     ...init,
 });
 
 // Stable ids so React keys stay correct when work order lines are removed.
-// A line holds ONLY: qty, lot, yarn count and PI.
+// A line holds ONLY: qty, lot, yarn count, yarn composition and PI.
 // Price / stich length / machine dia live on the composition row.
 let lotCounter = 0;
 const defaultLot = (init = {}) => ({
@@ -108,6 +120,7 @@ const defaultLot = (init = {}) => ({
     lotNo: "",
     ydBatch: "",
     yarnCount: "",
+    yarnComposition: "",
     piNo: "",
     prefilled: false,
     ...init,
@@ -125,7 +138,7 @@ const getFactoryName = (factory) => {
 };
 
 // ---------------------------------------------------------
-// Yarn inventory helpers (one entry = PI + Lot No + Yarn Count)
+// Yarn inventory helpers (one entry = PI + Lot No + Yarn Count, with its yarn composition)
 // ---------------------------------------------------------
 const uniqSorted = (values) => [...new Set(values)].sort();
 
@@ -174,10 +187,29 @@ const hasInventoryEntry = (inventory, piNo, lotNo, yarnCount) =>
             entry.yarnCount === yarnCount
     );
 
+// The yarn compositions that fit what is already chosen.
+// Lot / count / PI that are still empty are ignored, so before anything is
+// chosen every composition of the list is returned.
+const getCompositionOptions = (
+    inventory,
+    { lotNo = "", yarnCount = "", piNo = "" } = {}
+) =>
+    uniqSorted(
+        inventory
+            .filter(
+                (entry) =>
+                    (!lotNo || entry.lotNo === lotNo) &&
+                    (!yarnCount || entry.yarnCount === yarnCount) &&
+                    (!piNo || entry.piNo === piNo)
+            )
+            .map((entry) => entry.yarnComposition)
+            .filter(Boolean)
+    );
+
 // QTY FILTER
 // Work order qty typed first (example 700): only the stock entries
 // (PI + Lot + Count) whose available qty is 700 or MORE are kept, so the
-// Lot / Yarn Count / PI dropdowns only offer values that can cover the qty.
+// Lot / Yarn Count / Composition / PI dropdowns only offer values that can cover the qty.
 // No qty typed yet (empty / 0): nothing is filtered.
 const filterInventoryByQty = (inventory, qty) => {
     const need = toNum(qty);
@@ -205,18 +237,37 @@ const pickPiForPair = (inventory, lotNo, yarnCount, currentPi) => {
     return pis.length === 1 ? pis[0] : "";
 };
 
+// Yarn composition of a lot + count (+ PI) line:
+//  - the current composition stays when it still fits
+//  - the only composition possible is selected automatically
+//  - several compositions: nothing is selected, the user picks one
+//  - the lot + count is not in the list (value typed / filled by hand): unchanged
+const pickCompositionForLine = (inventory, item) => {
+    const current = item.yarnComposition ?? "";
+
+    if (!item.lotNo || !item.yarnCount) return current;
+
+    const options = getCompositionOptions(inventory, item);
+
+    if (options.length === 0) return current;
+    if (options.includes(current)) return current;
+
+    return options.length === 1 ? options[0] : "";
+};
+
 // Applies a Lot / Count / PI change to a line or yarn color.
 //  - LOT picked first      -> the yarn count of that lot is selected automatically,
-//                             then the PI of that lot + count is selected automatically
-//                             (only when just ONE count / PI is possible; otherwise the
-//                             user picks from the matching values)
+//                             then the PI of that lot + count, then the yarn composition
+//                             (only when just ONE count / PI / composition is possible;
+//                             otherwise the user picks from the matching values)
 //  - COUNT picked first    -> nothing else is selected (no lot, no PI)
-//  - COUNT changed while a lot is chosen -> the PI of that lot + count is re-selected
-//  - PI picked             -> nothing else changes
+//  - COUNT changed while a lot is chosen -> the PI and composition are re-selected
+//  - PI picked             -> the composition of that PI is re-selected
 // `inventory` should already be filtered by the line's qty (filterInventoryByQty).
 // Only the default values are handled separately.
 const applyInventoryChange = (item, field, value, inventory = []) => {
     // Picking the default lot / count / PI selects ALL THREE defaults
+    // (a default line has no yarn composition)
     if (
         (field === "lotNo" && value === DEFAULT_LOT) ||
         (field === "yarnCount" && value === DEFAULT_COUNT)
@@ -225,6 +276,7 @@ const applyInventoryChange = (item, field, value, inventory = []) => {
             ...item,
             lotNo: DEFAULT_LOT,
             yarnCount: DEFAULT_COUNT,
+            yarnComposition: "",
             piNo: DEFAULT_PI,
         };
     }
@@ -264,6 +316,11 @@ const applyInventoryChange = (item, field, value, inventory = []) => {
         next.piNo = pickPiForPair(inventory, next.lotNo, value, next.piNo);
     }
 
+    // Lot / count / PI changed: select the yarn composition that fits
+    if (field === "lotNo" || field === "yarnCount" || field === "piNo") {
+        next.yarnComposition = pickCompositionForLine(inventory, next);
+    }
+
     return next;
 };
 
@@ -279,11 +336,36 @@ const getYdCounts = (ydLots, ydBatch) =>
             .filter(Boolean)
     );
 
+// yarn compositions booked for a Y/D batch (narrowed by the yarn count when one is chosen)
+const getYdCompositions = (ydLots, ydBatch, yarnCount = "") =>
+    uniqSorted(
+        ydLots
+            .filter(
+                (entry) =>
+                    entry.ydBatch === ydBatch &&
+                    (!yarnCount || entry.yarnCount === yarnCount)
+            )
+            .flatMap((entry) => entry.yarnCompositions ?? [])
+            .filter(Boolean)
+    );
+
 // qty of a Y/D batch that is still free (booked qty minus what earlier orders used)
 const getYdAvailableQty = (ydLots, ydBatch) =>
     ydLots
         .filter((entry) => entry.ydBatch === ydBatch)
         .reduce((sum, entry) => sum + toNum(entry.availableQuantity), 0);
+
+// A yarn composition is required only when the list really offers one for the
+// chosen lot + count (or Y/D batch). Default lines never have one.
+const compositionRequired = (item, inventory, ydLots = []) => {
+    if (isDefaultItem(item)) return false;
+
+    if (str(item.ydBatch)) {
+        return getYdCompositions(ydLots, item.ydBatch, item.yarnCount).length > 0;
+    }
+
+    return getCompositionOptions(inventory, item).length > 0;
+};
 
 const hasValue = (value) =>
     value !== "" && value !== null && value !== undefined;
@@ -316,9 +398,9 @@ const ORDER_TYPE_RULES = {
         stichLength: true,
         machineDia: true,
     },
-    // AOP + Dyeing use the compact design: ONE set of 8 fields per
-    // composition (price, qty, yarn count, yarn lot, PI no, stitch length,
-    // package, shade %). Knitting + Yarn dyeing keep the standard design.
+    // AOP + Dyeing use the compact design: ONE set of fields per
+    // composition (price, qty, yarn count, yarn lot, yarn composition, PI no,
+    // stitch length, package, shade %). Knitting + Yarn dyeing keep the standard design.
     aopOrder: {
         compact: true,
         lotNo: true,
@@ -386,7 +468,7 @@ const getRules = (orderType) =>
 // They use the SAME lot list as the other order types: the full yarn stock
 // when the job has no knitting / yarn dyeing order yet, otherwise only the
 // lots of the job's first (base) order.
-// Lot is picked first: its yarn count and PI are selected automatically.
+// Lot is picked first: its yarn count, yarn composition and PI are selected automatically.
 // Each PI option: { piNo, totalQuantity } (null when unknown).
 // The inventory passed in is already filtered by the entered qty.
 // ---------------------------------------------------------
@@ -461,6 +543,7 @@ const fillDefaultLotValues = (rows, orderType) => {
             ...item,
             lotNo,
             yarnCount,
+            yarnComposition: usesDefault ? "" : item.yarnComposition,
             piNo: usesDefault ? DEFAULT_PI : item.piNo,
         };
     };
@@ -490,8 +573,8 @@ const syncDefaultLots = (rows, orderType, noLotsFound) => {
 // ---------------------------------------------------------
 // PREFILL from the job's BASE work order
 // The base order is the first knitting / yarn dyeing order created in the job.
-// The backend returns, per composition, its lot / yarn count / PI and the
-// REMAINING qty (base qty minus what earlier orders of this type already used).
+// The backend returns, per composition, its lot / yarn count / yarn composition / PI
+// and the REMAINING qty (base qty minus what earlier orders of this type already used).
 // The new order starts with exactly those values; only the lots of the base
 // order can be selected.
 //   knitting (base = yarn dyeing) -> lot becomes the Y/D batch
@@ -510,6 +593,7 @@ const isBlankLine = (item, isYD) =>
     !str(item.color) &&
     !hasValue(item.price) &&
     !str(item.ydBatch) &&
+    !str(item.yarnComposition) &&
     (!str(item.lotNo) || item.lotNo === DEFAULT_LOT) &&
     (!str(item.yarnCount) || item.yarnCount === DEFAULT_COUNT) &&
     (!str(item.piNo) || item.piNo === DEFAULT_PI);
@@ -523,6 +607,9 @@ const qtyText = (qty) =>
 
 const piForLine = (line) =>
     isDefaultItem(line) ? DEFAULT_PI : str(line.piNo);
+
+const compositionForLine = (line) =>
+    isDefaultItem(line) ? "" : cleanComposition(line.yarnComposition);
 
 const applyPrefillToRows = (rows, prefill, orderType) => {
     if (
@@ -563,6 +650,11 @@ const applyPrefillToRows = (rows, prefill, orderType) => {
                 ]);
                 const entry = merged.get(key) ?? { ...line, qty: 0 };
                 entry.qty += toNum(line.qty);
+
+                if (!entry.yarnComposition && line.yarnComposition) {
+                    entry.yarnComposition = line.yarnComposition;
+                }
+
                 merged.set(key, entry);
             });
 
@@ -571,12 +663,14 @@ const applyPrefillToRows = (rows, prefill, orderType) => {
                     ? defaultLot({
                         ydBatch: str(line.lotNo),
                         yarnCount: str(line.yarnCount),
+                        yarnComposition: compositionForLine(line),
                         workOrderQty: qtyText(line.qty),
                         prefilled: true,
                     })
                     : defaultLot({
                         lotNo: str(line.lotNo),
                         yarnCount: str(line.yarnCount),
+                        yarnComposition: compositionForLine(line),
                         piNo: piForLine(line),
                         workOrderQty: qtyText(line.qty),
                         prefilled: true,
@@ -592,6 +686,7 @@ const applyPrefillToRows = (rows, prefill, orderType) => {
                 defaultYarnColor({
                     lotNo: str(line.lotNo),
                     yarnCount: str(line.yarnCount),
+                    yarnComposition: compositionForLine(line),
                     piNo: piForLine(line),
                     qty: qtyText(line.qty),
                     prefilled: true,
@@ -612,6 +707,7 @@ const applyPrefillToRows = (rows, prefill, orderType) => {
                     defaultLot({
                         lotNo: str(line.lotNo),
                         yarnCount: str(line.yarnCount),
+                        yarnComposition: cleanComposition(line.yarnComposition),
                         piNo: str(line.piNo),
                         workOrderQty: qtyText(line.qty),
                         prefilled: true,
@@ -742,7 +838,7 @@ const SectionCard = ({
 const SELECT_CLASS =
     "h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 disabled:cursor-not-allowed disabled:bg-slate-100";
 
-// Dropdown used by AOP / Dyeing for Yarn Count and Yarn Lot.
+// Dropdown used by AOP / Dyeing for Yarn Count, Yarn Lot and Yarn Composition.
 // A value that was filled automatically from the base work order stays
 // selectable even when it is no longer in the list.
 const JobLotSelect = ({
@@ -753,6 +849,7 @@ const JobLotSelect = ({
     loading,
     placeholder,
     emptyText,
+    required = true,
 }) => {
     const shownOptions =
         value && !options.includes(value) ? [...options, value] : options;
@@ -760,7 +857,7 @@ const JobLotSelect = ({
     return (
         <div className="min-w-0">
             <label className="mb-1.5 block text-xs font-medium text-slate-600">
-                {label} <span className="text-red-500">*</span>
+                {label} {required && <span className="text-red-500">*</span>}
             </label>
             <select
                 value={value ?? ""}
@@ -856,15 +953,15 @@ const CompactPiField = ({ item, options, loading, usage, onChange }) => {
     );
 };
 
-// Lot No + Yarn Count + PI No selects.
+// Lot No + Yarn Count + Yarn Composition + PI No selects.
 // Renders grid cells, so put it directly inside a grid container.
-// Lot and Count sit side by side, PI No spans the full width underneath.
+// Lot and Count sit side by side, Yarn Composition and PI No span the full width underneath.
 // `usage` is a Map(inventoryKey -> qty requested by ALL lines of this order)
 // so each card can show a live stock bar for its PI.
 // `noLots` = nothing found for this job: DEFAULT LOT / DEFAULT COUNT / DEFAULT PI are offered.
-// Order of selection: QTY first (filters the dropdowns), then LOT -> its yarn count and PI
-// are selected automatically.
-// `qty` = the work order qty of this line / color. Only lots, counts and PIs whose
+// Order of selection: QTY first (filters the dropdowns), then LOT -> its yarn count, yarn composition
+// and PI are selected automatically.
+// `qty` = the work order qty of this line / color. Only lots, counts, compositions and PIs whose
 // available qty is `qty` or more are offered.
 const LotCountPiFields = ({
     item,
@@ -943,6 +1040,29 @@ const LotCountPiFields = ({
         countOptions = [...countOptions, item.yarnCount];
     }
 
+    // YARN COMPOSITION: the compositions that fit the chosen lot + count + PI
+    // (all compositions with enough qty until something is chosen).
+    // A Y/D batch line uses the compositions booked for that batch.
+    const baseCompositionOptions = isDefault
+        ? []
+        : hasYd
+            ? getYdCompositions(ydLots, item.ydBatch, item.yarnCount)
+            : getCompositionOptions(stock, {
+                lotNo: item.lotNo,
+                yarnCount: item.yarnCount,
+                piNo: item.piNo,
+            });
+
+    // A composition filled automatically from the base work order stays selectable
+    const compositionOptions =
+        !isDefault &&
+        item.yarnComposition &&
+        !baseCompositionOptions.includes(item.yarnComposition)
+            ? [...baseCompositionOptions, item.yarnComposition]
+            : baseCompositionOptions;
+
+    const compositionIsRequired = compositionRequired(item, inventory, ydLots);
+
     // PI numbers: the PIs of the chosen lot + count that have enough qty (with their balance).
     // Until both are chosen, every PI with enough qty is listed without a balance.
     const pairInStock =
@@ -1016,7 +1136,7 @@ const LotCountPiFields = ({
                         )}
                         {nothingFits
                             ? `No lot has ${formatKg(needQty)} KG or more available.`
-                            : `Only lot, count and PI with ${formatKg(needQty)} KG or more available are shown.`}
+                            : `Only lot, count, composition and PI with ${formatKg(needQty)} KG or more available are shown.`}
                     </p>
                 </div>
             )}
@@ -1094,6 +1214,47 @@ const LotCountPiFields = ({
                         </option>
                     ))}
                 </select>
+            </div>
+
+            <div className="col-span-2 min-w-0">
+                <label className="mb-1.5 block text-xs font-medium text-slate-600">
+                    Yarn Composition{" "}
+                    {compositionIsRequired && <span className="text-red-500">*</span>}
+                </label>
+
+                {isDefault ? (
+                    // Default lot / count have no yarn composition
+                    <input
+                        type="text"
+                        value=""
+                        placeholder="Not needed for default lot"
+                        disabled
+                        readOnly
+                        className={SELECT_CLASS}
+                    />
+                ) : (
+                    <select
+                        value={item.yarnComposition ?? ""}
+                        disabled={loading || compositionOptions.length === 0}
+                        onChange={(e) => onChange("yarnComposition", e.target.value)}
+                        className={SELECT_CLASS}
+                    >
+                        <option value="">
+                            {loading
+                                ? "Loading..."
+                                : compositionOptions.length === 0
+                                    ? isFiltered
+                                        ? "No composition with enough qty"
+                                        : "No composition found"
+                                    : "Select composition"}
+                        </option>
+                        {compositionOptions.map((composition) => (
+                            <option key={composition} value={composition}>
+                                {composition}
+                            </option>
+                        ))}
+                    </select>
+                )}
             </div>
 
             <div className="col-span-2 min-w-0">
@@ -1245,7 +1406,7 @@ const LineCard = ({
 
                 <div className="flex items-center gap-1.5">
                     <IconButton
-                        title="Duplicate with same lot, count and PI"
+                        title="Duplicate with same lot, count, composition and PI"
                         onClick={onDuplicate}
                     >
                         <Copy size={13} />
@@ -1490,8 +1651,8 @@ const LinesBoard = ({
                         </span>
                         <span className="max-w-[200px] text-[11px] leading-4 text-slate-400">
                             {isYarnDyeing
-                                ? "A new color with its own qty, price, lot, count and PI"
-                                : "A new lot, yarn count, PI and qty for this composition"}
+                                ? "A new color with its own qty, price, lot, count, composition and PI"
+                                : "A new lot, yarn count, yarn composition, PI and qty for this composition"}
                         </span>
                     </button>
                 </div>
@@ -1590,7 +1751,7 @@ const NewOrder = () => {
 
     // Lots from /api/lots-work-orders/:orderType (loaded per order type + job):
     //  - lotsAndCounts: the lots to choose from, one entry per PI + Lot + Count
-    //    with its available qty:
+    //    with its yarn composition and available qty:
     //      * first time in this job: the full yarn stock
     //      * the job already has a knitting / yarn dyeing order: ONLY the lots
     //        of the first (base) order, qty = base qty - qty already used by
@@ -1598,7 +1759,7 @@ const NewOrder = () => {
     //  - ydLots: yarn dyeing lots / batches booked for this job (with the qty still available)
     //  - jobLots: lots + counts (+ PI numbers) already used by any work order
     //    of this job (AOP + dyeing)
-    //  - prefill: the base order's lot / count / PI / remaining qty per composition
+    //  - prefill: the base order's lot / count / yarn composition / PI / remaining qty per composition
     //  - lotSource: { restricted, baseOrderType } for the loaded order type + job
     const [lotsAndCounts, setLotsAndCounts] = useState([]);
     const [ydLots, setYdLots] = useState([]);
@@ -1811,6 +1972,7 @@ const NewOrder = () => {
                             piNo: String(item?.piNo ?? "").trim(),
                             lotNo: String(item?.lotNo ?? "").trim(),
                             yarnCount: String(item?.yarnCount ?? "").trim(),
+                            yarnComposition: cleanComposition(item?.yarnComposition),
                             totalQuantity: toNum(item?.totalQuantity),
                         }))
                         .filter(
@@ -1837,6 +1999,12 @@ const NewOrder = () => {
                             return {
                                 ydBatch: String(item?.ydBatch ?? item?.lotNo ?? "").trim(),
                                 yarnCount: String(item?.yarnCount ?? "").trim(),
+                                // yarn compositions of this batch (single `yarnComposition` or a `yarnCompositions` list)
+                                yarnCompositions: uniqSorted(
+                                    [item?.yarnComposition, ...toList(item?.yarnCompositions)]
+                                        .map(cleanComposition)
+                                        .filter(Boolean)
+                                ),
                                 piNo: String(item?.piNo ?? "").trim(),
                                 colors: toList(item?.colors)
                                     .map((color) => String(color).trim())
@@ -1858,6 +2026,11 @@ const NewOrder = () => {
                         .map((item) => ({
                             lotNo: String(item?.lotNo ?? "").trim(),
                             yarnCount: String(item?.yarnCount ?? "").trim(),
+                            yarnCompositions: uniqSorted(
+                                [item?.yarnComposition, ...toList(item?.yarnCompositions)]
+                                    .map(cleanComposition)
+                                    .filter(Boolean)
+                            ),
                             // PI numbers of this lot + count (single `piNo` or a `piNos` list)
                             piNos: uniqSorted(
                                 [item?.piNo, ...toList(item?.piNos)]
@@ -1894,6 +2067,7 @@ const NewOrder = () => {
                                 .map((line) => ({
                                     lotNo: str(line?.lotNo),
                                     yarnCount: str(line?.yarnCount),
+                                    yarnComposition: cleanComposition(line?.yarnComposition),
                                     piNo: str(line?.piNo),
                                     qty: toNum(line?.qty),
                                 }))
@@ -1991,7 +2165,7 @@ const NewOrder = () => {
         );
     }, [lotsAndCounts, orderType, noLotsFound]);
 
-    // Auto-select the lot / yarn count / PI / qty of the job's BASE work order
+    // Auto-select the lot / yarn count / yarn composition / PI / qty of the job's BASE work order
     // (composition by composition). Declared AFTER the sync effect above,
     // so the base order's values win over the defaults.
     // Each fetched prefill is applied once and never overwrites typed values.
@@ -2549,7 +2723,7 @@ const NewOrder = () => {
 
     // ---------------------------------------------------------
     // Work order line handlers
-    // Each line = Qty + Lot No + Yarn Count + PI No ONLY
+    // Each line = Qty + Lot No + Yarn Count + Yarn Composition + PI No ONLY
     // ---------------------------------------------------------
     const handleAddLot = (rowIndex) => {
         setRows((prev) =>
@@ -2564,7 +2738,7 @@ const NewOrder = () => {
         );
     };
 
-    // Copies lot / count / PI into a new line right after the source line
+    // Copies lot / count / composition / PI into a new line right after the source line
     const handleDuplicateLot = (rowIndex, lotIndex) => {
         setFormError("");
 
@@ -2581,6 +2755,7 @@ const NewOrder = () => {
                     lotNo: source.lotNo,
                     ydBatch: source.ydBatch,
                     yarnCount: source.yarnCount,
+                    yarnComposition: source.yarnComposition,
                     piNo: source.piNo,
                 });
 
@@ -2602,27 +2777,49 @@ const NewOrder = () => {
 
         const updateLot = (lot) => {
             // Knitting: picking a Y/D batch replaces the raw lot + PI
-            // and fills the yarn count when the batch has only one.
+            // and fills the yarn count and yarn composition when the batch has only one.
             if (field === "ydBatch") {
-                if (!value) return { ...lot, ydBatch: "" };
+                if (!value) return { ...lot, ydBatch: "", yarnComposition: "" };
 
                 const counts = getYdCounts(ydLots, value);
+                const yarnCount = counts.includes(lot.yarnCount)
+                    ? lot.yarnCount
+                    : counts.length === 1
+                        ? counts[0]
+                        : "";
+                const compositions = getYdCompositions(ydLots, value, yarnCount);
 
                 return {
                     ...lot,
                     ydBatch: value,
                     lotNo: "",
                     piNo: "",
-                    yarnCount: counts.includes(lot.yarnCount)
-                        ? lot.yarnCount
-                        : counts.length === 1
-                            ? counts[0]
+                    yarnCount,
+                    yarnComposition: compositions.includes(lot.yarnComposition)
+                        ? lot.yarnComposition
+                        : compositions.length === 1
+                            ? compositions[0]
+                            : "",
+                };
+            }
+
+            // Y/D batch line: a new yarn count re-selects the yarn composition of that batch + count
+            if (lot.ydBatch && field === "yarnCount") {
+                const compositions = getYdCompositions(ydLots, lot.ydBatch, value);
+
+                return {
+                    ...lot,
+                    yarnCount: value,
+                    yarnComposition: compositions.includes(lot.yarnComposition)
+                        ? lot.yarnComposition
+                        : compositions.length === 1
+                            ? compositions[0]
                             : "",
                 };
             }
 
             // Lot / Count / PI (every order type, AOP + Dyeing included):
-            // picking a LOT selects its yarn count and PI automatically.
+            // picking a LOT selects its yarn count, yarn composition and PI automatically.
             // Only the stock that can cover this line's qty is used.
             if (INVENTORY_FIELDS.has(field) && !lot.ydBatch) {
                 return applyInventoryChange(
@@ -2678,7 +2875,7 @@ const NewOrder = () => {
 
     // ---------------------------------------------------------
     // Yarn color handlers (yarn dyeing)
-    // Each color = Color + Qty + Price + Lot No + Yarn Count + PI No
+    // Each color = Color + Qty + Price + Lot No + Yarn Count + Yarn Composition + PI No
     // ---------------------------------------------------------
     const handleAddYarnColor = (rowIndex) => {
         setRows((prev) =>
@@ -2696,7 +2893,7 @@ const NewOrder = () => {
         );
     };
 
-    // Copies price / lot / count / PI into a new color right after the source
+    // Copies price / lot / count / composition / PI into a new color right after the source
     const handleDuplicateYarnColor = (rowIndex, colorIndex) => {
         setFormError("");
 
@@ -2713,6 +2910,7 @@ const NewOrder = () => {
                     price: source.price,
                     lotNo: source.lotNo,
                     yarnCount: source.yarnCount,
+                    yarnComposition: source.yarnComposition,
                     piNo: source.piNo,
                 });
 
@@ -2738,7 +2936,7 @@ const NewOrder = () => {
         setLotQtyAlert("");
 
         const updateColor = (color) => {
-            // picking a LOT selects its yarn count and PI automatically.
+            // picking a LOT selects its yarn count, yarn composition and PI automatically.
             // Only the stock that can cover this color's qty is used.
             if (INVENTORY_FIELDS.has(field)) {
                 return applyInventoryChange(
@@ -2877,6 +3075,14 @@ const NewOrder = () => {
                     return fail(`Yarn Lot is required for ${where}`);
                 }
 
+                // Yarn composition is required when the list offers one for this lot + count
+                if (
+                    compositionRequired(lot, lotsAndCounts) &&
+                    !str(lot.yarnComposition)
+                ) {
+                    return fail(`Yarn Composition is required for ${where}`);
+                }
+
                 // PI No is required. Default lot / count carry DEFAULT PI automatically.
                 if (!getPiForPayload(lot)) {
                     return fail(`PI No is required for ${where}`);
@@ -2947,6 +3153,14 @@ const NewOrder = () => {
                         return fail(`Yarn Count is required for ${where}`);
                     }
 
+                    // Yarn composition is required when the list (or the Y/D batch) offers one
+                    if (
+                        compositionRequired(lot, lotsAndCounts, ydLots) &&
+                        !str(lot.yarnComposition)
+                    ) {
+                        return fail(`Yarn Composition is required for ${where}`);
+                    }
+
                     if (!usesYdBatch && !getPiForPayload(lot)) {
                         return fail(`PI No is required for ${where}`);
                     }
@@ -3008,6 +3222,14 @@ const NewOrder = () => {
 
                     if (!String(yarnColor.yarnCount).trim()) {
                         return fail(`Yarn Count is required for ${where}`);
+                    }
+
+                    // Yarn composition is required when the list offers one for this lot + count
+                    if (
+                        compositionRequired(yarnColor, lotsAndCounts) &&
+                        !str(yarnColor.yarnComposition)
+                    ) {
+                        return fail(`Yarn Composition is required for ${where}`);
                     }
 
                     // PI No is required. Default lot / count carry DEFAULT PI automatically.
@@ -3119,6 +3341,7 @@ const NewOrder = () => {
                         price: yc.price,
                         lotNo: String(yc.lotNo).trim(),
                         yarnCount: String(yc.yarnCount).trim(),
+                        yarnComposition: getCompositionForPayload(yc),
                         // DEFAULT PI is sent for default lot / count
                         piNo: getPiForPayload(yc),
                     }));
@@ -3132,7 +3355,8 @@ const NewOrder = () => {
                             yarnCount: "",
                             stichLength: "",
                             machineDia: "",
-                            // composition-level PI = PI of the first color
+                            // composition-level yarn composition + PI = those of the first color
+                            yarnComposition: yarnColors[0]?.yarnComposition ?? "",
                             piNo: yarnColors[0]?.piNo ?? "",
                             yarnColors,
                         },
@@ -3151,6 +3375,7 @@ const NewOrder = () => {
                             unitPrice: row.unitPrice,
                             lotNo: String(lot.lotNo ?? "").trim(),
                             yarnCount: String(lot.yarnCount ?? "").trim(),
+                            yarnComposition: getCompositionForPayload(lot),
                             piNo: getPiForPayload(lot),
                             stichLength: String(row.stichLength ?? "").trim(),
                             machineDia: "",
@@ -3161,7 +3386,7 @@ const NewOrder = () => {
                 }
 
                 // One payload entry per Work Order line. Each line has its own
-                // qty, lot, yarn count and PI; price / stich length / machine
+                // qty, lot, yarn count, yarn composition and PI; price / stich length / machine
                 // dia are shared from the composition.
                 return (row.lots ?? []).map((lot) => ({
                     ...baseComposition(row),
@@ -3169,6 +3394,7 @@ const NewOrder = () => {
                     unitPrice: row.unitPrice,
                     lotNo: String(lot.lotNo).trim(),
                     yarnCount: String(lot.yarnCount).trim(),
+                    yarnComposition: getCompositionForPayload(lot),
                     piNo: getPiForPayload(lot),
                     stichLength: String(row.stichLength ?? "").trim(),
                     machineDia: String(row.machineDia ?? "").trim(),
@@ -3188,13 +3414,13 @@ const NewOrder = () => {
                 styleNo: styleData.styleNo,
                 compositions,
             };
-
+            console.log(payload, "payload for creating job");
             // 30s timeout so a hanging server can never leave the UI stuck
-            const response = await axiosPrivate.post(
-                "/api/create-job",
-                payload,
-                { timeout: 30000 }
-            );
+            // const response = await axiosPrivate.post(
+            //     "/api/create-job",
+            //     payload,
+            //     { timeout: 30000 }
+            // );
 
             const responseType = response.data?.type;
             const isSuccess = responseType
@@ -3913,7 +4139,7 @@ const NewOrder = () => {
                                             <p>
                                                 A <span className="font-semibold">{baseOrderLabel}</span> work
                                                 order was created first for this job, so only its lots, yarn
-                                                counts and PI numbers can be selected. The available qty of a
+                                                counts, yarn compositions and PI numbers can be selected. The available qty of a
                                                 lot is the {baseOrderLabel} qty minus what earlier{" "}
                                                 {currentOrderLabel} work orders already used, and your selected
                                                 qty is deducted from it.
@@ -3929,7 +4155,7 @@ const NewOrder = () => {
                                         <div className="flex items-start gap-2 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2.5 text-xs text-indigo-800">
                                             <Sparkles size={14} className="mt-0.5 shrink-0" />
                                             <p>
-                                                Lot, yarn count, PI No and qty were selected automatically from the{" "}
+                                                Lot, yarn count, yarn composition, PI No and qty were selected automatically from the{" "}
                                                 <span className="font-semibold">{prefillSourceLabel}</span>{" "}
                                                 work order already created for this job. Review them and change
                                                 anything you need before saving.
@@ -3963,11 +4189,11 @@ const NewOrder = () => {
                                             styleRow.yarnColors ?? [defaultYarnColor()];
 
 
-                                        // AOP / Dyeing: the lots / counts / PIs of the list
+                                        // AOP / Dyeing: the lots / counts / compositions / PIs of the list
                                         // (full stock the first time, otherwise the base order's lots).
                                         // QTY FILTER: only stock whose available qty is the typed
                                         // Work Order Qty or more is offered.
-                                        // Lot is picked first: its yarn count and PI are selected automatically.
+                                        // Lot is picked first: its yarn count, yarn composition and PI are selected automatically.
                                         const compactQty = lotList[0]?.workOrderQty;
                                         const compactNeedQty = toNum(compactQty);
 
@@ -3992,6 +4218,20 @@ const NewOrder = () => {
                                         const compactLotOptions = isCompact
                                             ? getAllCompactLots(compactStock)
                                             : [];
+
+                                        // yarn compositions of the chosen lot + count + PI
+                                        // (every composition until something is chosen)
+                                        const compactCompositionOptions = isCompact
+                                            ? getCompositionOptions(compactStock, {
+                                                lotNo: chosenCompactLot,
+                                                yarnCount: chosenCompactCount,
+                                                piNo: String(lotList[0]?.piNo ?? "").trim(),
+                                            })
+                                            : [];
+
+                                        const compactCompositionRequired =
+                                            isCompact &&
+                                            compositionRequired(lotList[0] ?? {}, lotsAndCounts);
 
                                         // PIs of the chosen lot + count (balance attached)
                                         const compactPiOptions = isCompact
@@ -4148,7 +4388,7 @@ const NewOrder = () => {
                                                         </div>
                                                     )}
 
-                                                    {/* AOP / Dyeing: compact design, 8 fields in two lines */}
+                                                    {/* AOP / Dyeing: compact design, 9 fields in two lines */}
                                                     {isCompact && (
                                                         <div className="mt-5 rounded-xl border border-slate-200 bg-gradient-to-b from-slate-50/80 to-white p-4">
                                                             <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
@@ -4162,7 +4402,7 @@ const NewOrder = () => {
                                                                             : isLimitedToBase
                                                                                 ? `Limited to the ${baseOrderLabel} work order's lots. Available qty = ${baseOrderLabel} qty minus qty already used by earlier ${currentOrderLabel} work orders.`
                                                                                 : lotsAndCounts.length > 0
-                                                                                    ? "One set of details for this composition. Type the Work Order Qty first: only lots, counts and PIs with that qty or more available are shown. Pick the yarn lot next: its yarn count and PI No are selected automatically."
+                                                                                    ? "One set of details for this composition. Type the Work Order Qty first: only lots, counts, compositions and PIs with that qty or more available are shown. Pick the yarn lot next: its yarn count, yarn composition and PI No are selected automatically."
                                                                                     : "No yarn lot found in the yarn stock."}
                                                                     </p>
                                                                 </div>
@@ -4182,7 +4422,7 @@ const NewOrder = () => {
                                                             </div>
 
                                                             {/* Line 1 */}
-                                                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                                                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
                                                                 <Input
                                                                     label="Price Per Kg"
                                                                     placeholder="Unit Price"
@@ -4205,7 +4445,7 @@ const NewOrder = () => {
                                                                     isShowOutLabel
                                                                 />
 
-                                                                {/* LOT first: it selects the yarn count + PI No */}
+                                                                {/* LOT first: it selects the yarn count + yarn composition + PI No */}
                                                                 <JobLotSelect
                                                                     label="Yarn Lot"
                                                                     value={lotList[0]?.lotNo ?? ""}
@@ -4237,6 +4477,23 @@ const NewOrder = () => {
                                                                         handleLotChange(index, 0, "yarnCount", value)
                                                                     }
                                                                 />
+
+                                                                <JobLotSelect
+                                                                    label="Yarn Composition"
+                                                                    value={lotList[0]?.yarnComposition ?? ""}
+                                                                    options={compactCompositionOptions}
+                                                                    loading={isLotsAndCountsLoading}
+                                                                    required={compactCompositionRequired}
+                                                                    placeholder="Select composition"
+                                                                    emptyText={
+                                                                        compactFilterActive
+                                                                            ? `No composition with ${formatKg(compactNeedQty)} KG or more`
+                                                                            : "No yarn composition found"
+                                                                    }
+                                                                    onChange={(value) =>
+                                                                        handleLotChange(index, 0, "yarnComposition", value)
+                                                                    }
+                                                                />
                                                             </div>
 
                                                             {/* Qty filter info */}
@@ -4251,7 +4508,7 @@ const NewOrder = () => {
                                                                     )}
                                                                     {compactStock.length === 0
                                                                         ? `No lot has ${formatKg(compactNeedQty)} KG or more available.`
-                                                                        : `Only lot, count and PI with ${formatKg(compactNeedQty)} KG or more available are shown.`}
+                                                                        : `Only lot, count, composition and PI with ${formatKg(compactNeedQty)} KG or more available are shown.`}
                                                                 </p>
                                                             )}
 

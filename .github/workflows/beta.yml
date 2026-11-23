@@ -32,6 +32,43 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Set Tauri WiX cache directory
+        shell: pwsh
+        run: |
+          $wixDir = Join-Path $env:LOCALAPPDATA "tauri\WixTools314"
+          "TAURI_WIX_CACHE=$wixDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Restore WiX cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TAURI_WIX_CACHE }}
+          key: tauri-wix-3.14.1-windows-x64-v1
+
+      - name: Pre-download WiX binaries into Tauri cache
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $wixDir = $env:TAURI_WIX_CACHE
+          $candle = Join-Path $wixDir "candle.exe"
+          $light = Join-Path $wixDir "light.exe"
+
+          if (-not ((Test-Path $candle) -and (Test-Path $light))) {
+            New-Item -ItemType Directory -Force -Path $wixDir | Out-Null
+            $zip = Join-Path $env:RUNNER_TEMP "wix314-binaries.zip"
+            $url = "https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip"
+            Invoke-WebRequest -Uri $url -OutFile $zip -TimeoutSec 180
+            Expand-Archive -LiteralPath $zip -DestinationPath $wixDir -Force
+            Remove-Item -LiteralPath $zip -Force
+            $nestedCandle = Get-ChildItem -Path $wixDir -Recurse -Filter candle.exe | Select-Object -First 1
+            if (-not $nestedCandle) { throw "candle.exe was not found after extraction." }
+            if ($nestedCandle.DirectoryName -ne $wixDir) {
+              Copy-Item -Path (Join-Path $nestedCandle.DirectoryName "*") -Destination $wixDir -Recurse -Force
+            }
+          }
+          if (-not ((Test-Path $candle) -and (Test-Path $light))) {
+            throw "WiX cache is missing candle.exe or light.exe."
+          }
+
       - name: Validate and set beta version
         shell: pwsh
         env:

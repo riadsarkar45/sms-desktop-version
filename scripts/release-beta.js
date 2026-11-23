@@ -31,6 +31,12 @@ function run(command, args, options = {}) {
   }
 }
 
+function runNpm(args = []) {
+  const npmCli = process.env.npm_execpath;
+  if (!npmCli) fail("Cannot locate npm CLI. Start this command with npm run release:beta.");
+  run(process.execPath, [npmCli, ...args]);
+}
+
 function canRun(command, args) {
   try {
     execFileSync(command, args, { cwd: root, stdio: "ignore", shell: false });
@@ -127,9 +133,9 @@ async function main() {
 
   try {
     console.log("\n🔨 Building SM Sourcing " + version + " locally...");
-    run("npm", ["ci"]);
-    run("npm", ["run", "build"]);
-    run("npm", ["run", "tauri", "--", "build", "--config", "src-tauri/tauri.beta.generated.conf.json"]);
+    runNpm(["ci"]);
+    runNpm(["run", "build"]);
+    runNpm(["run", "tauri", "--", "build", "--config", "src-tauri/tauri.beta.generated.conf.json"]);
 
     const msiDir = path.join(root, "src-tauri/target/release/bundle/msi");
     const msi = fs.readdirSync(msiDir).filter(name => name.toLowerCase().endsWith(".msi")).map(name => path.join(msiDir, name)).sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];

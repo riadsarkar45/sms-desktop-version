@@ -824,7 +824,10 @@ const AllOrders = ({ orderType }) => {
         const { linkedDeliveries, ...mainPayload } = rawPayload;
         const singleWorkOrderId = Array.isArray(workOrderId) ? workOrderId[0] : workOrderId;
 
-        // Batch No: required for Finish Received, never sent for other types
+        // Batch No: only yarn dye orders need it (required for Finish Received).
+        // Knitting / Dyeing / AOP never need it and never send it.
+        const isYarnDye = orderType === "yarnDyeingOrder";
+
         const isFinishReceived = (p) =>
             Array.isArray(p?.deliveries) &&
             p.deliveries.some((d) => d.deliveryType === "Finish Received");
@@ -832,7 +835,7 @@ const AllOrders = ({ orderType }) => {
         const mainIsFinishReceived =
             mainPayload.deliveryType === "Finish Received" || isFinishReceived(mainPayload);
 
-        if (mainIsFinishReceived) {
+        if (isYarnDye && mainIsFinishReceived) {
             const cleanBatch = String(mainPayload.batchNo ?? "").trim();
             if (!cleanBatch) {
                 setDeliveryIssue([

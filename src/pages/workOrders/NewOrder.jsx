@@ -174,6 +174,19 @@ const hasInventoryEntry = (inventory, piNo, lotNo, yarnCount) =>
             entry.yarnCount === yarnCount
     );
 
+// QTY FILTER
+// Work order qty typed first (example 700): only the stock entries
+// (PI + Lot + Count) whose available qty is 700 or MORE are kept, so the
+// Lot / Yarn Count / PI dropdowns only offer values that can cover the qty.
+// No qty typed yet (empty / 0): nothing is filtered.
+const filterInventoryByQty = (inventory, qty) => {
+    const need = toNum(qty);
+
+    if (!(need > 0)) return inventory;
+
+    return inventory.filter((entry) => toNum(entry.totalQuantity) >= need);
+};
+
 // PI of a lot + count pair:
 //  - the current PI stays when it still belongs to the pair
 //  - the only PI of the pair is selected automatically
@@ -200,6 +213,7 @@ const pickPiForPair = (inventory, lotNo, yarnCount, currentPi) => {
 //  - COUNT picked first    -> nothing else is selected (no lot, no PI)
 //  - COUNT changed while a lot is chosen -> the PI of that lot + count is re-selected
 //  - PI picked             -> nothing else changes
+// `inventory` should already be filtered by the line's qty (filterInventoryByQty).
 // Only the default values are handled separately.
 const applyInventoryChange = (item, field, value, inventory = []) => {
     // Picking the default lot / count / PI selects ALL THREE defaults
@@ -374,6 +388,7 @@ const getRules = (orderType) =>
 // lots of the job's first (base) order.
 // Lot is picked first: its yarn count and PI are selected automatically.
 // Each PI option: { piNo, totalQuantity } (null when unknown).
+// The inventory passed in is already filtered by the entered qty.
 // ---------------------------------------------------------
 const getAllCompactLots = (inventory) => getAllLots(inventory);
 
@@ -842,18 +857,22 @@ const CompactPiField = ({ item, options, loading, usage, onChange }) => {
 };
 
 // Lot No + Yarn Count + PI No selects.
-// Renders three grid cells, so put it directly inside a grid container.
+// Renders grid cells, so put it directly inside a grid container.
 // Lot and Count sit side by side, PI No spans the full width underneath.
 // `usage` is a Map(inventoryKey -> qty requested by ALL lines of this order)
 // so each card can show a live stock bar for its PI.
 // `noLots` = nothing found for this job: DEFAULT LOT / DEFAULT COUNT / DEFAULT PI are offered.
-// Order of selection: LOT first -> its yarn count and PI are selected automatically.
+// Order of selection: QTY first (filters the dropdowns), then LOT -> its yarn count and PI
+// are selected automatically.
+// `qty` = the work order qty of this line / color. Only lots, counts and PIs whose
+// available qty is `qty` or more are offered.
 const LotCountPiFields = ({
     item,
     onChange,
     inventory,
     loading,
     usage,
+    qty = "",
     noLots = false,
     showYdBatch = false,
     ydLots = [],
@@ -863,6 +882,12 @@ const LotCountPiFields = ({
     // Typing a Y/D Batch locks Lot; picking a Lot locks Y/D Batch.
     const hasYd = showYdBatch && String(item.ydBatch ?? "").trim() !== "";
     const isDefault = isDefaultItem(item);
+
+    // QTY FILTER: only stock that can cover the typed qty
+    const needQty = toNum(qty);
+    const stock = filterInventoryByQty(inventory, qty);
+    const isFiltered = needQty > 0 && inventory.length > 0 && !hasYd && !isDefault;
+    const nothingFits = isFiltered && stock.length === 0;
 
     const ydOptions = uniqSorted(ydLots.map((entry) => entry.ydBatch));
 
@@ -877,16 +902,16 @@ const LotCountPiFields = ({
         );
     };
 
-    // Every lot is offered
-    let lotOptions = getAllLots(inventory);
+    // Lots that have enough qty
+    let lotOptions = getAllLots(stock);
 
     const ydCounts = hasYd ? getYdCounts(ydLots, item.ydBatch) : [];
 
-    // Once a lot is picked, only the yarn counts of that lot are offered.
-    // Count picked first (no lot yet): every count is offered.
+    // Once a lot is picked, only the yarn counts of that lot (with enough qty) are offered.
+    // Count picked first (no lot yet): every count with enough qty is offered.
     const lotCounts =
         item.lotNo && !isDefault && !hasYd
-            ? getCountsForLot(inventory, item.lotNo)
+            ? getCountsForLot(stock, item.lotNo)
             : [];
 
     let countOptions =
@@ -894,7 +919,7 @@ const LotCountPiFields = ({
             ? ydCounts
             : lotCounts.length > 0
                 ? lotCounts
-                : getAllCounts(inventory);
+                : getAllCounts(stock);
 
     // Nothing found for this job: offer the defaults
     if ((noLots || item.lotNo === DEFAULT_LOT) && !lotOptions.includes(DEFAULT_LOT)) {
@@ -918,21 +943,26 @@ const LotCountPiFields = ({
         countOptions = [...countOptions, item.yarnCount];
     }
 
-    // PI numbers: the PIs of the chosen lot + count (with their balance).
-    // Until both are chosen, every PI is listed without a balance.
-    const pairEntries =
+    // PI numbers: the PIs of the chosen lot + count that have enough qty (with their balance).
+    // Until both are chosen, every PI with enough qty is listed without a balance.
+    const pairInStock =
         !isDefault && item.lotNo && item.yarnCount
             ? getPisForPair(inventory, item.lotNo, item.yarnCount)
             : [];
 
+    const pairEntries =
+        pairInStock.length > 0
+            ? getPisForPair(stock, item.lotNo, item.yarnCount)
+            : [];
+
     const basePiOptions = isDefault
         ? []
-        : pairEntries.length > 0
+        : pairInStock.length > 0
             ? pairEntries.map((entry) => ({
                 piNo: entry.piNo,
                 totalQuantity: entry.totalQuantity,
             }))
-            : getAllPis(inventory).map((piNo) => ({
+            : getAllPis(stock).map((piNo) => ({
                 piNo,
                 totalQuantity: null,
             }));
@@ -973,6 +1003,24 @@ const LotCountPiFields = ({
 
     return (
         <>
+            {/* Qty filter info */}
+            {isFiltered && !loading && (
+                <div className="col-span-2 min-w-0">
+                    <p
+                        className={`flex items-center gap-1 text-[11px] font-medium ${nothingFits ? "text-red-600" : "text-indigo-600"}`}
+                    >
+                        {nothingFits ? (
+                            <AlertCircle size={12} className="shrink-0" />
+                        ) : (
+                            <Sparkles size={12} className="shrink-0" />
+                        )}
+                        {nothingFits
+                            ? `No lot has ${formatKg(needQty)} KG or more available.`
+                            : `Only lot, count and PI with ${formatKg(needQty)} KG or more available are shown.`}
+                    </p>
+                </div>
+            )}
+
             <div className="min-w-0">
                 <label className="mb-1.5 block text-xs font-medium text-slate-600">
                     Lot No {!hasYd && <span className="text-red-500">*</span>}
@@ -1070,7 +1118,11 @@ const LotCountPiFields = ({
                         className={SELECT_CLASS}
                     >
                         <option value="">
-                            {hasYd ? "Not needed for Y/D batch" : "Select PI No"}
+                            {hasYd
+                                ? "Not needed for Y/D batch"
+                                : piOptions.length === 0 && isFiltered
+                                    ? "No PI with enough qty"
+                                    : "Select PI No"}
                         </option>
                         {piOptions.map((entry) => (
                             <option key={entry.piNo} value={entry.piNo}>
@@ -1326,6 +1378,7 @@ const LinesBoard = ({
                 inventory={inventory}
                 loading={loading}
                 usage={usage}
+                qty={isYarnDyeing ? item.qty : item.workOrderQty}
                 noLots={noLots}
                 showYdBatch={showYdBatch}
                 ydLots={ydLots}
@@ -1347,11 +1400,6 @@ const LinesBoard = ({
                             ? "Yarn colors, lots and quantities"
                             : "Lots, yarn counts and quantities"}
                     </h5>
-                    <p className="mt-0.5 text-xs text-slate-500">
-                        Need another lot or count? Add a {label.toLowerCase()} and it
-                        appears right beside the main one.
-                    </p>
-
                     {restrictedNote && (
                         <p className="mt-1 flex items-center gap-1 text-[11px] font-medium text-indigo-600">
                             <Sparkles size={12} className="shrink-0" />
@@ -2574,9 +2622,15 @@ const NewOrder = () => {
             }
 
             // Lot / Count / PI (every order type, AOP + Dyeing included):
-            // picking a LOT selects its yarn count and PI automatically
+            // picking a LOT selects its yarn count and PI automatically.
+            // Only the stock that can cover this line's qty is used.
             if (INVENTORY_FIELDS.has(field) && !lot.ydBatch) {
-                return applyInventoryChange(lot, field, value, lotsAndCounts);
+                return applyInventoryChange(
+                    lot,
+                    field,
+                    value,
+                    filterInventoryByQty(lotsAndCounts, lot.workOrderQty)
+                );
             }
 
             return {
@@ -2684,9 +2738,15 @@ const NewOrder = () => {
         setLotQtyAlert("");
 
         const updateColor = (color) => {
-            // picking a LOT selects its yarn count and PI automatically
+            // picking a LOT selects its yarn count and PI automatically.
+            // Only the stock that can cover this color's qty is used.
             if (INVENTORY_FIELDS.has(field)) {
-                return applyInventoryChange(color, field, value, lotsAndCounts);
+                return applyInventoryChange(
+                    color,
+                    field,
+                    value,
+                    filterInventoryByQty(lotsAndCounts, color.qty)
+                );
             }
 
             return {
@@ -3300,341 +3360,341 @@ const NewOrder = () => {
 
     const sidebarBody = (
         <>
-                        {/* Job Search */}
-                        <div
-                            ref={searchBoxRef}
-                            className="relative mb-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
-                        >
-                            <div className="mb-3 flex items-center gap-2">
-                                <Search size={16} className="text-slate-500" />
-                                <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-700">
-                                    Search Job
-                                </h4>
+            {/* Job Search */}
+            <div
+                ref={searchBoxRef}
+                className="relative mb-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
+            >
+                <div className="mb-3 flex items-center gap-2">
+                    <Search size={16} className="text-slate-500" />
+                    <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-700">
+                        Search Job
+                    </h4>
+                </div>
+
+                <div className="relative">
+                    <input
+                        type="text"
+                        value={searchJobNo}
+                        disabled={isBusy}
+                        onChange={(e) => {
+                            setSearchJobNo(e.target.value);
+                            setShowSearchResults(true);
+                        }}
+                        onFocus={() => {
+                            if (searchJobNo.trim()) {
+                                setShowSearchResults(true);
+                            }
+                        }}
+                        onKeyDown={(e) => {
+                            if (e.key === "Escape") {
+                                setShowSearchResults(false);
+                            }
+                        }}
+                        placeholder="Type Job No..."
+                        autoComplete="off"
+                        className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 pr-10 text-sm text-slate-800 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    />
+
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400">
+                        {isSearchingJobs ? (
+                            <Loader2 size={17} className="animate-spin" />
+                        ) : (
+                            <Search size={17} />
+                        )}
+                    </span>
+                </div>
+
+                <p className="mt-2 text-[11px] text-slate-400">
+                    Search by Job No only. Results load 1 second after typing stops.
+                </p>
+
+                {showSearchResults && searchJobNo.trim() && (
+                    <div className="absolute left-0 right-0 top-full z-30 mt-2 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
+                        {isSearchingJobs ? (
+                            <div className="flex items-center justify-center gap-2 px-4 py-5 text-xs text-slate-500">
+                                <Loader2 size={16} className="animate-spin" />
+                                Searching Job No...
                             </div>
-
-                            <div className="relative">
-                                <input
-                                    type="text"
-                                    value={searchJobNo}
-                                    disabled={isBusy}
-                                    onChange={(e) => {
-                                        setSearchJobNo(e.target.value);
-                                        setShowSearchResults(true);
-                                    }}
-                                    onFocus={() => {
-                                        if (searchJobNo.trim()) {
-                                            setShowSearchResults(true);
-                                        }
-                                    }}
-                                    onKeyDown={(e) => {
-                                        if (e.key === "Escape") {
-                                            setShowSearchResults(false);
-                                        }
-                                    }}
-                                    placeholder="Type Job No..."
-                                    autoComplete="off"
-                                    className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 pr-10 text-sm text-slate-800 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
-                                />
-
-                                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400">
-                                    {isSearchingJobs ? (
-                                        <Loader2 size={17} className="animate-spin" />
-                                    ) : (
-                                        <Search size={17} />
-                                    )}
-                                </span>
-                            </div>
-
-                            <p className="mt-2 text-[11px] text-slate-400">
-                                Search by Job No only. Results load 1 second after typing stops.
-                            </p>
-
-                            {showSearchResults && searchJobNo.trim() && (
-                                <div className="absolute left-0 right-0 top-full z-30 mt-2 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
-                                    {isSearchingJobs ? (
-                                        <div className="flex items-center justify-center gap-2 px-4 py-5 text-xs text-slate-500">
-                                            <Loader2 size={16} className="animate-spin" />
-                                            Searching Job No...
-                                        </div>
-                                    ) : searchResults.length > 0 ? (
-                                        <div className="max-h-80 overflow-y-auto">
-                                            <div className="border-b border-slate-100 bg-slate-50 px-4 py-2">
-                                                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                                                    {searchResults.length} matching job(s)
-                                                </p>
-                                            </div>
-
-                                            {searchResults.map((job, index) => (
-                                                <button
-                                                    key={job.id || `${job.jobNo}-${index}`}
-                                                    type="button"
-                                                    onClick={() => handleSelectSearchJob(job)}
-                                                    className="flex w-full items-start justify-between gap-3 border-b border-slate-50 px-4 py-3 text-left transition-colors last:border-b-0 hover:bg-slate-50"
-                                                >
-                                                    <div className="min-w-0">
-                                                        <p className="truncate text-sm font-semibold text-slate-800">
-                                                            {job.jobNo}
-                                                        </p>
-
-                                                        <p className="mt-1 truncate text-xs text-slate-500">
-                                                            Buyer: {job.buyerName || "—"}
-                                                        </p>
-
-                                                        <p className="mt-0.5 truncate text-xs text-slate-400">
-                                                            Style: {job.styleNo || "—"}
-                                                        </p>
-                                                    </div>
-
-                                                    <span className="mt-1 shrink-0 text-slate-400">
-                                                        <CheckCircle2 size={16} />
-                                                    </span>
-                                                </button>
-                                            ))}
-                                        </div>
-                                    ) : (
-                                        <div className="px-4 py-6 text-center">
-                                            <Search
-                                                size={22}
-                                                className="mx-auto mb-2 text-slate-300"
-                                            />
-                                            <p className="text-xs font-medium text-slate-600">
-                                                No matching Job No found
-                                            </p>
-                                            <p className="mt-1 text-[11px] text-slate-400">
-                                                Try another Job No.
-                                            </p>
-                                        </div>
-                                    )}
-                                </div>
-                            )}
-
-                            <div className="mt-3 rounded-lg bg-slate-50 px-3 py-2">
-                                <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
-                                    Currently selected
-                                </p>
-                                <p className="mt-1 truncate text-sm font-semibold text-slate-800">
-                                    {activeJobNo || "No Job selected"}
-                                </p>
-                            </div>
-                        </div>
-
-                        {/* Order Summary */}
-                        <div className="mb-8 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-                            <div className="flex items-center gap-2 border-b border-slate-100 bg-slate-50/60 px-5 py-3">
-                                <FileText size={15} className="text-slate-500" />
-                                <h4 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">
-                                    Order Summary
-                                </h4>
-                            </div>
-
-                            <div className="space-y-3 px-5 py-4">
-                                <div className="flex items-center justify-between">
-                                    <span className="flex items-center gap-2 text-sm text-slate-600">
-                                        <Package size={14} className="text-slate-400" />
-                                        Total Order Qty
-                                    </span>
-
-                                    <span className="text-sm font-medium tabular-nums text-slate-900">
-                                        {styleTotals.totalOrderQty.toLocaleString()}
-                                        <span className="ml-1 text-xs text-slate-400">PCS</span>
-                                    </span>
-                                </div>
-
-                                <div className="flex items-center justify-between">
-                                    <span className="flex items-center gap-2 text-sm text-slate-600">
-                                        <Package size={14} className="text-slate-400" />
-                                        Yarn Required Qty
-                                        {hasValue(styleData?.processLoss) && (
-                                            <span className="text-[11px] text-slate-400">
-                                                (+{toNum(styleData.processLoss)}% loss)
-                                            </span>
-                                        )}
-                                    </span>
-
-                                    <span className="text-sm font-medium tabular-nums text-slate-900">
-                                        {totalRequireQty}
-                                        <span className="ml-1 text-xs text-slate-400">KG</span>
-                                    </span>
-                                </div>
-
-                                <div className="flex items-center justify-between">
-                                    <span className="flex items-center gap-2 text-sm text-slate-600">
-                                        <Package size={14} className="text-slate-400" />
-                                        Previous Work Order Qty
-                                    </span>
-
-                                    <span className="text-sm font-medium tabular-nums text-slate-900">
-                                        {alreadyBookedTotal.toLocaleString()}
-                                        <span className="ml-1 text-xs text-slate-400">KG</span>
-                                    </span>
-                                </div>
-
-                                <div className="flex items-center justify-between">
-                                    <span className="flex items-center gap-2 text-sm text-slate-600">
-                                        <Package size={14} className="text-slate-400" />
-                                        New Work Order Qty
-                                    </span>
-
-                                    <span className="text-sm font-medium tabular-nums text-slate-900">
-                                        {totals.totalWorkOrderQty.toLocaleString()}
-                                        <span className="ml-1 text-xs text-slate-400">KG</span>
-                                    </span>
-                                </div>
-
-                                <div className="flex items-center justify-between border-t border-slate-100 pt-2">
-                                    <span className="text-xs text-slate-500">
-                                        Work Short &amp; Excess
-                                    </span>
-
-                                    <span
-                                        className={`text-xs font-semibold tabular-nums ${alreadyBookedTotal -
-                                            Number(totalRequireQty) +
-                                            totals.totalWorkOrderQty < 0
-                                            ? "text-green-600"
-                                            : "text-red-600"
-                                            }`}
-                                    >
-                                        {Math.abs(
-                                            alreadyBookedTotal -
-                                            Number(totalRequireQty) +
-                                            totals.totalWorkOrderQty
-                                        ).toFixed(2)}
-                                    </span>
-                                </div>
-
-                                <div className="flex items-center justify-between border-t border-slate-100 pt-2">
-                                    <span className="text-xs text-slate-500">
-                                        Work Orders Created
-                                    </span>
-
-                                    <span className="text-xs font-semibold tabular-nums text-slate-700">
-                                        {totals.compositionsWithWorkOrder} / {totals.totalRows} compositions
-                                    </span>
-                                </div>
-                            </div>
-
-                            <div className="border-t border-slate-100 bg-slate-50/60 px-5 py-4">
-                                <p className="text-[11px] font-medium uppercase tracking-wider text-slate-500">
-                                    Estimated Total
-                                </p>
-
-                                <p className="mt-1 text-2xl font-semibold tracking-tight tabular-nums text-slate-900">
-                                    {totals.totalAmount.toLocaleString(undefined, {
-                                        minimumFractionDigits: 2,
-                                        maximumFractionDigits: 2,
-                                    })}
-                                    <span className="ml-1.5 text-xs font-medium text-slate-400">
-                                        BDT
-                                    </span>
-                                </p>
-                            </div>
-                        </div>
-
-                        {/* Factory Wise Total */}
-                        <div className="mb-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-                            <div className="flex items-center gap-2 border-b border-slate-100 bg-slate-50/60 px-5 py-3">
-                                <Building2 size={15} className="text-slate-500" />
-                                <h4 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">
-                                    Factory wise total work order qty
-                                </h4>
-                            </div>
-
-                            {isFactoryDataLoading ? (
-                                <div className="space-y-4 px-5 py-4">
-                                    {[...Array(3)].map((_, index) => (
-                                        <div
-                                            key={index}
-                                            className="flex animate-pulse items-center justify-between"
-                                        >
-                                            <div className="h-3.5 w-28 rounded bg-slate-200" />
-                                            <div className="h-3.5 w-16 rounded bg-slate-200" />
-                                        </div>
-                                    ))}
-                                </div>
-                            ) : factoryData.length ? (
-                                factoryData.map((fact, index) => (
-                                    <div
-                                        key={fact.factoryName || index}
-                                        className="px-5 py-4"
-                                    >
-                                        <div className="flex items-center justify-between">
-                                            <span className="flex items-center gap-2 text-sm text-slate-600">
-                                                <Building size={14} className="text-slate-400" />
-                                                {fact.factoryName}
-                                            </span>
-
-                                            <span className="text-sm font-medium tabular-nums text-slate-900">
-                                                {Number(fact.workOrderQty).toFixed(2)}
-                                                <span className="ml-1 text-xs text-slate-400">KG</span>
-                                            </span>
-                                        </div>
-                                    </div>
-                                ))
-                            ) : (
-                                <div className="px-5 py-6 text-center text-xs text-slate-400">
-                                    No factory data available
-                                </div>
-                            )}
-                        </div>
-
-                        {/* Factory Names */}
-                        <div className="mb-3 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-                            <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50/60 px-5 py-3">
-                                <div className="flex items-center gap-2">
-                                    <Building2 size={15} className="text-slate-500" />
-                                    <h4 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">
-                                        Factory Names
-                                    </h4>
-                                </div>
-
-                                <span className="text-[11px] font-semibold tabular-nums text-slate-400">
-                                    {filteredFactories.length}
-                                    {formData.factoryName.trim()
-                                        ? ` / ${factories.length}`
-                                        : ""}
-                                </span>
-                            </div>
-
-                            {isFactoriesLoading ? (
-                                <div className="space-y-4 px-5 py-4">
-                                    {[...Array(3)].map((_, index) => (
-                                        <div
-                                            key={index}
-                                            className="h-3.5 w-32 animate-pulse rounded bg-slate-200"
-                                        />
-                                    ))}
-                                </div>
-                            ) : filteredFactories.length > 0 ? (
-                                <div className="max-h-72 divide-y divide-slate-50 overflow-y-auto">
-                                    {filteredFactories.map((factoryName, index) => (
-                                        <button
-                                            key={`${factoryName}-${index}`}
-                                            type="button"
-                                            disabled={isBusy}
-                                            onClick={() => handleSelectFactory(factoryName)}
-                                            title={`Use ${factoryName}`}
-                                            className="flex w-full items-center gap-2 px-5 py-3 text-left hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-                                        >
-                                            <Building size={14} className="shrink-0 text-slate-400" />
-                                            <span className="truncate text-xs text-slate-600">
-                                                {factoryName}
-                                            </span>
-                                        </button>
-                                    ))}
-                                </div>
-                            ) : (
-                                <div className="px-5 py-6 text-center">
-                                    <Building2 size={22} className="mx-auto mb-2 text-slate-300" />
-                                    <p className="text-xs text-slate-400">
-                                        {!orderType
-                                            ? "Select an order type to load factories"
-                                            : formData.factoryName.trim()
-                                                ? "No matching factory found"
-                                                : "No factory names available"}
+                        ) : searchResults.length > 0 ? (
+                            <div className="max-h-80 overflow-y-auto">
+                                <div className="border-b border-slate-100 bg-slate-50 px-4 py-2">
+                                    <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                                        {searchResults.length} matching job(s)
                                     </p>
                                 </div>
+
+                                {searchResults.map((job, index) => (
+                                    <button
+                                        key={job.id || `${job.jobNo}-${index}`}
+                                        type="button"
+                                        onClick={() => handleSelectSearchJob(job)}
+                                        className="flex w-full items-start justify-between gap-3 border-b border-slate-50 px-4 py-3 text-left transition-colors last:border-b-0 hover:bg-slate-50"
+                                    >
+                                        <div className="min-w-0">
+                                            <p className="truncate text-sm font-semibold text-slate-800">
+                                                {job.jobNo}
+                                            </p>
+
+                                            <p className="mt-1 truncate text-xs text-slate-500">
+                                                Buyer: {job.buyerName || "—"}
+                                            </p>
+
+                                            <p className="mt-0.5 truncate text-xs text-slate-400">
+                                                Style: {job.styleNo || "—"}
+                                            </p>
+                                        </div>
+
+                                        <span className="mt-1 shrink-0 text-slate-400">
+                                            <CheckCircle2 size={16} />
+                                        </span>
+                                    </button>
+                                ))}
+                            </div>
+                        ) : (
+                            <div className="px-4 py-6 text-center">
+                                <Search
+                                    size={22}
+                                    className="mx-auto mb-2 text-slate-300"
+                                />
+                                <p className="text-xs font-medium text-slate-600">
+                                    No matching Job No found
+                                </p>
+                                <p className="mt-1 text-[11px] text-slate-400">
+                                    Try another Job No.
+                                </p>
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                <div className="mt-3 rounded-lg bg-slate-50 px-3 py-2">
+                    <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                        Currently selected
+                    </p>
+                    <p className="mt-1 truncate text-sm font-semibold text-slate-800">
+                        {activeJobNo || "No Job selected"}
+                    </p>
+                </div>
+            </div>
+
+            {/* Order Summary */}
+            <div className="mb-8 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                <div className="flex items-center gap-2 border-b border-slate-100 bg-slate-50/60 px-5 py-3">
+                    <FileText size={15} className="text-slate-500" />
+                    <h4 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">
+                        Order Summary
+                    </h4>
+                </div>
+
+                <div className="space-y-3 px-5 py-4">
+                    <div className="flex items-center justify-between">
+                        <span className="flex items-center gap-2 text-sm text-slate-600">
+                            <Package size={14} className="text-slate-400" />
+                            Total Order Qty
+                        </span>
+
+                        <span className="text-sm font-medium tabular-nums text-slate-900">
+                            {styleTotals.totalOrderQty.toLocaleString()}
+                            <span className="ml-1 text-xs text-slate-400">PCS</span>
+                        </span>
+                    </div>
+
+                    <div className="flex items-center justify-between">
+                        <span className="flex items-center gap-2 text-sm text-slate-600">
+                            <Package size={14} className="text-slate-400" />
+                            Yarn Required Qty
+                            {hasValue(styleData?.processLoss) && (
+                                <span className="text-[11px] text-slate-400">
+                                    (+{toNum(styleData.processLoss)}% loss)
+                                </span>
                             )}
+                        </span>
+
+                        <span className="text-sm font-medium tabular-nums text-slate-900">
+                            {totalRequireQty}
+                            <span className="ml-1 text-xs text-slate-400">KG</span>
+                        </span>
+                    </div>
+
+                    <div className="flex items-center justify-between">
+                        <span className="flex items-center gap-2 text-sm text-slate-600">
+                            <Package size={14} className="text-slate-400" />
+                            Previous Work Order Qty
+                        </span>
+
+                        <span className="text-sm font-medium tabular-nums text-slate-900">
+                            {alreadyBookedTotal.toLocaleString()}
+                            <span className="ml-1 text-xs text-slate-400">KG</span>
+                        </span>
+                    </div>
+
+                    <div className="flex items-center justify-between">
+                        <span className="flex items-center gap-2 text-sm text-slate-600">
+                            <Package size={14} className="text-slate-400" />
+                            New Work Order Qty
+                        </span>
+
+                        <span className="text-sm font-medium tabular-nums text-slate-900">
+                            {totals.totalWorkOrderQty.toLocaleString()}
+                            <span className="ml-1 text-xs text-slate-400">KG</span>
+                        </span>
+                    </div>
+
+                    <div className="flex items-center justify-between border-t border-slate-100 pt-2">
+                        <span className="text-xs text-slate-500">
+                            Work Short &amp; Excess
+                        </span>
+
+                        <span
+                            className={`text-xs font-semibold tabular-nums ${alreadyBookedTotal -
+                                Number(totalRequireQty) +
+                                totals.totalWorkOrderQty < 0
+                                ? "text-green-600"
+                                : "text-red-600"
+                                }`}
+                        >
+                            {Math.abs(
+                                alreadyBookedTotal -
+                                Number(totalRequireQty) +
+                                totals.totalWorkOrderQty
+                            ).toFixed(2)}
+                        </span>
+                    </div>
+
+                    <div className="flex items-center justify-between border-t border-slate-100 pt-2">
+                        <span className="text-xs text-slate-500">
+                            Work Orders Created
+                        </span>
+
+                        <span className="text-xs font-semibold tabular-nums text-slate-700">
+                            {totals.compositionsWithWorkOrder} / {totals.totalRows} compositions
+                        </span>
+                    </div>
+                </div>
+
+                <div className="border-t border-slate-100 bg-slate-50/60 px-5 py-4">
+                    <p className="text-[11px] font-medium uppercase tracking-wider text-slate-500">
+                        Estimated Total
+                    </p>
+
+                    <p className="mt-1 text-2xl font-semibold tracking-tight tabular-nums text-slate-900">
+                        {totals.totalAmount.toLocaleString(undefined, {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                        })}
+                        <span className="ml-1.5 text-xs font-medium text-slate-400">
+                            BDT
+                        </span>
+                    </p>
+                </div>
+            </div>
+
+            {/* Factory Wise Total */}
+            <div className="mb-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                <div className="flex items-center gap-2 border-b border-slate-100 bg-slate-50/60 px-5 py-3">
+                    <Building2 size={15} className="text-slate-500" />
+                    <h4 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">
+                        Factory wise total work order qty
+                    </h4>
+                </div>
+
+                {isFactoryDataLoading ? (
+                    <div className="space-y-4 px-5 py-4">
+                        {[...Array(3)].map((_, index) => (
+                            <div
+                                key={index}
+                                className="flex animate-pulse items-center justify-between"
+                            >
+                                <div className="h-3.5 w-28 rounded bg-slate-200" />
+                                <div className="h-3.5 w-16 rounded bg-slate-200" />
+                            </div>
+                        ))}
+                    </div>
+                ) : factoryData.length ? (
+                    factoryData.map((fact, index) => (
+                        <div
+                            key={fact.factoryName || index}
+                            className="px-5 py-4"
+                        >
+                            <div className="flex items-center justify-between">
+                                <span className="flex items-center gap-2 text-sm text-slate-600">
+                                    <Building size={14} className="text-slate-400" />
+                                    {fact.factoryName}
+                                </span>
+
+                                <span className="text-sm font-medium tabular-nums text-slate-900">
+                                    {Number(fact.workOrderQty).toFixed(2)}
+                                    <span className="ml-1 text-xs text-slate-400">KG</span>
+                                </span>
+                            </div>
                         </div>
+                    ))
+                ) : (
+                    <div className="px-5 py-6 text-center text-xs text-slate-400">
+                        No factory data available
+                    </div>
+                )}
+            </div>
+
+            {/* Factory Names */}
+            <div className="mb-3 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+                <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50/60 px-5 py-3">
+                    <div className="flex items-center gap-2">
+                        <Building2 size={15} className="text-slate-500" />
+                        <h4 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">
+                            Factory Names
+                        </h4>
+                    </div>
+
+                    <span className="text-[11px] font-semibold tabular-nums text-slate-400">
+                        {filteredFactories.length}
+                        {formData.factoryName.trim()
+                            ? ` / ${factories.length}`
+                            : ""}
+                    </span>
+                </div>
+
+                {isFactoriesLoading ? (
+                    <div className="space-y-4 px-5 py-4">
+                        {[...Array(3)].map((_, index) => (
+                            <div
+                                key={index}
+                                className="h-3.5 w-32 animate-pulse rounded bg-slate-200"
+                            />
+                        ))}
+                    </div>
+                ) : filteredFactories.length > 0 ? (
+                    <div className="max-h-72 divide-y divide-slate-50 overflow-y-auto">
+                        {filteredFactories.map((factoryName, index) => (
+                            <button
+                                key={`${factoryName}-${index}`}
+                                type="button"
+                                disabled={isBusy}
+                                onClick={() => handleSelectFactory(factoryName)}
+                                title={`Use ${factoryName}`}
+                                className="flex w-full items-center gap-2 px-5 py-3 text-left hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                                <Building size={14} className="shrink-0 text-slate-400" />
+                                <span className="truncate text-xs text-slate-600">
+                                    {factoryName}
+                                </span>
+                            </button>
+                        ))}
+                    </div>
+                ) : (
+                    <div className="px-5 py-6 text-center">
+                        <Building2 size={22} className="mx-auto mb-2 text-slate-300" />
+                        <p className="text-xs text-slate-400">
+                            {!orderType
+                                ? "Select an order type to load factories"
+                                : formData.factoryName.trim()
+                                    ? "No matching factory found"
+                                    : "No factory names available"}
+                        </p>
+                    </div>
+                )}
+            </div>
         </>
     );
 
@@ -3653,85 +3713,85 @@ const NewOrder = () => {
 
                 {/* Page Header */}
                 <div ref={topRef}>
-                <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
-                    <div>
-                        <p className="mt-1 text-sm text-slate-500">
-                            Job{" "}
-                            <span className="font-medium text-slate-700">
-                                {formData.jobNo || "—"}
-                            </span>
+                    <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
+                        <div>
+                            <p className="mt-1 text-sm text-slate-500">
+                                Job{" "}
+                                <span className="font-medium text-slate-700">
+                                    {formData.jobNo || "—"}
+                                </span>
 
-                            <span className="mx-2 text-slate-300">/</span>
+                                <span className="mx-2 text-slate-300">/</span>
 
-                            Style{" "}
-                            <span className="font-medium text-slate-700">
-                                {formData.style || "—"}
-                            </span>
+                                Style{" "}
+                                <span className="font-medium text-slate-700">
+                                    {formData.style || "—"}
+                                </span>
 
-                            <span className="mx-2 text-slate-300">/</span>
+                                <span className="mx-2 text-slate-300">/</span>
 
-                            Buyer{" "}
-                            <span className="font-medium text-slate-700">
-                                {formData.buyer || "—"}
-                            </span>
-                        </p>
+                                Buyer{" "}
+                                <span className="font-medium text-slate-700">
+                                    {formData.buyer || "—"}
+                                </span>
+                            </p>
+                        </div>
+
+                        <div className="flex items-center gap-3">
+                            {orderType && (
+                                <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium text-slate-600">
+                                    {orderType
+                                        .replace(/([A-Z])/g, " $1")
+                                        .replace(/^./, (c) => c.toUpperCase())}
+                                </span>
+                            )}
+
+                            <button
+                                type="button"
+                                onClick={handleRefreshRows}
+                                disabled={isBusy}
+                                title="Restore original compositions"
+                                className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                                <RefreshCw size={13} />
+                                Refresh Items
+                            </button>
+
+                            <button
+                                type="button"
+                                onClick={() => setAutoRedirect((prev) => !prev)}
+                                disabled={isBusy}
+                                className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-50 ${autoRedirect
+                                    ? "border-primary-200 bg-primary-50 text-primary-700"
+                                    : "border-slate-200 bg-white text-slate-500"
+                                    }`}
+                            >
+                                {autoRedirect
+                                    ? <ToggleRight size={15} />
+                                    : <ToggleLeft size={15} />}
+
+                                Redirect after save: {autoRedirect ? "On" : "Off"}
+                            </button>
+
+                            <button
+                                type="button"
+                                onClick={handleToggleSummaryPin}
+                                aria-pressed={isSummaryPinned}
+                                title={
+                                    isSummaryPinned
+                                        ? "Unpin the summary panel"
+                                        : "Pin the summary panel"
+                                }
+                                className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium transition ${isSummaryPinned
+                                    ? "border-indigo-200 bg-indigo-50 text-indigo-700"
+                                    : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
+                                    }`}
+                            >
+                                {isSummaryPinned ? <Pin size={13} /> : <PinOff size={13} />}
+                                Summary: {isSummaryPinned ? "Pinned" : "Unpinned"}
+                            </button>
+                        </div>
                     </div>
-
-                    <div className="flex items-center gap-3">
-                        {orderType && (
-                            <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium text-slate-600">
-                                {orderType
-                                    .replace(/([A-Z])/g, " $1")
-                                    .replace(/^./, (c) => c.toUpperCase())}
-                            </span>
-                        )}
-
-                        <button
-                            type="button"
-                            onClick={handleRefreshRows}
-                            disabled={isBusy}
-                            title="Restore original compositions"
-                            className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                            <RefreshCw size={13} />
-                            Refresh Items
-                        </button>
-
-                        <button
-                            type="button"
-                            onClick={() => setAutoRedirect((prev) => !prev)}
-                            disabled={isBusy}
-                            className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-50 ${autoRedirect
-                                ? "border-primary-200 bg-primary-50 text-primary-700"
-                                : "border-slate-200 bg-white text-slate-500"
-                                }`}
-                        >
-                            {autoRedirect
-                                ? <ToggleRight size={15} />
-                                : <ToggleLeft size={15} />}
-
-                            Redirect after save: {autoRedirect ? "On" : "Off"}
-                        </button>
-
-                        <button
-                            type="button"
-                            onClick={handleToggleSummaryPin}
-                            aria-pressed={isSummaryPinned}
-                            title={
-                                isSummaryPinned
-                                    ? "Unpin the summary panel"
-                                    : "Pin the summary panel"
-                            }
-                            className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium transition ${isSummaryPinned
-                                ? "border-indigo-200 bg-indigo-50 text-indigo-700"
-                                : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
-                                }`}
-                        >
-                            {isSummaryPinned ? <Pin size={13} /> : <PinOff size={13} />}
-                            Summary: {isSummaryPinned ? "Pinned" : "Unpinned"}
-                        </button>
-                    </div>
-                </div>
                 </div>
 
                 {/* The box height is calculated from the screen: it fills everything under the page header */}
@@ -3740,618 +3800,657 @@ const NewOrder = () => {
                     className="overflow-y-auto overflow-x-hidden"
                     style={{ height: fit.height, boxSizing: "border-box" }}
                 >
-                <div
-                    className={`grid grid-cols-1 items-start gap-6 ${isSummaryPinned ? "xl:grid-cols-[minmax(0,1fr)_390px]" : ""}`}
-                >
-                    {/* Main Content (locked while saving) */}
                     <div
-                        className={`min-w-0 space-y-6 ${isBusy ? "pointer-events-none opacity-70" : ""}`}
-                        aria-busy={isBusy}
+                        className={`grid grid-cols-1 items-start gap-6 ${isSummaryPinned ? "xl:grid-cols-[minmax(0,1fr)_390px]" : ""}`}
                     >
-                        {/* Work Order Details */}
-                        <SectionCard
-                            icon={ClipboardList}
-                            title="Work Order Details"
-                            description="Basic identification for this work order"
+                        {/* Main Content (locked while saving) */}
+                        <div
+                            className={`min-w-0 space-y-6 ${isBusy ? "pointer-events-none opacity-70" : ""}`}
+                            aria-busy={isBusy}
                         >
-                            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-4">
-                                <Input
-                                    label="Work Order Place Date"
-                                    name="workOrderPlaceDate"
-                                    type="date"
-                                    value={formData.workOrderPlaceDate}
-                                    onChange={handleChange}
-                                    required
-                                    isShowOutLabel
-                                />
+                            {/* Work Order Details */}
+                            <SectionCard
+                                icon={ClipboardList}
+                                title="Work Order Details"
+                                description="Basic identification for this work order"
+                            >
+                                <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-4">
+                                    <Input
+                                        label="Work Order Place Date"
+                                        name="workOrderPlaceDate"
+                                        type="date"
+                                        value={formData.workOrderPlaceDate}
+                                        onChange={handleChange}
+                                        required
+                                        isShowOutLabel
+                                    />
 
-                                <Input
-                                    label="Work Order No"
-                                    name="workOrderNo"
-                                    type="text"
-                                    value={formData.workOrderNo}
-                                    onChange={handleChange}
-                                    placeholder="Enter work order number"
-                                    isShowOutLabel
-                                    required
-                                />
+                                    <Input
+                                        label="Work Order No"
+                                        name="workOrderNo"
+                                        type="text"
+                                        value={formData.workOrderNo}
+                                        onChange={handleChange}
+                                        placeholder="Enter work order number"
+                                        isShowOutLabel
+                                        required
+                                    />
 
-                                <Input
-                                    label="Month"
-                                    name="month"
-                                    type="select"
-                                    value={formData.month}
-                                    onChange={handleChange}
-                                    placeholder="Select Month"
-                                    options={MONTH_OPTIONS}
-                                    isShowOutLabel
-                                    required
-                                />
+                                    <Input
+                                        label="Month"
+                                        name="month"
+                                        type="select"
+                                        value={formData.month}
+                                        onChange={handleChange}
+                                        placeholder="Select Month"
+                                        options={MONTH_OPTIONS}
+                                        isShowOutLabel
+                                        required
+                                    />
 
-                                <Input
-                                    label="Job No"
-                                    name="jobNo"
-                                    readOnly
-                                    value={formData.jobNo}
-                                    placeholder="e.g. SM26-3429/JAN"
-                                    isShowOutLabel
-                                />
+                                    <Input
+                                        label="Job No"
+                                        name="jobNo"
+                                        readOnly
+                                        value={formData.jobNo}
+                                        placeholder="e.g. SM26-3429/JAN"
+                                        isShowOutLabel
+                                    />
 
-                                {/* Order type picker */}
-                                <div className="sm:col-span-2 xl:col-span-4">
-                                    <label className="mb-1.5 block text-xs font-medium text-slate-600">
-                                        Order Type <span className="text-red-500">*</span>
-                                    </label>
+                                    {/* Order type picker */}
+                                    <div className="sm:col-span-2 xl:col-span-4">
+                                        <label className="mb-1.5 block text-xs font-medium text-slate-600">
+                                            Order Type <span className="text-red-500">*</span>
+                                        </label>
 
-                                    <div
-                                        role="radiogroup"
-                                        aria-label="Order type"
-                                        className="grid grid-cols-2 gap-2 sm:grid-cols-4"
-                                    >
-                                        {ORDER_TYPE_OPTIONS.map((option) => {
-                                            const selected = orderType === option.value;
+                                        <div
+                                            role="radiogroup"
+                                            aria-label="Order type"
+                                            className="grid grid-cols-2 gap-2 sm:grid-cols-4"
+                                        >
+                                            {ORDER_TYPE_OPTIONS.map((option) => {
+                                                const selected = orderType === option.value;
 
-                                            return (
-                                                <button
-                                                    key={option.value}
-                                                    type="button"
-                                                    role="radio"
-                                                    aria-checked={selected}
-                                                    onClick={() => handleSelectOrderType(option.value)}
-                                                    className={`flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-sm font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300 ${selected
-                                                        ? "border-indigo-500 bg-indigo-50 text-indigo-700 shadow-sm ring-1 ring-indigo-200"
-                                                        : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50"
-                                                        }`}
-                                                >
-                                                    <span className={`h-2 w-2 rounded-full ${option.dot}`} />
-                                                    {option.label}
-                                                </button>
-                                            );
-                                        })}
+                                                return (
+                                                    <button
+                                                        key={option.value}
+                                                        type="button"
+                                                        role="radio"
+                                                        aria-checked={selected}
+                                                        onClick={() => handleSelectOrderType(option.value)}
+                                                        className={`flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-sm font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300 ${selected
+                                                            ? "border-indigo-500 bg-indigo-50 text-indigo-700 shadow-sm ring-1 ring-indigo-200"
+                                                            : "border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50"
+                                                            }`}
+                                                    >
+                                                        <span className={`h-2 w-2 rounded-full ${option.dot}`} />
+                                                        {option.label}
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
                                     </div>
                                 </div>
-                            </div>
-                        </SectionCard>
+                            </SectionCard>
 
-                        {/* Compositions */}
-                        <SectionCard
-                            icon={Layers}
-                            title="Compositions"
-                            description="Quantities and process parameters per composition"
-                            aside={
-                                <span className="shrink-0 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold tracking-wide text-slate-500">
-                                    {totals.totalRows}{" "}
-                                    {totals.totalRows === 1 ? "ITEM" : "ITEMS"}
-                                </span>
-                            }
-                        >
-                            <div className="space-y-5">
-                                {/* The job already has a base work order: lots are limited to it */}
-                                {isLimitedToBase && (
-                                    <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs text-amber-800">
-                                        <AlertCircle size={14} className="mt-0.5 shrink-0" />
-                                        <p>
-                                            A <span className="font-semibold">{baseOrderLabel}</span> work
-                                            order was created first for this job, so only its lots, yarn
-                                            counts and PI numbers can be selected. The available qty of a
-                                            lot is the {baseOrderLabel} qty minus what earlier{" "}
-                                            {currentOrderLabel} work orders already used, and your selected
-                                            qty is deducted from it.
-                                            {orderType === "knittingOrder" &&
-                                                lotSource.baseOrderType === "yarnDyeingOrder" &&
-                                                " Pick the Y/D batch on each line."}
-                                        </p>
-                                    </div>
-                                )}
+                            {/* Compositions */}
+                            <SectionCard
+                                icon={Layers}
+                                title="Compositions"
+                                description="Quantities and process parameters per composition"
+                                aside={
+                                    <span className="shrink-0 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-semibold tracking-wide text-slate-500">
+                                        {totals.totalRows}{" "}
+                                        {totals.totalRows === 1 ? "ITEM" : "ITEMS"}
+                                    </span>
+                                }
+                            >
+                                <div className="space-y-5">
+                                    {/* The job already has a base work order: lots are limited to it */}
+                                    {isLimitedToBase && (
+                                        <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs text-amber-800">
+                                            <AlertCircle size={14} className="mt-0.5 shrink-0" />
+                                            <p>
+                                                A <span className="font-semibold">{baseOrderLabel}</span> work
+                                                order was created first for this job, so only its lots, yarn
+                                                counts and PI numbers can be selected. The available qty of a
+                                                lot is the {baseOrderLabel} qty minus what earlier{" "}
+                                                {currentOrderLabel} work orders already used, and your selected
+                                                qty is deducted from it.
+                                                {orderType === "knittingOrder" &&
+                                                    lotSource.baseOrderType === "yarnDyeingOrder" &&
+                                                    " Pick the Y/D batch on each line."}
+                                            </p>
+                                        </div>
+                                    )}
 
-                                {/* Auto-fill info: values taken from the job's base work order */}
-                                {prefilledLineCount > 0 && prefillSourceLabel && (
-                                    <div className="flex items-start gap-2 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2.5 text-xs text-indigo-800">
-                                        <Sparkles size={14} className="mt-0.5 shrink-0" />
-                                        <p>
-                                            Lot, yarn count, PI No and qty were selected automatically from the{" "}
-                                            <span className="font-semibold">{prefillSourceLabel}</span>{" "}
-                                            work order already created for this job. Review them and change
-                                            anything you need before saving.
-                                        </p>
-                                    </div>
-                                )}
+                                    {/* Auto-fill info: values taken from the job's base work order */}
+                                    {prefilledLineCount > 0 && prefillSourceLabel && (
+                                        <div className="flex items-start gap-2 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2.5 text-xs text-indigo-800">
+                                            <Sparkles size={14} className="mt-0.5 shrink-0" />
+                                            <p>
+                                                Lot, yarn count, PI No and qty were selected automatically from the{" "}
+                                                <span className="font-semibold">{prefillSourceLabel}</span>{" "}
+                                                work order already created for this job. Review them and change
+                                                anything you need before saving.
+                                            </p>
+                                        </div>
+                                    )}
 
-                                {rows.map((styleRow, index) => {
-                                    const comp =
-                                        compBreakdownObj[
-                                        styleRow.styleRequirementRowId ??
-                                        styleRow.id
-                                        ];
+                                    {rows.map((styleRow, index) => {
+                                        const comp =
+                                            compBreakdownObj[
+                                            styleRow.styleRequirementRowId ??
+                                            styleRow.id
+                                            ];
 
-                                    const dyeingQty =
-                                        comp?.dyeingOrder_workOrderQty ?? 0;
+                                        const dyeingQty =
+                                            comp?.dyeingOrder_workOrderQty ?? 0;
 
-                                    const knittingQty =
-                                        comp?.knittingOrder_workOrderQty ?? 0;
+                                        const knittingQty =
+                                            comp?.knittingOrder_workOrderQty ?? 0;
 
-                                    const aopQty =
-                                        comp?.aopOrder_workOrderQty ?? 0;
+                                        const aopQty =
+                                            comp?.aopOrder_workOrderQty ?? 0;
 
-                                    const requireQty = calcRequireQty(
-                                        styleRow,
-                                        styleTotals.processLoss
-                                    ).toFixed(2);
+                                        const requireQty = calcRequireQty(
+                                            styleRow,
+                                            styleTotals.processLoss
+                                        ).toFixed(2);
 
-                                    const lotList = styleRow.lots ?? [defaultLot()];
-                                    const colorList =
-                                        styleRow.yarnColors ?? [defaultYarnColor()];
+                                        const lotList = styleRow.lots ?? [defaultLot()];
+                                        const colorList =
+                                            styleRow.yarnColors ?? [defaultYarnColor()];
 
 
-                                    // AOP / Dyeing: the lots / counts / PIs of the list
-                                    // (full stock the first time, otherwise the base order's lots).
-                                    // Lot is picked first: its yarn count and PI are selected automatically.
-                                    const chosenCompactLot = String(lotList[0]?.lotNo ?? "").trim();
-                                    const chosenCompactCount = String(lotList[0]?.yarnCount ?? "").trim();
+                                        // AOP / Dyeing: the lots / counts / PIs of the list
+                                        // (full stock the first time, otherwise the base order's lots).
+                                        // QTY FILTER: only stock whose available qty is the typed
+                                        // Work Order Qty or more is offered.
+                                        // Lot is picked first: its yarn count and PI are selected automatically.
+                                        const compactQty = lotList[0]?.workOrderQty;
+                                        const compactNeedQty = toNum(compactQty);
 
-                                    // only the yarn counts of the chosen lot (every count until a lot is chosen)
-                                    const compactCountOptions = isCompact
-                                        ? getCompactCountOptions(lotsAndCounts, chosenCompactLot)
-                                        : [];
+                                        const compactStock = isCompact
+                                            ? filterInventoryByQty(lotsAndCounts, compactQty)
+                                            : [];
 
-                                    const compactLotOptions = isCompact
-                                        ? getAllCompactLots(lotsAndCounts)
-                                        : [];
+                                        const compactFilterActive =
+                                            isCompact &&
+                                            compactNeedQty > 0 &&
+                                            lotsAndCounts.length > 0 &&
+                                            !isLotsAndCountsLoading;
 
-                                    // PIs of the chosen lot + count (balance attached)
-                                    const compactPiOptions = isCompact
-                                        ? getCompactPiOptions(
-                                            lotsAndCounts,
-                                            chosenCompactLot,
-                                            chosenCompactCount
-                                                        )
-                                        : [];
+                                        const chosenCompactLot = String(lotList[0]?.lotNo ?? "").trim();
+                                        const chosenCompactCount = String(lotList[0]?.yarnCount ?? "").trim();
 
-                                    const renderRemaining = (qty) => {
-                                        const remaining =
-                                            Number(qty) - Number(requireQty);
+                                        // only the yarn counts of the chosen lot (every count until a lot is chosen)
+                                        const compactCountOptions = isCompact
+                                            ? getCompactCountOptions(compactStock, chosenCompactLot)
+                                            : [];
+
+                                        const compactLotOptions = isCompact
+                                            ? getAllCompactLots(compactStock)
+                                            : [];
+
+                                        // PIs of the chosen lot + count (balance attached)
+                                        const compactPiOptions = isCompact
+                                            ? getCompactPiOptions(
+                                                compactStock,
+                                                chosenCompactLot,
+                                                chosenCompactCount
+                                            )
+                                            : [];
+
+                                        const renderRemaining = (qty) => {
+                                            const remaining =
+                                                Number(qty) - Number(requireQty);
+
+                                            return (
+                                                <span
+                                                    className={`inline-flex rounded-md border px-2 py-0.5 text-[11px] font-semibold ${remaining < 0
+                                                        ? "border-green-200 bg-green-50 text-green-700"
+                                                        : "border-rose-200 bg-rose-50 text-rose-700"
+                                                        }`}
+                                                >
+                                                    Remaining Work Order:{" "}
+                                                    {remaining.toFixed(2)}
+                                                </span>
+                                            );
+                                        };
 
                                         return (
-                                            <span
-                                                className={`inline-flex rounded-md border px-2 py-0.5 text-[11px] font-semibold ${remaining < 0
-                                                    ? "border-green-200 bg-green-50 text-green-700"
-                                                    : "border-rose-200 bg-rose-50 text-rose-700"
-                                                    }`}
+                                            <div
+                                                key={styleRow.id || index}
+                                                className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)] hover:border-slate-300"
                                             >
-                                                Remaining Work Order:{" "}
-                                                {remaining.toFixed(2)}
-                                            </span>
-                                        );
-                                    };
-
-                                    return (
-                                        <div
-                                            key={styleRow.id || index}
-                                            className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)] hover:border-slate-300"
-                                        >
-                                            {/* Composition Header */}
-                                            <div className="flex items-center justify-between gap-3 border-b border-slate-100 bg-slate-50/70 px-4 py-2.5">
-                                                <div className="flex min-w-0 items-start gap-3">
-                                                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-xs font-bold text-white">
-                                                        {index + 1}
-                                                    </span>
-
-                                                    <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-                                                        <div className="flex min-w-0 items-center gap-2">
-                                                            <h3 className="truncate text-sm font-semibold text-slate-800">
-                                                                {styleRow.composition || "Composition"}
-                                                            </h3>
-
-                                                            {styleRow.color && (
-                                                                <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">
-                                                                    {styleRow.color}
-                                                                </span>
-                                                            )}
-                                                        </div>
-
-                                                        <div className="flex flex-wrap items-center gap-1.5">
-                                                            {toNum(styleRow.finishRequiredQty) > 0 && (
-                                                                <span className="rounded-md border border-blue-200 bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700">
-                                                                    Yarn Req: {requireQty}
-                                                                </span>
-                                                            )}
-
-                                                            {styleRow.finishDia ? (
-                                                                <span className="rounded-md border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[11px] font-semibold text-indigo-700">
-                                                                    Dia: {styleRow.finishDia}
-                                                                </span>
-                                                            ) : (
-                                                                <span className="text-[11px] italic text-slate-400">
-                                                                    No finish dia
-                                                                </span>
-                                                            )}
-
-                                                            {styleRow.additional && (
-                                                                <span className="rounded-md border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px] font-semibold text-rose-700">
-                                                                    + {styleRow.additional}
-                                                                </span>
-                                                            )}
-
-                                                            {orderType === "aopOrder" && aopQty > 0 && (
-                                                                <>
-                                                                    <span className="rounded-md border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px] font-semibold text-rose-700">
-                                                                        AOP Work Order: {aopQty}
-                                                                    </span>
-                                                                    {renderRemaining(aopQty)}
-                                                                </>
-                                                            )}
-
-                                                            {orderType === "dyeingOrder" && dyeingQty > 0 && (
-                                                                <>
-                                                                    <span className="rounded-md border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px] font-semibold text-rose-700">
-                                                                        Dyeing Work Order: {dyeingQty}
-                                                                    </span>
-                                                                    {renderRemaining(dyeingQty)}
-                                                                </>
-                                                            )}
-
-                                                            {orderType === "knittingOrder" && knittingQty > 0 && (
-                                                                <>
-                                                                    <span className="rounded-md border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px] font-semibold text-rose-700">
-                                                                        Knitting Work Order: {knittingQty}
-                                                                    </span>
-                                                                    {renderRemaining(knittingQty)}
-                                                                </>
-                                                            )}
-                                                        </div>
-                                                    </div>
-                                                </div>
-
-                                                <button
-                                                    type="button"
-                                                    onClick={() => handleRemoveRow(index)}
-                                                    title="Remove composition"
-                                                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-400 hover:border-red-200 hover:bg-red-50 hover:text-red-600"
-                                                >
-                                                    <X size={15} />
-                                                </button>
-                                            </div>
-
-                                            {/* Composition Inputs */}
-                                            <div className="p-4">
-                                                <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                                                    <Input
-                                                        label="Composition"
-                                                        readOnly
-                                                        value={styleRow.composition}
-                                                        isShowOutLabel
-                                                    />
-
-                                                    <Input
-                                                        label="Color"
-                                                        readOnly
-                                                        value={styleRow.color}
-                                                        isShowOutLabel
-                                                    />
-
-                                                    <Input
-                                                        label="Order Qty (PCS)"
-                                                        readOnly
-                                                        value={styleRow.orderQty}
-                                                        isShowOutLabel
-                                                    />
-                                                </div>
-
-                                                {/* Nothing to book until an order type is picked */}
-                                                {!orderType && (
-                                                    <div className="mt-5 flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-200 bg-slate-50/60 px-6 py-8 text-center">
-                                                        <span className="flex h-10 w-10 items-center justify-center rounded-full bg-white text-indigo-500 shadow-sm ring-1 ring-slate-200">
-                                                            <Sparkles size={18} />
+                                                {/* Composition Header */}
+                                                <div className="flex items-center justify-between gap-3 border-b border-slate-100 bg-slate-50/70 px-4 py-2.5">
+                                                    <div className="flex min-w-0 items-start gap-3">
+                                                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-xs font-bold text-white">
+                                                            {index + 1}
                                                         </span>
-                                                        <p className="text-sm font-semibold text-slate-700">
-                                                            Pick an order type to start booking
-                                                        </p>
-                                                        <p className="max-w-sm text-xs text-slate-500">
-                                                            Choose Knitting, AOP, Dyeing or Yarn dyeing above. You can then
-                                                            add as many lots, yarn counts and quantities as you need.
-                                                        </p>
-                                                    </div>
-                                                )}
 
-                                                {/* AOP / Dyeing: compact design, 8 fields in two lines */}
-                                                {isCompact && (
-                                                    <div className="mt-5 rounded-xl border border-slate-200 bg-gradient-to-b from-slate-50/80 to-white p-4">
-                                                        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-                                                            <div>
-                                                                <h5 className="text-sm font-semibold text-slate-800">
-                                                                    Booking details
-                                                                </h5>
-                                                                <p className="mt-0.5 text-xs text-slate-500">
-                                                                    {isLotsAndCountsLoading
-                                                                        ? "Loading yarn lots for this job..."
-                                                                        : isLimitedToBase
-                                                                            ? `Limited to the ${baseOrderLabel} work order's lots. Available qty = ${baseOrderLabel} qty minus qty already used by earlier ${currentOrderLabel} work orders.`
-                                                                            : lotsAndCounts.length > 0
-                                                                                ? "One set of details for this composition. Pick the yarn lot first: its yarn count and PI No are selected automatically."
-                                                                                : "No yarn lot found in the yarn stock."}
-                                                                </p>
+                                                        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                                                            <div className="flex min-w-0 items-center gap-2">
+                                                                <h3 className="truncate text-sm font-semibold text-slate-800">
+                                                                    {styleRow.composition || "Composition"}
+                                                                </h3>
+
+                                                                {styleRow.color && (
+                                                                    <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">
+                                                                        {styleRow.color}
+                                                                    </span>
+                                                                )}
                                                             </div>
 
-                                                            <div className="flex items-center gap-2">
-                                                                {lotList[0]?.prefilled && (
-                                                                    <span className="inline-flex items-center gap-1 rounded-full border border-indigo-200 bg-indigo-50 px-2 py-1 text-[11px] font-semibold text-indigo-700">
-                                                                        <Sparkles size={11} />
-                                                                        Auto-filled
+                                                            <div className="flex flex-wrap items-center gap-1.5">
+                                                                {toNum(styleRow.finishRequiredQty) > 0 && (
+                                                                    <span className="rounded-md border border-blue-200 bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700">
+                                                                        Yarn Req: {requireQty}
                                                                     </span>
                                                                 )}
 
-                                                                <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-[11px] font-semibold text-indigo-700">
-                                                                    {ORDER_TYPE_OPTIONS.find((option) => option.value === orderType)?.label}
+                                                                {styleRow.finishDia ? (
+                                                                    <span className="rounded-md border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[11px] font-semibold text-indigo-700">
+                                                                        Dia: {styleRow.finishDia}
+                                                                    </span>
+                                                                ) : (
+                                                                    <span className="text-[11px] italic text-slate-400">
+                                                                        No finish dia
+                                                                    </span>
+                                                                )}
+
+                                                                {styleRow.additional && (
+                                                                    <span className="rounded-md border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px] font-semibold text-rose-700">
+                                                                        + {styleRow.additional}
+                                                                    </span>
+                                                                )}
+
+                                                                {orderType === "aopOrder" && aopQty > 0 && (
+                                                                    <>
+                                                                        <span className="rounded-md border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px] font-semibold text-rose-700">
+                                                                            AOP Work Order: {aopQty}
+                                                                        </span>
+                                                                        {renderRemaining(aopQty)}
+                                                                    </>
+                                                                )}
+
+                                                                {orderType === "dyeingOrder" && dyeingQty > 0 && (
+                                                                    <>
+                                                                        <span className="rounded-md border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px] font-semibold text-rose-700">
+                                                                            Dyeing Work Order: {dyeingQty}
+                                                                        </span>
+                                                                        {renderRemaining(dyeingQty)}
+                                                                    </>
+                                                                )}
+
+                                                                {orderType === "knittingOrder" && knittingQty > 0 && (
+                                                                    <>
+                                                                        <span className="rounded-md border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px] font-semibold text-rose-700">
+                                                                            Knitting Work Order: {knittingQty}
+                                                                        </span>
+                                                                        {renderRemaining(knittingQty)}
+                                                                    </>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleRemoveRow(index)}
+                                                        title="Remove composition"
+                                                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-400 hover:border-red-200 hover:bg-red-50 hover:text-red-600"
+                                                    >
+                                                        <X size={15} />
+                                                    </button>
+                                                </div>
+
+                                                {/* Composition Inputs */}
+                                                <div className="p-4">
+                                                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                                                        <Input
+                                                            label="Composition"
+                                                            readOnly
+                                                            value={styleRow.composition}
+                                                            isShowOutLabel
+                                                        />
+
+                                                        <Input
+                                                            label="Color"
+                                                            readOnly
+                                                            value={styleRow.color}
+                                                            isShowOutLabel
+                                                        />
+
+                                                        <Input
+                                                            label="Order Qty (PCS)"
+                                                            readOnly
+                                                            value={styleRow.orderQty}
+                                                            isShowOutLabel
+                                                        />
+                                                    </div>
+
+                                                    {/* Nothing to book until an order type is picked */}
+                                                    {!orderType && (
+                                                        <div className="mt-5 flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-200 bg-slate-50/60 px-6 py-8 text-center">
+                                                            <span className="flex h-10 w-10 items-center justify-center rounded-full bg-white text-indigo-500 shadow-sm ring-1 ring-slate-200">
+                                                                <Sparkles size={18} />
+                                                            </span>
+                                                            <p className="text-sm font-semibold text-slate-700">
+                                                                Pick an order type to start booking
+                                                            </p>
+                                                            <p className="max-w-sm text-xs text-slate-500">
+                                                                Choose Knitting, AOP, Dyeing or Yarn dyeing above. You can then
+                                                                add as many lots, yarn counts and quantities as you need.
+                                                            </p>
+                                                        </div>
+                                                    )}
+
+                                                    {/* AOP / Dyeing: compact design, 8 fields in two lines */}
+                                                    {isCompact && (
+                                                        <div className="mt-5 rounded-xl border border-slate-200 bg-gradient-to-b from-slate-50/80 to-white p-4">
+                                                            <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                                                                <div>
+                                                                    <h5 className="text-sm font-semibold text-slate-800">
+                                                                        Booking details
+                                                                    </h5>
+                                                                    <p className="mt-0.5 text-xs text-slate-500">
+                                                                        {isLotsAndCountsLoading
+                                                                            ? "Loading yarn lots for this job..."
+                                                                            : isLimitedToBase
+                                                                                ? `Limited to the ${baseOrderLabel} work order's lots. Available qty = ${baseOrderLabel} qty minus qty already used by earlier ${currentOrderLabel} work orders.`
+                                                                                : lotsAndCounts.length > 0
+                                                                                    ? "One set of details for this composition. Type the Work Order Qty first: only lots, counts and PIs with that qty or more available are shown. Pick the yarn lot next: its yarn count and PI No are selected automatically."
+                                                                                    : "No yarn lot found in the yarn stock."}
+                                                                    </p>
+                                                                </div>
+
+                                                                <div className="flex items-center gap-2">
+                                                                    {lotList[0]?.prefilled && (
+                                                                        <span className="inline-flex items-center gap-1 rounded-full border border-indigo-200 bg-indigo-50 px-2 py-1 text-[11px] font-semibold text-indigo-700">
+                                                                            <Sparkles size={11} />
+                                                                            Auto-filled
+                                                                        </span>
+                                                                    )}
+
+                                                                    <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-[11px] font-semibold text-indigo-700">
+                                                                        {ORDER_TYPE_OPTIONS.find((option) => option.value === orderType)?.label}
+                                                                    </span>
+                                                                </div>
+                                                            </div>
+
+                                                            {/* Line 1 */}
+                                                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                                                                <Input
+                                                                    label="Price Per Kg"
+                                                                    placeholder="Unit Price"
+                                                                    value={styleRow.unitPrice}
+                                                                    onChange={(e) =>
+                                                                        handleRowFieldChange(index, "unitPrice", e.target.value)
+                                                                    }
+                                                                    required
+                                                                    isShowOutLabel
+                                                                />
+
+                                                                <Input
+                                                                    label="Work Order Qty (KG)"
+                                                                    placeholder="Work Order Qty"
+                                                                    value={lotList[0]?.workOrderQty ?? ""}
+                                                                    onChange={(e) =>
+                                                                        handleLotChange(index, 0, "workOrderQty", e.target.value)
+                                                                    }
+                                                                    required
+                                                                    isShowOutLabel
+                                                                />
+
+                                                                {/* LOT first: it selects the yarn count + PI No */}
+                                                                <JobLotSelect
+                                                                    label="Yarn Lot"
+                                                                    value={lotList[0]?.lotNo ?? ""}
+                                                                    options={compactLotOptions}
+                                                                    loading={isLotsAndCountsLoading}
+                                                                    placeholder="Select lot"
+                                                                    emptyText={
+                                                                        compactFilterActive
+                                                                            ? `No lot with ${formatKg(compactNeedQty)} KG or more`
+                                                                            : "No yarn lot in stock"
+                                                                    }
+                                                                    onChange={(value) =>
+                                                                        handleLotChange(index, 0, "lotNo", value)
+                                                                    }
+                                                                />
+
+                                                                <JobLotSelect
+                                                                    label="Yarn Count"
+                                                                    value={lotList[0]?.yarnCount ?? ""}
+                                                                    options={compactCountOptions}
+                                                                    loading={isLotsAndCountsLoading}
+                                                                    placeholder="Select count"
+                                                                    emptyText={
+                                                                        compactFilterActive
+                                                                            ? `No count with ${formatKg(compactNeedQty)} KG or more`
+                                                                            : "No yarn count in stock"
+                                                                    }
+                                                                    onChange={(value) =>
+                                                                        handleLotChange(index, 0, "yarnCount", value)
+                                                                    }
+                                                                />
+                                                            </div>
+
+                                                            {/* Qty filter info */}
+                                                            {compactFilterActive && (
+                                                                <p
+                                                                    className={`mt-2 flex items-center gap-1 text-[11px] font-medium ${compactStock.length === 0 ? "text-red-600" : "text-indigo-600"}`}
+                                                                >
+                                                                    {compactStock.length === 0 ? (
+                                                                        <AlertCircle size={12} className="shrink-0" />
+                                                                    ) : (
+                                                                        <Sparkles size={12} className="shrink-0" />
+                                                                    )}
+                                                                    {compactStock.length === 0
+                                                                        ? `No lot has ${formatKg(compactNeedQty)} KG or more available.`
+                                                                        : `Only lot, count and PI with ${formatKg(compactNeedQty)} KG or more available are shown.`}
+                                                                </p>
+                                                            )}
+
+                                                            {/* Line 2 */}
+                                                            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                                                                <CompactPiField
+                                                                    item={lotList[0] ?? {}}
+                                                                    options={compactPiOptions}
+                                                                    loading={isLotsAndCountsLoading}
+                                                                    usage={bucketUsage}
+                                                                    onChange={(value) =>
+                                                                        handleLotChange(index, 0, "piNo", value)
+                                                                    }
+                                                                />
+
+                                                                <Input
+                                                                    label="Stitch Length"
+                                                                    placeholder="Stitch Length"
+                                                                    value={styleRow.stichLength}
+                                                                    onChange={(e) =>
+                                                                        handleRowFieldChange(index, "stichLength", e.target.value)
+                                                                    }
+                                                                    required
+                                                                    isShowOutLabel
+                                                                />
+
+                                                                <Input
+                                                                    label="Package"
+                                                                    placeholder="Package"
+                                                                    value={styleRow.pkg}
+                                                                    onChange={(e) =>
+                                                                        handleRowFieldChange(index, "pkg", e.target.value)
+                                                                    }
+                                                                    isShowOutLabel
+                                                                />
+
+                                                                <Input
+                                                                    label="Shade %"
+                                                                    placeholder="Shade %"
+                                                                    value={styleRow.shadePercent}
+                                                                    onChange={(e) =>
+                                                                        handleRowFieldChange(index, "shadePercent", e.target.value)
+                                                                    }
+                                                                    isShowOutLabel
+                                                                />
+                                                            </div>
+
+                                                            {/* Amount */}
+                                                            <div className="mt-3 flex items-center justify-end gap-2 border-t border-slate-200 pt-3 text-xs text-slate-500">
+                                                                <span>Amount</span>
+                                                                <span className="text-sm font-semibold tabular-nums text-slate-900">
+                                                                    {formatMoney(sumLotAmount(styleRow))}
+                                                                    <span className="ml-1 text-[11px] font-medium text-slate-400">BDT</span>
                                                                 </span>
                                                             </div>
                                                         </div>
+                                                    )}
 
-                                                        {/* Line 1 */}
-                                                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                                                            <Input
-                                                                label="Price Per Kg"
-                                                                placeholder="Unit Price"
-                                                                value={styleRow.unitPrice}
-                                                                onChange={(e) =>
-                                                                    handleRowFieldChange(index, "unitPrice", e.target.value)
-                                                                }
-                                                                required
-                                                                isShowOutLabel
-                                                            />
+                                                    {/* Common details (shared by ALL lines) */}
+                                                    {orderType && !isYarnDyeing && !isCompact && (
+                                                        <div className="mt-5 rounded-xl border border-slate-200 bg-white p-4">
+                                                            <div className="mb-3">
+                                                                <h5 className="text-sm font-semibold text-slate-800">
+                                                                    Common details
+                                                                </h5>
+                                                                <p className="mt-0.5 text-xs text-slate-500">
+                                                                    Entered once, applied to every line of this composition
+                                                                </p>
+                                                            </div>
 
-                                                            <Input
-                                                                label="Work Order Qty (KG)"
-                                                                placeholder="Work Order Qty"
-                                                                value={lotList[0]?.workOrderQty ?? ""}
-                                                                onChange={(e) =>
-                                                                    handleLotChange(index, 0, "workOrderQty", e.target.value)
-                                                                }
-                                                                required
-                                                                isShowOutLabel
-                                                            />
+                                                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                                                                <Input
+                                                                    label="Price Per Kg"
+                                                                    placeholder="Unit Price"
+                                                                    value={styleRow.unitPrice}
+                                                                    onChange={(e) =>
+                                                                        handleRowFieldChange(
+                                                                            index,
+                                                                            "unitPrice",
+                                                                            e.target.value
+                                                                        )
+                                                                    }
+                                                                    required
+                                                                    isShowOutLabel
+                                                                />
 
-                                                            {/* LOT first: it selects the yarn count + PI No */}
-                                                            <JobLotSelect
-                                                                label="Yarn Lot"
-                                                                value={lotList[0]?.lotNo ?? ""}
-                                                                options={compactLotOptions}
-                                                                loading={isLotsAndCountsLoading}
-                                                                placeholder="Select lot"
-                                                                emptyText="No yarn lot in stock"
-                                                                onChange={(value) =>
-                                                                    handleLotChange(index, 0, "lotNo", value)
-                                                                }
-                                                            />
+                                                                {currentRules.stichLength && (
+                                                                    <Input
+                                                                        label="Stich Length"
+                                                                        placeholder="Stich Length"
+                                                                        value={styleRow.stichLength}
+                                                                        onChange={(e) =>
+                                                                            handleRowFieldChange(
+                                                                                index,
+                                                                                "stichLength",
+                                                                                e.target.value
+                                                                            )
+                                                                        }
+                                                                        required
+                                                                        isShowOutLabel
+                                                                    />
+                                                                )}
 
-                                                            <JobLotSelect
-                                                                label="Yarn Count"
-                                                                value={lotList[0]?.yarnCount ?? ""}
-                                                                options={compactCountOptions}
-                                                                loading={isLotsAndCountsLoading}
-                                                                placeholder="Select count"
-                                                                emptyText="No yarn count in stock"
-                                                                onChange={(value) =>
-                                                                    handleLotChange(index, 0, "yarnCount", value)
-                                                                }
-                                                            />
+                                                                {currentRules.machineDia && (
+                                                                    <Input
+                                                                        label="Machine Dia"
+                                                                        placeholder="Machine Dia"
+                                                                        value={styleRow.machineDia}
+                                                                        onChange={(e) =>
+                                                                            handleRowFieldChange(
+                                                                                index,
+                                                                                "machineDia",
+                                                                                e.target.value
+                                                                            )
+                                                                        }
+                                                                        required
+                                                                        isShowOutLabel
+                                                                    />
+                                                                )}
+                                                            </div>
                                                         </div>
+                                                    )}
 
-                                                        {/* Line 2 */}
-                                                        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                                                            <CompactPiField
-                                                                item={lotList[0] ?? {}}
-                                                                options={compactPiOptions}
+                                                    {/* Lines board: main line + extra lines beside it */}
+                                                    {orderType && !isCompact && (
+                                                        <div className="mt-4">
+                                                            <LinesBoard
+                                                                items={isYarnDyeing ? colorList : lotList}
+                                                                isYarnDyeing={isYarnDyeing}
+                                                                unitPrice={styleRow.unitPrice}
+                                                                inventory={lotsAndCounts}
                                                                 loading={isLotsAndCountsLoading}
                                                                 usage={bucketUsage}
-                                                                onChange={(value) =>
-                                                                    handleLotChange(index, 0, "piNo", value)
+                                                                noLots={noLotsFound}
+                                                                restrictedNote={restrictedNote}
+                                                                showYdBatch={orderType === "knittingOrder"}
+                                                                ydLots={ydLots}
+                                                                ydBatchLoading={isLotsAndCountsLoading}
+                                                                onAdd={() =>
+                                                                    isYarnDyeing
+                                                                        ? handleAddYarnColor(index)
+                                                                        : handleAddLot(index)
                                                                 }
-                                                            />
-
-                                                            <Input
-                                                                label="Stitch Length"
-                                                                placeholder="Stitch Length"
-                                                                value={styleRow.stichLength}
-                                                                onChange={(e) =>
-                                                                    handleRowFieldChange(index, "stichLength", e.target.value)
+                                                                onChange={(itemIndex, field, value) =>
+                                                                    isYarnDyeing
+                                                                        ? handleYarnColorChange(index, itemIndex, field, value)
+                                                                        : handleLotChange(index, itemIndex, field, value)
                                                                 }
-                                                                required
-                                                                isShowOutLabel
-                                                            />
-
-                                                            <Input
-                                                                label="Package"
-                                                                placeholder="Package"
-                                                                value={styleRow.pkg}
-                                                                onChange={(e) =>
-                                                                    handleRowFieldChange(index, "pkg", e.target.value)
+                                                                onRemove={(itemIndex) =>
+                                                                    isYarnDyeing
+                                                                        ? handleRemoveYarnColor(index, itemIndex)
+                                                                        : handleRemoveLot(index, itemIndex)
                                                                 }
-                                                                isShowOutLabel
-                                                            />
-
-                                                            <Input
-                                                                label="Shade %"
-                                                                placeholder="Shade %"
-                                                                value={styleRow.shadePercent}
-                                                                onChange={(e) =>
-                                                                    handleRowFieldChange(index, "shadePercent", e.target.value)
+                                                                onDuplicate={(itemIndex) =>
+                                                                    isYarnDyeing
+                                                                        ? handleDuplicateYarnColor(index, itemIndex)
+                                                                        : handleDuplicateLot(index, itemIndex)
                                                                 }
-                                                                isShowOutLabel
                                                             />
                                                         </div>
-
-                                                        {/* Amount */}
-                                                        <div className="mt-3 flex items-center justify-end gap-2 border-t border-slate-200 pt-3 text-xs text-slate-500">
-                                                            <span>Amount</span>
-                                                            <span className="text-sm font-semibold tabular-nums text-slate-900">
-                                                                {formatMoney(sumLotAmount(styleRow))}
-                                                                <span className="ml-1 text-[11px] font-medium text-slate-400">BDT</span>
-                                                            </span>
-                                                        </div>
-                                                    </div>
-                                                )}
-
-                                                {/* Common details (shared by ALL lines) */}
-                                                {orderType && !isYarnDyeing && !isCompact && (
-                                                    <div className="mt-5 rounded-xl border border-slate-200 bg-white p-4">
-                                                        <div className="mb-3">
-                                                            <h5 className="text-sm font-semibold text-slate-800">
-                                                                Common details
-                                                            </h5>
-                                                            <p className="mt-0.5 text-xs text-slate-500">
-                                                                Entered once, applied to every line of this composition
-                                                            </p>
-                                                        </div>
-
-                                                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                                                            <Input
-                                                                label="Price Per Kg"
-                                                                placeholder="Unit Price"
-                                                                value={styleRow.unitPrice}
-                                                                onChange={(e) =>
-                                                                    handleRowFieldChange(
-                                                                        index,
-                                                                        "unitPrice",
-                                                                        e.target.value
-                                                                    )
-                                                                }
-                                                                required
-                                                                isShowOutLabel
-                                                            />
-
-                                                            {currentRules.stichLength && (
-                                                                <Input
-                                                                    label="Stich Length"
-                                                                    placeholder="Stich Length"
-                                                                    value={styleRow.stichLength}
-                                                                    onChange={(e) =>
-                                                                        handleRowFieldChange(
-                                                                            index,
-                                                                            "stichLength",
-                                                                            e.target.value
-                                                                        )
-                                                                    }
-                                                                    required
-                                                                    isShowOutLabel
-                                                                />
-                                                            )}
-
-                                                            {currentRules.machineDia && (
-                                                                <Input
-                                                                    label="Machine Dia"
-                                                                    placeholder="Machine Dia"
-                                                                    value={styleRow.machineDia}
-                                                                    onChange={(e) =>
-                                                                        handleRowFieldChange(
-                                                                            index,
-                                                                            "machineDia",
-                                                                            e.target.value
-                                                                        )
-                                                                    }
-                                                                    required
-                                                                    isShowOutLabel
-                                                                />
-                                                            )}
-                                                        </div>
-                                                    </div>
-                                                )}
-
-                                                {/* Lines board: main line + extra lines beside it */}
-                                                {orderType && !isCompact && (
-                                                    <div className="mt-4">
-                                                        <LinesBoard
-                                                            items={isYarnDyeing ? colorList : lotList}
-                                                            isYarnDyeing={isYarnDyeing}
-                                                            unitPrice={styleRow.unitPrice}
-                                                            inventory={lotsAndCounts}
-                                                            loading={isLotsAndCountsLoading}
-                                                            usage={bucketUsage}
-                                                            noLots={noLotsFound}
-                                                            restrictedNote={restrictedNote}
-                                                            showYdBatch={orderType === "knittingOrder"}
-                                                            ydLots={ydLots}
-                                                            ydBatchLoading={isLotsAndCountsLoading}
-                                                            onAdd={() =>
-                                                                isYarnDyeing
-                                                                    ? handleAddYarnColor(index)
-                                                                    : handleAddLot(index)
-                                                            }
-                                                            onChange={(itemIndex, field, value) =>
-                                                                isYarnDyeing
-                                                                    ? handleYarnColorChange(index, itemIndex, field, value)
-                                                                    : handleLotChange(index, itemIndex, field, value)
-                                                            }
-                                                            onRemove={(itemIndex) =>
-                                                                isYarnDyeing
-                                                                    ? handleRemoveYarnColor(index, itemIndex)
-                                                                    : handleRemoveLot(index, itemIndex)
-                                                            }
-                                                            onDuplicate={(itemIndex) =>
-                                                                isYarnDyeing
-                                                                    ? handleDuplicateYarnColor(index, itemIndex)
-                                                                    : handleDuplicateLot(index, itemIndex)
-                                                            }
-                                                        />
-                                                    </div>
-                                                )}
+                                                    )}
+                                                </div>
                                             </div>
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                        </SectionCard>
+                                        );
+                                    })}
+                                </div>
+                            </SectionCard>
 
-                        {/* Factory Input */}
-                        <SectionCard
-                            icon={Factory}
-                            title="Factory"
-                            description="Where this work order will be produced"
-                        >
-                            <div className="max-w-md">
-                                <Input
-                                    label="Factory Name"
-                                    name="factoryName"
-                                    value={formData.factoryName}
-                                    onChange={handleChange}
-                                    placeholder="Type factory name..."
-                                    required
-                                    isShowOutLabel
-                                />
-                            </div>
-                        </SectionCard>
+                            {/* Factory Input */}
+                            <SectionCard
+                                icon={Factory}
+                                title="Factory"
+                                description="Where this work order will be produced"
+                            >
+                                <div className="max-w-md">
+                                    <Input
+                                        label="Factory Name"
+                                        name="factoryName"
+                                        value={formData.factoryName}
+                                        onChange={handleChange}
+                                        placeholder="Type factory name..."
+                                        required
+                                        isShowOutLabel
+                                    />
+                                </div>
+                            </SectionCard>
+                        </div>
+
+                        {/* Sidebar (docked when pinned). Own scroll so it fits inside the fitted box. */}
+                        {isSummaryPinned && (
+                            <aside
+                                className="xl:sticky xl:top-0 xl:overflow-y-auto"
+                                style={{ maxHeight: fit.height }}
+                            >
+                                {summaryHeader}
+                                {sidebarBody}
+                            </aside>
+                        )}
                     </div>
-
-                    {/* Sidebar (docked when pinned). Own scroll so it fits inside the fitted box. */}
-                    {isSummaryPinned && (
-                        <aside
-                            className="xl:sticky xl:top-0 xl:overflow-y-auto"
-                            style={{ maxHeight: fit.height }}
-                        >
-                            {summaryHeader}
-                            {sidebarBody}
-                        </aside>
-                    )}
-                </div>
                 </div>
             </div>
 

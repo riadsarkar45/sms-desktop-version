@@ -15,6 +15,7 @@ import Toast from '../../components/tost/Tost';
 import WorkOrderCancelModal from "../../components/modals/WorkOrderCancellModal";
 import YarnDeliveryModal from "../../components/modals/YarnDeliveryModal";
 import WorkOrderPreviewModal from "./WorkOrderPreviewModal";
+import WorkOrderEditModal from "../../components/modals/WorkOrderEditModal";
 
 // WORK ORDER DATE (new) + the 8 old frozen columns
 export const FROZEN_COUNT = 9;
@@ -148,6 +149,8 @@ const AllOrders = ({ orderType }) => {
     const [page, setPage] = useState(1);
     const [prepareForChallan, setPrepareChallan] = useState([]);
     const [isChallanDowloading, setIsChallanDownloading] = useState({ isLoading: false, isError: null });
+    const [workOrderReviseModal, setWorkOrderReviseModal] = useState({ isShowModal: false })
+    const [workOrderReviseData, setWorkOrderReviseData] = useState([])
     const [limit] = useState(10);
     const [pagination, setPagination] = useState({ page: 1, limit: 10, total: 0, totalPages: 1 });
 
@@ -228,8 +231,12 @@ const AllOrders = ({ orderType }) => {
         return null;
     }, [orders]);
 
+
     const COLUMNS = useMemo(() => {
-        const cols = [{ header: "WORK ORDER DATE", width: 140, inputName: "workOrderDate" }];
+        const cols = [
+            { header: "ACTION", width: 140, inputName: "workOrderDate" },
+            { header: "WORK ORDER DATE", width: 140, inputName: "workOrderDate" }
+        ];
         if (orderType === "knittingOrder") {
             cols.push(
                 { header: "MONTH", width: 120, inputName: "month" },
@@ -441,6 +448,17 @@ const AllOrders = ({ orderType }) => {
                 setFilterOptionsLoading(prev => ({ ...prev, [columnName]: false }));
             });
     }, [orderType, filters, fetchFilterOptions]);
+
+    const handleReviseWorkOrder = async (workOrderId) => {
+        setWorkOrderReviseModal({ isShowModal: true })
+        console.log(workOrderId);
+        const res = await axiosPrivate.get(`/api/update-work-order/${workOrderId}/${orderType}`)
+        console.log(res.data);
+        if (res.data.type === "success") {
+            console.log("record found");
+            setWorkOrderReviseData(res.data)
+        }
+    }
 
     useEffect(() => {
         Object.keys(filters).forEach(columnName => {
@@ -1484,6 +1502,7 @@ const AllOrders = ({ orderType }) => {
                                 changedField={changedField}
                                 challanIssue={challanIssue}
                                 deliveryIssue={deliveryIssue}
+
                             />
                         )}
 
@@ -1502,6 +1521,18 @@ const AllOrders = ({ orderType }) => {
                             onSaved={handleYarnDyeSaved}
                         />
                     )}
+
+                    {
+                        // workOrderEditModal, setWorkOrderModal
+
+                        workOrderReviseModal.isShowModal && (
+                            <WorkOrderEditModal
+                                setWorkOrderModal={setWorkOrderReviseModal}
+                                workOrderReviseData={workOrderReviseData}
+                                orderType={orderType}
+                            />
+                        )
+                    }
 
 
                     {
@@ -1600,6 +1631,9 @@ const AllOrders = ({ orderType }) => {
                             getDataForCancellation={getDataForCancellation}
                             handlePreview={handlePreview}
                             getRevisionCount={getRevisionCount}
+                            setWorkOrderReviseModal={setWorkOrderReviseModal}
+                            handleReviseWorkOrder={handleReviseWorkOrder}
+
                         />}
                         {orderType === "knittingOrder" && <KnittingOrder
                             orders={orders}
@@ -1618,6 +1652,8 @@ const AllOrders = ({ orderType }) => {
                             getDataForCancellation={getDataForCancellation}
                             handlePreview={handlePreview}
                             getRevisionCount={getRevisionCount}
+                            setWorkOrderReviseModal={setWorkOrderReviseModal}
+                            handleReviseWorkOrder={handleReviseWorkOrder}
                         />}
                         {orderType === "dyeingOrder" && <DyeingOrder
                             orders={orders}
@@ -1635,6 +1671,8 @@ const AllOrders = ({ orderType }) => {
                             getDataForCancellation={getDataForCancellation}
                             handlePreview={handlePreview}
                             getRevisionCount={getRevisionCount}
+                            setWorkOrderReviseModal={setWorkOrderReviseModal}
+                            handleReviseWorkOrder={handleReviseWorkOrder}
                         />}
                         {orderType === "aopOrder" && <AopOrder
                             orders={orders}
@@ -1653,6 +1691,8 @@ const AllOrders = ({ orderType }) => {
                             getDataForCancellation={getDataForCancellation}
                             handlePreview={handlePreview}
                             getRevisionCount={getRevisionCount}
+                            setWorkOrderReviseModal={setWorkOrderReviseModal}
+                            handleReviseWorkOrder={handleReviseWorkOrder}
                         />}
                     </table>
                 </div>

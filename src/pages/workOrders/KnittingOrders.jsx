@@ -1,5 +1,7 @@
 import { useState, useMemo } from "react";
-import WorkOrderDateCell from "./WorkOrderDateCell";
+import { createPortal } from "react-dom";
+import { Edit, Eye } from "lucide-react";
+import WorkOrderPreviewModal from "./WorkOrderPreviewModal";
 
 const KnittingOrder = ({
     orders,
@@ -14,11 +16,33 @@ const KnittingOrder = ({
     currentFrozenLefts,
     getDataForCancellation,
     handlePreview,
-    getRevisionCount
+    getRevisionCount,
+    setWorkOrderReviseModal,
+    handleReviseWorkOrder
 }) => {
     const [hoveredIndex, setHoveredIndex] = useState(null);
     const [searchTerm, setSearchTerm] = useState("");
     const [hoveredCancellation, setHoveredCancellation] = useState(null);
+
+    // Preview modal: only ids are stored, so the modal always shows fresh data from `orders`
+    const [previewKey, setPreviewKey] = useState(null); // { jobNo, woId }
+
+    const previewTarget = useMemo(() => {
+        if (!previewKey) return null;
+
+        const job = (orders || []).find((j) => j.jobNo === previewKey.jobNo);
+        const wo = job?.workOrders?.find((w) => w.id === previewKey.woId);
+
+        return job && wo ? { job, wo } : null;
+    }, [orders, previewKey]);
+
+    const openPreview = (e, job, wo) => {
+        e.stopPropagation();
+        if (!wo) return;
+        setPreviewKey({ jobNo: job?.jobNo, woId: wo.id });
+    };
+
+    const closePreview = () => setPreviewKey(null);
 
     const cellPad = "px-3 py-2";
 
@@ -442,31 +466,56 @@ const KnittingOrder = ({
                             }
                             onMouseLeave={() => setHoveredCancellation(null)}
                         >
-                            {/* COL 0 — WORK ORDER DATE (new, frozen) */}
+                            {/* COL 0 — PREVIEW (frozen) */}
                             {isFirstOfWo && (
                                 <td style={stickyTd(0, isHovered)} rowSpan={woRowSpan}>
-                                    <WorkOrderDateCell
-                                        job={job}
-                                        wo={wo}
-                                        onPreview={handlePreview}
-                                        revisionCount={getRevisionCount ? getRevisionCount(wo) : 0}
-                                        className={cellPad}
-                                    />
+                                    {wo ? (
+                                        <>
+                                            <button
+                                                type="button"
+                                                onClick={(e) => openPreview(e, job, wo)}
+                                                className="bg-slate-500 mb-3 rounded-md mx-auto flex items-center justify-center gap-2 px-2 py-1 text-sm font-medium text-white hover:text-blue-800 cursor-pointer"
+                                                title="Preview work order"
+                                            >
+                                                Preview
+                                                <Eye size={16} />
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => handleReviseWorkOrder(wo.id)}
+                                                className="mx-auto bg-yellow-300 flex items-center rounded-md justify-center gap-2 px-2 py-1 text-sm font-medium text-yellow-600 hover:text-blue-800 cursor-pointer"
+                                                title="Preview work order"
+                                            >
+                                                Revise
+                                                <Edit size={16} />
+                                            </button>
+                                        </>
+                                    ) : (
+                                        <div className={cellPad}>-</div>
+                                    )}
                                 </td>
                             )}
 
-                            {/* COL 1 — MONTH */}
+                            {/* COL 1 — WORK ORDER DATE */}
                             {isFirstOfWo && (
                                 <td style={stickyTd(1, isHovered)} rowSpan={woRowSpan}>
+                                    <div className={cellPad} style={workOrderTextStyle}>
+                                        {wo?.newWorkOrderPlaceDate || "NO MONTH NAME FOUND"}
+                                    </div>
+                                </td>
+                            )}
+                            {/* COL 2 — MONTH */}
+                            {isFirstOfWo && (
+                                <td style={stickyTd(2, isHovered)} rowSpan={woRowSpan}>
                                     <div className={cellPad} style={workOrderTextStyle}>
                                         {wo?.month || "NO MONTH NAME FOUND"}
                                     </div>
                                 </td>
                             )}
 
-                            {/* COL 2 — FACTORY NAME */}
+                            {/* COL 3 — FACTORY NAME */}
                             {isFirstOfWo && (
-                                <td style={stickyTd(2, isHovered)} rowSpan={woRowSpan}>
+                                <td style={stickyTd(3, isHovered)} rowSpan={woRowSpan}>
                                     <div className={cellPad} style={workOrderTextStyle}>
                                         {!wo || wo.factoryName === "NULL" ? (
                                             <span>-</span>
@@ -484,7 +533,7 @@ const KnittingOrder = ({
                                                 className="cursor-pointer"
                                             >
                                                 {isEdit.updatedFieldName === "factoryName" &&
-                                                isEdit.rowId === wo.id ? (
+                                                    isEdit.rowId === wo.id ? (
                                                     <input
                                                         type="text"
                                                         name="factoryName"
@@ -503,29 +552,29 @@ const KnittingOrder = ({
                                 </td>
                             )}
 
-                            {/* COL 3 — WORK ORDER NO */}
+                            {/* COL 4 — WORK ORDER NO */}
                             {isFirstOfWo && (
-                                <td style={stickyTd(3, isHovered)} rowSpan={woRowSpan}>
+                                <td style={stickyTd(4, isHovered)} rowSpan={woRowSpan}>
                                     <div className={cellPad} style={workOrderTextStyle}>
                                         {wo?.workOrderNo || "NO WORK ORDER FOUND"}
                                     </div>
                                 </td>
                             )}
 
-                            {/* COL 4 — BUYER NAME */}
+                            {/* COL 5 — BUYER NAME */}
                             {isFirstOfWo && (
-                                <td style={stickyTd(4, isHovered)} rowSpan={woRowSpan}>
+                                <td style={stickyTd(5, isHovered)} rowSpan={woRowSpan}>
                                     <div className={cellPad} style={workOrderTextStyle}>
                                         {wo?.styleRequirement?.buyerName || "NO BUYER NAME FOUND"}
                                     </div>
                                 </td>
                             )}
 
-                            {/* COL 5 — JOB NO */}
+                            {/* COL 6 — JOB NO */}
                             {isFirstOfJob && (
                                 <td
                                     onDoubleClick={() => handleRedirect(job.jobNo)}
-                                    style={stickyTd(5, isHovered)}
+                                    style={stickyTd(6, isHovered)}
                                     rowSpan={jobRowSpan}
                                 >
                                     <div
@@ -542,9 +591,9 @@ const KnittingOrder = ({
                                 </td>
                             )}
 
-                            {/* COL 6 — STYLE NO */}
+                            {/* COL 7 — STYLE NO */}
                             {isFirstOfWo && (
-                                <td style={stickyTd(6, isHovered)} rowSpan={woRowSpan}>
+                                <td style={stickyTd(7, isHovered)} rowSpan={woRowSpan}>
                                     <div className={cellPad} style={workOrderTextStyle}>
                                         {wo?.styleRequirement?.styleNo ||
                                             wo?.styleNo ||
@@ -553,10 +602,9 @@ const KnittingOrder = ({
                                 </td>
                             )}
 
-                            {/* COL 7 — COLOR */}
-                            <td style={stickyTd(7, isHovered)}>
+                            {/* COL 8 — COLOR */}
+                            <td style={stickyTd(8, isHovered)}>
                                 <div
-                                    
                                     className={`${cellPad} cursor-pointer hover:text-blue-500`}
                                     style={cancellationTextStyle}
                                 >
@@ -564,8 +612,8 @@ const KnittingOrder = ({
                                 </div>
                             </td>
 
-                            {/* COL 8 — COMPOSITION */}
-                            <td style={stickyTd(8, isHovered)}>
+                            {/* COL 9 — COMPOSITION (not frozen) */}
+                            <td style={plainTd(isHovered)}>
                                 <div className={cellPad} style={cancellationTextStyle}>
                                     {comp?.composition || "-"}
                                 </div>
@@ -607,7 +655,7 @@ const KnittingOrder = ({
                                     style={cancellationTextStyle}
                                 >
                                     {isEdit.updatedFieldName === "workOrderQty" &&
-                                    isEdit.compId === comp?.id ? (
+                                        isEdit.compId === comp?.id ? (
                                         <input
                                             type="text"
                                             className="p-2 outline-none border rounded-md w-full"
@@ -691,7 +739,7 @@ const KnittingOrder = ({
                                     style={cancellationTextStyle}
                                 >
                                     {isEdit.updatedFieldName === "unitePrice" &&
-                                    isEdit.rowId === comp?.id ? (
+                                        isEdit.rowId === comp?.id ? (
                                         <input
                                             type="text"
                                             className="p-2 outline-none border rounded-md w-full"
@@ -759,47 +807,52 @@ const KnittingOrder = ({
                         </td>
                     ))}
 
-                    {/* FINISH DIA */}
+                    {/* COMPOSITION — non-frozen column placeholder */}
                     <td style={getFooterCellStyle(FROZEN_COUNT)}>
                         <div className={`${cellPad} text-white`}>-</div>
                     </td>
 
-                    {/* YARN COUNT */}
+                    {/* FINISH DIA */}
                     <td style={getFooterCellStyle(FROZEN_COUNT + 1)}>
                         <div className={`${cellPad} text-white`}>-</div>
                     </td>
 
-                    {/* YARN LOT */}
+                    {/* YARN COUNT */}
                     <td style={getFooterCellStyle(FROZEN_COUNT + 2)}>
                         <div className={`${cellPad} text-white`}>-</div>
                     </td>
 
-                    {/* STITCH LENGTH */}
+                    {/* YARN LOT */}
                     <td style={getFooterCellStyle(FROZEN_COUNT + 3)}>
                         <div className={`${cellPad} text-white`}>-</div>
                     </td>
 
-                    {/* MACHINE DIA */}
+                    {/* STITCH LENGTH */}
                     <td style={getFooterCellStyle(FROZEN_COUNT + 4)}>
                         <div className={`${cellPad} text-white`}>-</div>
                     </td>
 
-                    {/* WORK ORDER QTY */}
+                    {/* MACHINE DIA */}
                     <td style={getFooterCellStyle(FROZEN_COUNT + 5)}>
+                        <div className={`${cellPad} text-white`}>-</div>
+                    </td>
+
+                    {/* WORK ORDER QTY */}
+                    <td style={getFooterCellStyle(FROZEN_COUNT + 6)}>
                         <div className={`${cellPad} text-white`}>
                             {formatNumber(totals.workOrderQty?.toFixed(2))}
                         </div>
                     </td>
 
                     {/* TOTAL YARN DELIVERY */}
-                    <td style={getFooterCellStyle(FROZEN_COUNT + 6)}>
+                    <td style={getFooterCellStyle(FROZEN_COUNT + 7)}>
                         <div className={`${cellPad} text-white`}>
                             {formatNumber(totals.totalYarnDelivery?.toFixed(2))}
                         </div>
                     </td>
 
                     {/* DEL SHORT & EXCESS */}
-                    <td style={getFooterCellStyle(FROZEN_COUNT + 7)}>
+                    <td style={getFooterCellStyle(FROZEN_COUNT + 8)}>
                         <div
                             className={`${cellPad} font-bold text-white`}
                             style={{ color: "white" }}
@@ -811,21 +864,21 @@ const KnittingOrder = ({
                     </td>
 
                     {/* YARN RETURN */}
-                    <td style={getFooterCellStyle(FROZEN_COUNT + 8)}>
+                    <td style={getFooterCellStyle(FROZEN_COUNT + 9)}>
                         <div className={`${cellPad} text-white`}>
                             {formatNumber(totals.yarnReturn?.toFixed(2))}
                         </div>
                     </td>
 
                     {/* GREY RECEIVED */}
-                    <td style={getFooterCellStyle(FROZEN_COUNT + 9)}>
+                    <td style={getFooterCellStyle(FROZEN_COUNT + 10)}>
                         <div className={`${cellPad} text-white`}>
                             {formatNumber(totals.GreyFabricReceived?.toFixed(2))}
                         </div>
                     </td>
 
                     {/* RCVD SHORT & EXCESS */}
-                    <td style={getFooterCellStyle(FROZEN_COUNT + 10)}>
+                    <td style={getFooterCellStyle(FROZEN_COUNT + 11)}>
                         <div
                             className={`${cellPad} font-bold text-white`}
                             style={{ color: "white" }}
@@ -837,66 +890,80 @@ const KnittingOrder = ({
                     </td>
 
                     {/* UNIT PRICE */}
-                    <td style={getFooterCellStyle(FROZEN_COUNT + 11)}>
+                    <td style={getFooterCellStyle(FROZEN_COUNT + 12)}>
                         <div className={`${cellPad} text-white`} />
                     </td>
 
                     {/* PAYABLE AMOUNT */}
-                    <td style={getFooterCellStyle(FROZEN_COUNT + 12)}>
+                    <td style={getFooterCellStyle(FROZEN_COUNT + 13)}>
                         <div className={`${cellPad} text-white`}>
                             {formatNumber(totals.payableAmount.toFixed(2))}
                         </div>
                     </td>
 
                     {/* PAID BILLING AMOUNT */}
-                    <td style={getFooterCellStyle(FROZEN_COUNT + 13)}>
+                    <td style={getFooterCellStyle(FROZEN_COUNT + 14)}>
                         <div className={`${cellPad} text-white`}>-</div>
                     </td>
 
                     {/* PENDING BILLING AMOUNT */}
-                    <td style={getFooterCellStyle(FROZEN_COUNT + 14)}>
+                    <td style={getFooterCellStyle(FROZEN_COUNT + 15)}>
                         <div className={`${cellPad} text-white`}>-</div>
                     </td>
                 </tr>
             </tfoot>
 
-            {/* CANCELLATION TOOLTIP */}
-            {hoveredCancellation && (
-                <div
-                    className="fixed z-[99999] pointer-events-none w-[280px] rounded-lg border border-red-200 bg-white p-3 shadow-xl"
-                    style={{
-                        left: `${hoveredCancellation.left}px`,
-                        top: `${hoveredCancellation.top}px`,
-                    }}
-                >
-                    <div className="mb-2 flex items-center gap-2 border-b border-red-100 pb-2">
-                        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-red-100 text-red-600">
-                            !
-                        </span>
-                        <span className="text-sm font-bold text-red-700">
-                            Cancellation Details
-                        </span>
-                    </div>
-
-                    <div className="mb-2">
-                        <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                            Reason
-                        </p>
-                        <p className="break-words text-sm font-medium text-gray-800">
-                            {hoveredCancellation.reason}
-                        </p>
-                    </div>
-
-                    <div>
-                        <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-                            Remarks
-                        </p>
-                        <p className="break-words text-sm text-gray-700">
-                            {hoveredCancellation.remarks}
-                        </p>
-                    </div>
-                </div>
+            {/* WORK ORDER PREVIEW MODAL (renders through its own portal to document.body) */}
+            {previewTarget && (
+                <WorkOrderPreviewModal
+                    data={previewTarget}
+                    orderType="knittingOrder"
+                    revisionCount={
+                        getRevisionCount ? getRevisionCount(previewTarget.wo) : 0
+                    }
+                    onClose={closePreview}
+                />
             )}
+
+            {/* CANCELLATION TOOLTIP (portal: a <div> is not valid inside a table) */}
+            {hoveredCancellation &&
+                createPortal(
+                    <div
+                        className="fixed z-[99999] pointer-events-none w-[280px] rounded-lg border border-red-200 bg-white p-3 shadow-xl"
+                        style={{
+                            left: `${hoveredCancellation.left}px`,
+                            top: `${hoveredCancellation.top}px`,
+                        }}
+                    >
+                        <div className="mb-2 flex items-center gap-2 border-b border-red-100 pb-2">
+                            <span className="flex h-6 w-6 items-center justify-center rounded-full bg-red-100 text-red-600">
+                                !
+                            </span>
+                            <span className="text-sm font-bold text-red-700">
+                                Cancellation Details
+                            </span>
+                        </div>
+
+                        <div className="mb-2">
+                            <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                                Reason
+                            </p>
+                            <p className="break-words text-sm font-medium text-gray-800">
+                                {hoveredCancellation.reason}
+                            </p>
+                        </div>
+
+                        <div>
+                            <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+                                Remarks
+                            </p>
+                            <p className="break-words text-sm text-gray-700">
+                                {hoveredCancellation.remarks}
+                            </p>
+                        </div>
+                    </div>,
+                    document.body
+                )}
         </>
     );
 };

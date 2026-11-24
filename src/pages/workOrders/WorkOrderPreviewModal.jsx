@@ -36,7 +36,8 @@ const cmp = (a, b) =>
 const WorkOrderPreviewModal = ({ data, orderType, revisionCount = 0, onClose }) => {
     const job = data?.job;
     const wo = data?.wo;
-
+    console.log(wo, "wo");
+    console.log(job, "job");
     useEffect(() => {
         const onKey = (e) => { if (e.key === "Escape") onClose(); };
         document.addEventListener("keydown", onKey);
@@ -204,11 +205,28 @@ const WorkOrderPreviewModal = ({ data, orderType, revisionCount = 0, onClose }) 
                         </div>
                     </div>
 
+                    {
+                        wo.revisionCount > 0 && (
+                            <div className="" style={{ textAlign: "center", margin: "8px 0" }}>
+                                <span className="bg-red-500 bg-opacity-30 text-red-600" style={{ padding: "4px 40px", fontWeight: 700, fontSize: 13 }}>
+                                    REVISION NOTE : {wo.revisIonRemarks || "-"}
+                                </span>
+                            </div>
+                        )
+                    }
+
+                    {
+                        wo.isCancelled && (
+                            <span className="text-red-500 flex justify-center items-center" >CANCELLATION REASON: {wo.remarks}</span>
+                        )
+                    }
+
                     <div style={{ textAlign: "center", margin: "8px 0" }}>
                         <span style={{ border: "1px solid #000", padding: "4px 40px", fontWeight: 700, fontSize: 13 }}>
                             FACTORY NAME : {wo.factoryName || "-"}
                         </span>
                     </div>
+
 
                     <div style={{ fontSize: 9, marginBottom: 3 }}>
                         Dear sir,<br />Please fine here with the below {shortTitle} work order for your ref..
@@ -219,7 +237,7 @@ const WorkOrderPreviewModal = ({ data, orderType, revisionCount = 0, onClose }) 
                         <thead>
                             <tr>
                                 <th style={th}>STYLE</th>
-                                <th style={th}>PO NO.</th>                                
+                                <th style={th}>PO NO.</th>
                                 <th style={th}>HOD</th>
                                 <th style={th}>Color</th>
                                 <th style={th}>Fabrication</th>
@@ -228,8 +246,8 @@ const WorkOrderPreviewModal = ({ data, orderType, revisionCount = 0, onClose }) 
                                 <th style={th}>Yarn count</th>
                                 <th style={th}>YARN LOT NUMBER</th>
                                 <th style={th}>SL</th>
-                                 <th style={th}>M/D</th>
-                                <th style={th}>PRICE/ DT/kg</th>              
+                                <th style={th}>M/D</th>
+                                <th style={th}>PRICE/ DT/kg</th>
                                 <th style={th}>production start date</th>
                                 <th style={th}>production close date</th>
                                 <th style={th}>REMARKS</th>
@@ -242,7 +260,7 @@ const WorkOrderPreviewModal = ({ data, orderType, revisionCount = 0, onClose }) 
                             {printRows.map(({ comp, color, qty, compSpan, colorSpan }, i) => (
                                 <tr key={comp?.id ?? i}>
                                     {i === 0 && <td style={td} rowSpan={printRows.length}>{styleNo}</td>}
-                                    <td style={td}>{getPoNo(wo, comp)}</td>                                    
+                                    <td style={td}>{getPoNo(wo, comp)}</td>
                                     {i === 0 && <td style={td} rowSpan={printRows.length}>{wo.month || "-"}</td>}
                                     {colorSpan > 0 && <td style={td} rowSpan={colorSpan}>{color}</td>}
                                     {compSpan > 0 && <td style={td} rowSpan={compSpan}>{comp?.composition || "-"}</td>}
@@ -251,11 +269,11 @@ const WorkOrderPreviewModal = ({ data, orderType, revisionCount = 0, onClose }) 
                                     <td style={td}>{lineValue(wo, comp, "yarnCount")}</td>
                                     <td style={td}>{lineValue(wo, comp, "lotNo")}</td>
                                     <td style={td}>{lineValue(wo, comp, "stichLength")}</td>
-                                    <td style={td}>{lineValue(wo, comp, "machineDia")}</td>                                 
-                                    
+                                    <td style={td}>{lineValue(wo, comp, "machineDia")}</td>
+
                                     <td style={td}>{comp?.unitePrice != null ? Number(comp.unitePrice).toFixed(2) : "-"}</td>
-                                    
-                                    
+
+
                                     {i === 0 && <td style={td} rowSpan={printRows.length}>{wo.productionStartDate ? formatWorkOrderDate(wo.productionStartDate) : "-"}</td>}
                                     {i === 0 && <td style={td} rowSpan={printRows.length}>{wo.productionCloseDate ? formatWorkOrderDate(wo.productionCloseDate) : "-"}</td>}
                                     {i === 0 && <td style={td} rowSpan={printRows.length}>{wo.remarks || "Body"}</td>}
@@ -287,7 +305,9 @@ const WorkOrderPreviewModal = ({ data, orderType, revisionCount = 0, onClose }) 
                         <div style={{ width: "38%", border: "1px solid #000", background: "#d1d5db", fontSize: 10, fontWeight: 700, padding: 6, display: "flex", gap: 8, alignSelf: "flex-start" }}>
                             <div style={{ alignSelf: "center" }}>NOTE:</div>
                             <div>After {shortTitle.charAt(0) + shortTitle.slice(1).toLowerCase()} Grey Fabric will directly deliver to Bscic Grey Store for Inspection &amp; on each Grey Fabric roll should be written by Yellow Marker.</div>
+
                         </div>
+
                     </div>
 
                     <div style={{ marginTop: 6, background: "#d1d5db", fontSize: 10, fontWeight: 700, padding: "2px 6px" }}>

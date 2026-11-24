@@ -1,5 +1,7 @@
-import { useMemo } from "react";
-import WorkOrderDateCell from "./WorkOrderDateCell";
+
+import { useState, useMemo } from "react";
+import { Eye, Edit } from "lucide-react";
+import WorkOrderPreviewModal from "./WorkOrderPreviewModal";
 
 const YarnDyeOrders = ({
     orders,
@@ -13,207 +15,532 @@ const YarnDyeOrders = ({
     currentFrozenWidths = [],
     currentFrozenLefts = [],
     handlePreview,
-    getRevisionCount
+    getRevisionCount,
+    setWorkOrderReviseModal,
+    handleReviseWorkOrder,
 }) => {
+    const [hoveredIndex, setHoveredIndex] = useState(null);
 
-    const cellClass = "cursor-pointer px-3 py-1.5";
-    const compCellClass = "hover:bg-red-500/10 hover:text-red-500 cursor-pointer px-3 py-1.5";
+    // Preview modal: store IDs and always read fresh data from orders
+    const [previewKey, setPreviewKey] = useState(null);
 
-    // Sticky (frozen) style for the first FROZEN_COUNT columns of the body
-    const stickyStyle = (colIndex) => ({
+    const previewTarget = useMemo(() => {
+        if (!previewKey) return null;
+
+        const job = (orders || []).find(
+            (j) => j.jobNo === previewKey.jobNo
+        );
+
+        const wo = job?.workOrders?.find(
+            (w) => w.id === previewKey.woId
+        );
+
+        return job && wo ? { job, wo } : null;
+    }, [orders, previewKey]);
+
+    const openPreview = (e, job, wo) => {
+        e.stopPropagation();
+
+        if (!wo) return;
+
+        setPreviewKey({
+            jobNo: job?.jobNo,
+            woId: wo.id,
+        });
+    };
+
+    const closePreview = () => setPreviewKey(null);
+
+    const cellPad = "px-3 py-2";
+    const clickableCell =
+        `${cellPad} cursor-pointer hover:bg-red-500/10 hover:text-red-500`;
+
+    const baseTd = {
+        borderRight: "1px solid #d1d5db",
+        borderBottom: "1px solid #d1d5db",
+        padding: 0,
+        textAlign: "center",
+        verticalAlign: "middle",
+        boxSizing: "border-box",
+    };
+
+    const formatNumber = (value) => {
+        const num = Number(value) || 0;
+        return num.toLocaleString("en-US");
+    };
+
+    // Frozen columns: 0 through 8
+    const stickyTd = (colIndex, isHovered) => ({
+        ...baseTd,
         position: "sticky",
         left: `${currentFrozenLefts[colIndex] ?? 0}px`,
         zIndex: 3,
-        backgroundColor: "#ffffff",
-        width: currentFrozenWidths[colIndex] ? `${currentFrozenWidths[colIndex]}px` : undefined,
-        minWidth: currentFrozenWidths[colIndex] ? `${currentFrozenWidths[colIndex]}px` : undefined,
-        boxShadow: colIndex === FROZEN_COUNT - 1 ? "2px 0 5px -1px rgba(0,0,0,0.18)" : "none",
+        backgroundColor: isHovered ? "#bbf7d0" : "#ffffff",
+        width: currentFrozenWidths[colIndex]
+            ? `${currentFrozenWidths[colIndex]}px`
+            : undefined,
+        minWidth: currentFrozenWidths[colIndex]
+            ? `${currentFrozenWidths[colIndex]}px`
+            : undefined,
+        maxWidth: currentFrozenWidths[colIndex]
+            ? `${currentFrozenWidths[colIndex]}px`
+            : undefined,
+        overflow: "visible",
+        textOverflow: "clip",
+        whiteSpace: "nowrap",
+        boxShadow:
+            colIndex === FROZEN_COUNT - 1
+                ? "2px 0 5px -1px rgba(0,0,0,0.18)"
+                : "none",
     });
 
-    // ---- FOOTER TOTALS ----
-    const allCompositions =
-        (orders || []).flatMap(job =>
-            (job.workOrders || []).flatMap(w =>
-                (w.compositions || []).map(c => ({ ...c, _workOrder: w }))
-            )
+    const plainTd = (isHovered) => ({
+        ...baseTd,
+        backgroundColor: isHovered ? "#f0fdf4" : "#ffffff",
+        minWidth: "100px",
+    });
+
+    // Footer styles
+    const footerBaseStyle = {
+        ...baseTd,
+        position: "sticky",
+        bottom: 0,
+        zIndex: 12,
+        backgroundColor: "#657582",
+        fontWeight: 700,
+        padding: "8px 12px",
+        textAlign: "center",
+        verticalAlign: "middle",
+        borderTop: "2px solid #6b7280",
+        boxShadow: "0 -2px 5px -1px rgba(0,0,0,0.1)",
+        boxSizing: "border-box",
+        whiteSpace: "nowrap",
+        color: "#1f2937",
+    };
+
+    const getFooterCellStyle = (index) => {
+        if (index < FROZEN_COUNT) {
+            return {
+                ...footerBaseStyle,
+                left: `${currentFrozenLefts[index] ?? 0}px`,
+                zIndex: 20,
+                backgroundColor: "#657582",
+                width: currentFrozenWidths[index]
+                    ? `${currentFrozenWidths[index]}px`
+                    : undefined,
+                minWidth: currentFrozenWidths[index]
+                    ? `${currentFrozenWidths[index]}px`
+                    : undefined,
+                maxWidth: currentFrozenWidths[index]
+                    ? `${currentFrozenWidths[index]}px`
+                    : undefined,
+                overflow: "visible",
+                textOverflow: "clip",
+                boxShadow:
+                    index === FROZEN_COUNT - 1
+                        ? "2px -2px 5px -1px rgba(0,0,0,0.18)"
+                        : "0 -2px 5px -1px rgba(0,0,0,0.1)",
+            };
+        }
+
+        return footerBaseStyle;
+    };
+
+    // Finish dia from matching style requirement row
+    const getFinishDia = (wo, comp) => {
+        if (!wo?.styleRequirement?.rows || !comp) return "-";
+
+        const matchingRow = wo.styleRequirement.rows.find(
+            (row) =>
+                row.composition === comp.composition &&
+                row.color === comp.color
         );
 
-    const totals = allCompositions.reduce(
-        (acc, c) => {
-            const yarnJobs = (c._workOrder?.yarnDyeingJobs || []).filter(
-                y => y.composition === c.composition
-            );
-            const bookingQty = yarnJobs.reduce((s, y) => s + (Number(y.qty) || 0), 0);
+        return matchingRow?.finishDia || "-";
+    };
 
-            acc.bookingQty += bookingQty;
-            acc.workOrderQty += Number(c.yarnDeliveriesWithColor?.YarnDeliveryForYarnDye) || 0;
-            acc.greyReceived += Number(c.greyReceived) || 0;
-            acc.greyReturn += Number(c.greyReturn) || 0;
-            acc.finishReceived += Number(c.finishReceived) || 0;
-            acc.finishReturn += Number(c.finishReturn) || 0;
-            return acc;
-        },
-        { bookingQty: 0, workOrderQty: 0, greyReceived: 0, greyReturn: 0, finishReceived: 0, finishReturn: 0 }
-    );
+    // Footer totals
+    const totals = useMemo(() => {
+        const acc = {
+            bookingQty: 0,
+            workOrderQty: 0,
+            greyReceived: 0,
+            greyReturn: 0,
+            finishReceived: 0,
+            finishReturn: 0,
+        };
 
-    // ── Flatten jobs -> workOrders -> compositions into ONE real <tr> per
-    // composition line, with rowSpan for job-level (JOB NO) and
-    // work-order-level (FACTORY NAME, WORK ORDER NO, BUYER NAME, STYLE,
-    // MONTH) columns. Fixes the same border-desync bug documented in
-    // KnittingOrder.jsx — long composition/booking-color text wrapping no
-    // longer breaks alignment with the single-value columns.
+        (orders || []).forEach((job) => {
+            (job.workOrders || []).forEach((wo) => {
+                (wo.compositions || []).forEach((c) => {
+                    const yarnJobs = (
+                        wo.yarnDyeingJobs || []
+                    ).filter(
+                        (y) => y.composition === c.composition
+                    );
+
+                    acc.bookingQty += yarnJobs.reduce(
+                        (s, y) => s + (Number(y.qty) || 0),
+                        0
+                    );
+
+                    acc.workOrderQty +=
+                        Number(
+                            c.yarnDeliveriesWithColor
+                                ?.YarnDeliveryForYarnDye
+                        ) || 0;
+
+                    acc.greyReceived += Number(c.greyReceived) || 0;
+                    acc.greyReturn += Number(c.greyReturn) || 0;
+                    acc.finishReceived +=
+                        Number(c.finishReceived) || 0;
+                    acc.finishReturn +=
+                        Number(c.finishReturn) || 0;
+                });
+            });
+        });
+
+        return acc;
+    }, [orders]);
+
+    // Flatten jobs -> workOrders -> compositions
     const flatRows = useMemo(() => {
         const out = [];
+
         (orders || []).forEach((job, jobIndex) => {
             const workOrders = job.workOrders || [];
-            const jobCompCount = workOrders.reduce(
-                (sum, wo) => sum + (wo.compositions?.length || 1),
-                0
-            ) || 1;
+
+            const jobCompCount =
+                workOrders.reduce(
+                    (sum, wo) =>
+                        sum + (wo.compositions?.length || 1),
+                    0
+                ) || 1;
+
             let jobRowSeen = false;
 
             if (workOrders.length === 0) {
                 out.push({
-                    jobIndex, job, wo: null, comp: null,
-                    isFirstOfJob: true, jobRowSpan: 1,
-                    isFirstOfWo: true, woRowSpan: 1,
+                    jobIndex,
+                    job,
+                    wo: null,
+                    comp: null,
+                    isFirstOfJob: true,
+                    jobRowSpan: 1,
+                    isFirstOfWo: true,
+                    woRowSpan: 1,
                 });
+
                 return;
             }
 
             workOrders.forEach((wo) => {
-                const comps = wo.compositions && wo.compositions.length > 0 ? wo.compositions : [null];
+                const comps =
+                    wo.compositions &&
+                    wo.compositions.length > 0
+                        ? wo.compositions
+                        : [null];
+
                 comps.forEach((comp, compIndex) => {
                     out.push({
-                        jobIndex, job, wo, comp,
+                        jobIndex,
+                        job,
+                        wo,
+                        comp,
                         isFirstOfJob: !jobRowSeen,
                         jobRowSpan: jobCompCount,
                         isFirstOfWo: compIndex === 0,
                         woRowSpan: comps.length,
                     });
+
                     jobRowSeen = true;
                 });
             });
         });
+
         return out;
     }, [orders]);
 
     return (
         <>
-            <tbody className="whitespace-nowrap">
+            <tbody>
                 {flatRows.map((r, rowIndex) => {
-                    const { job, wo, comp, isFirstOfJob, jobRowSpan, isFirstOfWo, woRowSpan } = r;
+                    const {
+                        job,
+                        wo,
+                        comp,
+                        isFirstOfJob,
+                        jobRowSpan,
+                        isFirstOfWo,
+                        woRowSpan,
+                        jobIndex,
+                    } = r;
 
-                    const yarnJobs = (wo?.yarnDyeingJobs || []).filter(
-                        y => y.composition === comp?.composition
+                    const isHovered = hoveredIndex === jobIndex;
+
+                    const yarnJobs = (
+                        wo?.yarnDyeingJobs || []
+                    ).filter(
+                        (y) => y.composition === comp?.composition
                     );
 
+                    const deliveredForDye =
+                        comp?.yarnDeliveriesWithColor
+                            ?.YarnDeliveryForYarnDye;
+
                     return (
-                        <tr key={rowIndex} className="border-b border-gray-200">
-
-                            {/* WORK ORDER DATE (new, frozen, per work order) */}
+                        <tr
+                            key={`${wo?.id || job?.jobNo || "job"}-${comp?.id || rowIndex}`}
+                            onMouseEnter={() =>
+                                setHoveredIndex(jobIndex)
+                            }
+                            onMouseLeave={() =>
+                                setHoveredIndex(null)
+                            }
+                        >
+                            {/* COL 0 — ACTION */}
                             {isFirstOfWo && (
-                                <td className="border border-gray-200 align-top" style={stickyStyle(0)} rowSpan={woRowSpan}>
-                                    <WorkOrderDateCell
-                                        job={job}
-                                        wo={wo}
-                                        onPreview={handlePreview}
-                                        revisionCount={getRevisionCount ? getRevisionCount(wo) : 0}
-                                        className={cellClass}
-                                    />
-                                </td>
-                            )}
+                                <td
+                                    style={stickyTd(0, isHovered)}
+                                    rowSpan={woRowSpan}
+                                >
+                                    {wo ? (
+                                        <div className="flex flex-col items-center justify-center gap-2 px-2 py-2">
+                                            <button
+                                                type="button"
+                                                onClick={(e) =>
+                                                    openPreview(e, job, wo)
+                                                }
+                                                className="flex w-full items-center justify-center gap-2 rounded-md bg-slate-600 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-slate-700"
+                                                title="Preview work order"
+                                            >
+                                                Preview
+                                                <Eye size={16} />
+                                            </button>
 
-                            {/* MONTH (per work order) */}
-                            {isFirstOfWo && (
-                                <td className="border border-gray-200 align-top" style={stickyStyle(1)} rowSpan={woRowSpan}>
-                                    <div className={cellClass}>{wo?.month}</div>
-                                </td>
-                            )}
-
-                            {/* FACTORY NAME (per work order) */}
-                            {isFirstOfWo && (
-                                <td className="border border-gray-200 align-top" style={stickyStyle(2)} rowSpan={woRowSpan}>
-                                    {!wo || wo.factoryName === "NULL" ? (
-                                        <div className={`${cellClass} text-gray-500`}>-</div>
+                                            <button
+                                                type="button"
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    handleReviseWorkOrder?.(
+                                                        wo.id
+                                                    );
+                                                }}
+                                                className="flex w-full items-center justify-center gap-2 rounded-md bg-yellow-400 px-3 py-1.5 text-sm font-medium text-yellow-900 transition hover:bg-yellow-500"
+                                                title="Revise work order"
+                                            >
+                                                Revise
+                                                <Edit size={16} />
+                                            </button>
+                                        </div>
                                     ) : (
-                                        <div onDoubleClick={() => handleInlineEdit(wo.id, wo.factoryName, "workOrder", "factoryName", 0)} className="cursor-pointer px-3 py-1.5">
-                                            {isEdit.updatedFieldName === "factoryName" && isEdit.rowId === wo.id ? (
-                                                <input type="text" name="factoryName" className="p-2 outline-none border rounded-md w-full" value={updatedFields.currentValue} onChange={(e) => handleOnChange(e)} />
-                                            ) : <span onClick={() => handleEditRowData(wo.id, "yarnDyeingOrder")}>{wo.factoryName}</span>}
+                                        <div className={cellPad}>-</div>
+                                    )}
+                                </td>
+                            )}
+
+                            {/* COL 1 — WORK ORDER DATE */}
+                            {isFirstOfWo && (
+                                <td
+                                    style={stickyTd(1, isHovered)}
+                                    rowSpan={woRowSpan}
+                                >
+                                    <div className={cellPad}>
+                                        {wo?.newWorkOrderPlaceDate || "-"}
+                                    </div>
+                                </td>
+                            )}
+
+                            {/* COL 2 — MONTH */}
+                            {isFirstOfWo && (
+                                <td
+                                    style={stickyTd(2, isHovered)}
+                                    rowSpan={woRowSpan}
+                                >
+                                    <div className={cellPad}>
+                                        {wo?.month || "-"}
+                                    </div>
+                                </td>
+                            )}
+
+                            {/* COL 3 — FACTORY NAME */}
+                            {isFirstOfWo && (
+                                <td
+                                    style={stickyTd(3, isHovered)}
+                                    rowSpan={woRowSpan}
+                                >
+                                    {!wo || wo.factoryName === "NULL" ? (
+                                        <div className={`${cellPad} text-gray-500`}>
+                                            -
+                                        </div>
+                                    ) : (
+                                        <div
+                                            onDoubleClick={() =>
+                                                handleInlineEdit(
+                                                    wo.id,
+                                                    wo.factoryName,
+                                                    "workOrder",
+                                                    "factoryName",
+                                                    0
+                                                )
+                                            }
+                                            className={`${cellPad} cursor-pointer`}
+                                        >
+                                            {isEdit.updatedFieldName ===
+                                                "factoryName" &&
+                                            isEdit.rowId === wo.id ? (
+                                                <input
+                                                    type="text"
+                                                    name="factoryName"
+                                                    className="p-2 outline-none border rounded-md w-full"
+                                                    value={
+                                                        updatedFields.currentValue
+                                                    }
+                                                    onChange={(e) =>
+                                                        handleOnChange(e)
+                                                    }
+                                                />
+                                            ) : (
+                                                <span
+                                                    onClick={() =>
+                                                        handleEditRowData(
+                                                            wo.id,
+                                                            "yarnDyeingOrder"
+                                                        )
+                                                    }
+                                                >
+                                                    {wo.factoryName}
+                                                </span>
+                                            )}
                                         </div>
                                     )}
                                 </td>
                             )}
 
-
-
-                            {/* WORK ORDER NO (per work order) */}
+                            {/* COL 4 — WORK ORDER NO */}
                             {isFirstOfWo && (
-                                <td className="border border-gray-200 align-top" style={stickyStyle(3)} rowSpan={woRowSpan}>
-                                    <div className={cellClass}>{wo?.workOrderNo}</div>
+                                <td
+                                    style={stickyTd(4, isHovered)}
+                                    rowSpan={woRowSpan}
+                                >
+                                    <div className={cellPad}>
+                                        {wo?.workOrderNo || "-"}
+                                    </div>
                                 </td>
                             )}
 
-                            {/* BUYER NAME (per work order) */}
+                            {/* COL 5 — BUYER NAME */}
                             {isFirstOfWo && (
-                                <td className="border border-gray-200 align-top" style={stickyStyle(4)} rowSpan={woRowSpan}>
-                                    <div className={cellClass}>{wo?.styleRequirement?.buyerName || "-"}</div>
+                                <td
+                                    style={stickyTd(5, isHovered)}
+                                    rowSpan={woRowSpan}
+                                >
+                                    <div className={cellPad}>
+                                        {wo?.styleRequirement?.buyerName || "-"}
+                                    </div>
                                 </td>
                             )}
 
-                            {/* JOB NO (per job) */}
+                            {/* COL 6 — JOB NO */}
                             {isFirstOfJob && (
-                                <td className="border border-gray-200 px-3 py-1.5 text-sm align-top" style={stickyStyle(5)} rowSpan={jobRowSpan}>
-                                    <span onClick={() =>getDataForCancellation({
-                                        jobNo: job.jobNo,
-                                        isOpen: true,
-                                    })} >{job.jobNo}</span>
+                                <td
+                                    style={stickyTd(6, isHovered)}
+                                    rowSpan={jobRowSpan}
+                                >
+                                    <div
+                                        onClick={() =>
+                                            getDataForCancellation({
+                                                jobNo: job.jobNo,
+                                                isOpen: true,
+                                            })
+                                        }
+                                        className={`${cellPad} cursor-pointer`}
+                                    >
+                                        {job.jobNo || "-"}
+                                    </div>
                                 </td>
                             )}
 
-                            {/* STYLE (per work order) */}
+                            {/* COL 7 — STYLE NO */}
                             {isFirstOfWo && (
-                                <td className="border border-gray-200 align-top" style={stickyStyle(6)} rowSpan={woRowSpan}>
-                                    <div className={cellClass}>{wo?.styleNo}</div>
+                                <td
+                                    style={stickyTd(7, isHovered)}
+                                    rowSpan={woRowSpan}
+                                >
+                                    <div className={cellPad}>
+                                        {wo?.styleRequirement?.styleNo ||
+                                            wo?.styleNo ||
+                                            "-"}
+                                    </div>
                                 </td>
                             )}
 
-                            {/* BOOKING COLOR (per composition; may itself stack multiple yarnJobs, which just grows this one row) */}
-                            <td className="border border-gray-200 align-top" style={stickyStyle(7)}>
-                                <div className={compCellClass}>
+                            {/* COL 8 — BOOKING COLOR */}
+                            <td style={stickyTd(8, isHovered)}>
+                                <div className={clickableCell}>
                                     {yarnJobs.length > 0
                                         ? yarnJobs.map((y, yi) => (
-                                            <div onClick={() => handleEditRowData(comp?.id, y.id)} key={yi} className="border-b border-gray-100 last:border-b-0 py-0.5">{y.color} y id {"=>"} {y.id}  </div>
+                                            <div
+                                                key={y.id ?? yi}
+                                                onClick={() =>
+                                                    handleEditRowData(
+                                                        comp?.id,
+                                                        y.id
+                                                    )
+                                                }
+                                                className="border-b border-gray-100 py-0.5 last:border-b-0"
+                                            >
+                                                {y.color}
+                                            </div>
                                         ))
                                         : "-"}
-                                    Color
                                 </div>
                             </td>
 
-                            {/* COMPOSITION (per composition) */}
-                            <td className="border border-gray-200 align-top" style={stickyStyle(8)}>
-                                <div className={compCellClass}>{comp?.composition}</div>
-                            </td>
-
-                            {/* FINISH DIA */}
-                            <td className="border border-gray-200 align-top">
-                                <div className={compCellClass}>{comp?.id}</div>
-                            </td>
-
-                            {/* SHADE (%) (per composition) */}
-                            <td className="border border-gray-200 align-top">
-                                <div onClick={() => handleEditRowData(comp?.id, comp?.id)} className={compCellClass}>
-                                    SHADE (%)
+                            {/* COL 9 — COMPOSITION (NOT FROZEN) */}
+                            <td style={plainTd(isHovered)}>
+                                <div className={cellPad}>
+                                    {comp?.composition || "-"}
                                 </div>
                             </td>
 
-                            {/* BOOKING QTY (per composition) */}
-                            <td className="border border-gray-200 align-top">
-                                <div className={compCellClass}>
+                            {/* COL 10 — FINISH DIA */}
+                            <td style={plainTd(isHovered)}>
+                                <div className={cellPad}>
+                                    {getFinishDia(wo, comp)}
+                                </div>
+                            </td>
+
+                            {/* COL 11 — SHADE (%) */}
+                            <td style={plainTd(isHovered)}>
+                                <div
+                                    onClick={() =>
+                                        handleEditRowData(
+                                            comp?.id,
+                                            comp?.id
+                                        )
+                                    }
+                                    className={clickableCell}
+                                >
+                                    -
+                                </div>
+                            </td>
+
+                            {/* COL 12 — BOOKING QTY */}
+                            <td style={plainTd(isHovered)}>
+                                <div className={clickableCell}>
                                     {yarnJobs.length > 0
                                         ? yarnJobs.map((y, yi) => (
-                                            <div onClick={() => handleEditRowData(comp?.id, y.id)} key={yi} className="border-b border-gray-100 last:border-b-0 py-0.5">
+                                            <div
+                                                key={y.id ?? yi}
+                                                onClick={() =>
+                                                    handleEditRowData(
+                                                        comp?.id,
+                                                        y.id
+                                                    )
+                                                }
+                                                className="border-b border-gray-100 py-0.5 last:border-b-0"
+                                            >
                                                 {y.qty}
                                             </div>
                                         ))
@@ -221,59 +548,156 @@ const YarnDyeOrders = ({
                                 </div>
                             </td>
 
-                            {/* PRICE PER KG (per composition) */}
-                            <td className="border border-gray-200 align-top">
-                                <div className={compCellClass}>{comp?.unitePrice?.toFixed(2)}</div>
+                            {/* COL 13 — PRICE PER KG */}
+                            <td style={plainTd(isHovered)}>
+                                <div className={cellPad}>
+                                    {comp?.unitePrice != null
+                                        ? Number(comp.unitePrice).toFixed(2)
+                                        : "-"}
+                                </div>
                             </td>
 
-                            {/* WORK ORDER QTY (per composition) */}
-                            <td className="border border-gray-200 align-top">
-                                <div className={compCellClass}>{comp?.yarnDeliveriesWithColor?.YarnDeliveryForYarnDye || "NOT DELIVERED YET"}</div>
+                            {/* COL 14 — WORK ORDER QTY */}
+                            <td style={plainTd(isHovered)}>
+                                <div className={cellPad}>
+                                    {deliveredForDye || "NOT DELIVERED YET"}
+                                </div>
                             </td>
 
-                            {/* GREY RECEIVED (per composition) */}
-                            <td className="border border-gray-200 align-top">
-                                <div className={compCellClass}>{comp?.greyReceived || 0}</div>
+                            {/* COL 15 — GREY RECEIVED */}
+                            <td style={plainTd(isHovered)}>
+                                <div className={cellPad}>
+                                    {comp?.greyReceived || 0}
+                                </div>
                             </td>
 
-                            {/* GREY RETURN (per composition) */}
-                            <td className="border border-gray-200 align-top">
-                                <div className={compCellClass}>{comp?.greyReturn || 0}</div>
+                            {/* COL 16 — GREY RETURN */}
+                            <td style={plainTd(isHovered)}>
+                                <div className={cellPad}>
+                                    {comp?.greyReturn || 0}
+                                </div>
                             </td>
 
-                            {/* FINISH RECEIVED (per composition) */}
-                            <td className="border border-gray-200 align-top">
-                                <div className={compCellClass}>{comp?.finishReceived || 0}</div>
+                            {/* COL 17 — FINISH RECEIVED */}
+                            <td style={plainTd(isHovered)}>
+                                <div className={cellPad}>
+                                    {comp?.finishReceived || 0}
+                                </div>
                             </td>
 
-                            {/* FINISH RETURN (per composition) */}
-                            <td className="border border-gray-200 align-top">
-                                <div className={compCellClass}>{comp?.finishReturn || 0}</div>
+                            {/* COL 18 — FINISH RETURN */}
+                            <td style={plainTd(isHovered)}>
+                                <div className={cellPad}>
+                                    {comp?.finishReturn || 0}
+                                </div>
                             </td>
-
                         </tr>
                     );
                 })}
             </tbody>
 
-            {/* FOOTER TOTALS ROW */}
             <tfoot>
-                <tr className="border-t-2 border-gray-300 bg-gray-50 font-semibold">
-                    <td colSpan={7} className="border border-gray-200 px-3 py-1.5 text-right text-sm">
-                        TOTAL
+                <tr>
+                    {/* COL 0–8 — FROZEN FOOTER CELLS */}
+                    {Array.from({
+                        length: FROZEN_COUNT,
+                    }).map((_, i) => (
+                        <td
+                            key={`footer-frozen-${i}`}
+                            style={getFooterCellStyle(i)}
+                        >
+                            {i === 0 ? (
+                                <div
+                                    className={`${cellPad} text-white`}
+                                    style={{
+                                        textAlign: "center",
+                                        fontSize: "14px",
+                                        fontWeight: 700,
+                                    }}
+                                >
+                                    TOTAL
+                                </div>
+                            ) : null}
+                        </td>
+                    ))}
+
+                    {/* COL 9 — COMPOSITION */}
+                    <td style={getFooterCellStyle(FROZEN_COUNT)}>
+                        <div className={`${cellPad} text-white`}>-</div>
                     </td>
-                    <td className="border border-gray-200 px-3 py-1.5"></td>
-                    <td className="border border-gray-200 px-3 py-1.5"></td>
-                    <td className="border border-gray-200 px-3 py-1.5"></td>
-                    <td className="border border-gray-200 px-3 py-1.5">{totals.bookingQty}</td>
-                    <td className="border border-gray-200 px-3 py-1.5"></td>
-                    <td className="border border-gray-200 px-3 py-1.5">{totals.workOrderQty}</td>
-                    <td className="border border-gray-200 px-3 py-1.5">{totals.greyReceived}</td>
-                    <td className="border border-gray-200 px-3 py-1.5">{totals.greyReturn}</td>
-                    <td className="border border-gray-200 px-3 py-1.5">{totals.finishReceived}</td>
-                    <td className="border border-gray-200 px-3 py-1.5">{totals.finishReturn}</td>
+
+                    {/* COL 10 — FINISH DIA */}
+                    <td style={getFooterCellStyle(FROZEN_COUNT + 1)}>
+                        <div className={`${cellPad} text-white`}>-</div>
+                    </td>
+
+                    {/* COL 11 — SHADE */}
+                    <td style={getFooterCellStyle(FROZEN_COUNT + 2)}>
+                        <div className={`${cellPad} text-white`}>-</div>
+                    </td>
+
+                    {/* COL 12 — BOOKING QTY */}
+                    <td style={getFooterCellStyle(FROZEN_COUNT + 3)}>
+                        <div className={`${cellPad} text-white`}>
+                            {formatNumber(totals.bookingQty.toFixed(2))}
+                        </div>
+                    </td>
+
+                    {/* COL 13 — PRICE PER KG */}
+                    <td style={getFooterCellStyle(FROZEN_COUNT + 4)}>
+                        <div className={`${cellPad} text-white`} />
+                    </td>
+
+                    {/* COL 14 — WORK ORDER QTY */}
+                    <td style={getFooterCellStyle(FROZEN_COUNT + 5)}>
+                        <div className={`${cellPad} text-white`}>
+                            {formatNumber(totals.workOrderQty.toFixed(2))}
+                        </div>
+                    </td>
+
+                    {/* COL 15 — GREY RECEIVED */}
+                    <td style={getFooterCellStyle(FROZEN_COUNT + 6)}>
+                        <div className={`${cellPad} text-white`}>
+                            {formatNumber(totals.greyReceived.toFixed(2))}
+                        </div>
+                    </td>
+
+                    {/* COL 16 — GREY RETURN */}
+                    <td style={getFooterCellStyle(FROZEN_COUNT + 7)}>
+                        <div className={`${cellPad} text-white`}>
+                            {formatNumber(totals.greyReturn.toFixed(2))}
+                        </div>
+                    </td>
+
+                    {/* COL 17 — FINISH RECEIVED */}
+                    <td style={getFooterCellStyle(FROZEN_COUNT + 8)}>
+                        <div className={`${cellPad} text-white`}>
+                            {formatNumber(totals.finishReceived.toFixed(2))}
+                        </div>
+                    </td>
+
+                    {/* COL 18 — FINISH RETURN */}
+                    <td style={getFooterCellStyle(FROZEN_COUNT + 9)}>
+                        <div className={`${cellPad} text-white`}>
+                            {formatNumber(totals.finishReturn.toFixed(2))}
+                        </div>
+                    </td>
                 </tr>
             </tfoot>
+
+            {/* WORK ORDER PREVIEW MODAL */}
+            {previewTarget && (
+                <WorkOrderPreviewModal
+                    data={previewTarget}
+                    orderType="yarnDyeingOrder"
+                    revisionCount={
+                        getRevisionCount
+                            ? getRevisionCount(previewTarget.wo)
+                            : 0
+                    }
+                    onClose={closePreview}
+                />
+            )}
         </>
     );
 };

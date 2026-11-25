@@ -28,27 +28,31 @@ const fmtNum = (n) => {
 };
 
 const fmtPct = (n) => (n === null || n === undefined ? <span className="text-slate-300">—</span> : `${(n * 100).toFixed(2)}%`);
+const fmtT = (n) => n.toLocaleString(undefined, { minimumFractionDigits: 2 });
+const lossText = (received, finish) => (received ? `${(((received - finish) / received) * 100).toFixed(2)}%` : "—");
 
 // --- Column Definitions ---
 const COLUMNS = [
     { id: "jobNo", label: "Job No", width: 120, group: "yarn" },
+    { id: "bookingQty", label: "Yarn Booking Qty", width: 100, group: "yarn" },
     { id: "yarnFactory", label: "Factory Name", width: 150, group: "yarn" },
-    { id: "yarnReq", label: "Yarn Req", width: 90, group: "yarn" },
+    { id: "yarnReq", label: "Work Order Qty", width: 90, group: "yarn" },
     { id: "yarnIssue", label: "Yarn Issue", width: 90, group: "yarn" },
-    { id: "knittingGrey", label: "Knitting Grey", width: 100, group: "yarn" },
+    { id: "knittingGrey", label: "Knitting Greige", width: 100, group: "yarn" },
     { id: "yarnReturn", label: "Yarn Return", width: 95, group: "yarn" },
     { id: "yarnBalance", label: "Balance", width: 85, group: "yarn" },
 
     { id: "dyeingFactory", label: "Dyeing Factory", width: 130, group: "dyeing" },
-    { id: "greyDelivery", label: "Grey Delivery", width: 90, group: "dyeing" },
-    { id: "greyReturn", label: "Grey Return", width: 90, group: "dyeing" },
-    { id: "greyRcvd", label: "Grey Rcvd", width: 85, group: "dyeing" },
+    { id: "greyDelivery", label: "Greige Delivery", width: 90, group: "dyeing" },
+    { id: "greyReturn", label: "Greige Return", width: 90, group: "dyeing" },
+    { id: "greyRcvd", label: "Greige Rcvd", width: 85, group: "dyeing" },
     { id: "finishRcvd", label: "Finish Rcvd", width: 90, group: "dyeing" },
     { id: "dyeBalance", label: "Balance", width: 85, group: "dyeing" },
     { id: "processLoss", label: "Process Loss", width: 85, group: "dyeing" },
 
     { id: "aopFactory", label: "AOP Factory", width: 130, group: "aop" },
     { id: "sentForAop", label: "Sent For AOP", width: 90, group: "aop" },
+    { id: "returnFromAop", label: "Return From AOP", width: 95, group: "aop" },
     { id: "receivedFromAop", label: "Rcvd From AOP", width: 90, group: "aop" },
     { id: "aopFinishRcvd", label: "AOP Finish Rcvd", width: 90, group: "aop" },
     { id: "aopBalance", label: "Balance", width: 85, group: "aop" },
@@ -57,7 +61,7 @@ const COLUMNS = [
     { id: "remarks", label: "Remarks", width: 140, group: "remarks" },
 ];
 
-const FROZEN_IDS = ["jobNo", "yarnFactory", "yarnReq", "yarnIssue", "knittingGrey", "yarnReturn", "yarnBalance"];
+const FROZEN_IDS = ["jobNo", "bookingQty", "yarnFactory", "yarnReq", "yarnIssue", "knittingGrey", "yarnReturn", "yarnBalance"];
 
 let acc = 0;
 const COL_LEFT = {};
@@ -68,26 +72,20 @@ COLUMNS.forEach((c) => {
 const TOTAL_WIDTH = acc;
 
 const GROUP_HEADER_ROW_HEIGHT = 33;
-
-// Reinforced divider between the frozen "Yarn" block and the rest of the table.
-// Rendered as an inset box-shadow (instead of relying purely on border-right) so it
-// stays visually intact while the column is sticky and the table scrolls horizontally —
-// a plain border on a sticky cell can get painted over by neighboring cells in some
-// browsers, box-shadow does not.
 const FROZEN_DIVIDER_SHADOW = "inset -1px 0 0 0 #64748b";
 
-/* ===== SCROLL LOADING + AUTO-FIT CONFIG (same system as the Summary page) ===== */
-const JOB_PAGE = 20;                  // jobs added every time the user scrolls near the end
+/* ===== SERVER PAGING + AUTO-FIT CONFIG ===== */
+const PAGE_SIZE = 30;                 // jobs loaded from the server per request
+const EXPORT_PAGE_SIZE = 100;         // jobs per request while exporting (backend max is 100)
+const SEARCH_DEBOUNCE_MS = 400;       // wait after typing before the database search is sent
 const LOAD_MORE_DISTANCE = 400;       // start loading when less than this many px are left below
-const MIN_TABLE_HEIGHT = 300;         // only a safety minimum - the real height is calculated from the screen
-const BOTTOM_RESERVE = 60;            // space kept free under the table (page padding + the status line)
-const FIT_DEBUG = false;              // true = prints the measured numbers in the browser console (F12)
+const MIN_TABLE_HEIGHT = 300;
+const BOTTOM_RESERVE = 60;
+const FIT_DEBUG = false;
 const FILTER_POPUP_WIDTH = 192;
-const FILTER_POPUP_GAP = 6;           // space between the filter icon and the popup
-const FILTER_POPUP_MARGIN = 8;        // minimum space between the popup and the screen edge
+const FILTER_POPUP_GAP = 6;
+const FILTER_POPUP_MARGIN = 8;
 
-// The ERP has its own zoom (67% / 100% ...). With CSS zoom / scale the real screen pixels are NOT the same as the CSS
-// pixels of the page, so sizes and positions must be corrected by this factor. 1 = no zoom.
 const getZoomScale = (el) => {
     if (!el) return 1;
     const rect = el.getBoundingClientRect();
@@ -97,10 +95,6 @@ const getZoomScale = (el) => {
     return scale > 0.2 && scale < 5 ? scale : 1;
 };
 
-// Puts a fixed popup centered right under the clicked button (or above it when there is no room below).
-// It does NOT guess the zoom: it measures where the popup REALLY is on the screen, moves it by the difference and
-// measures again. This way the popup lands on the clicked icon with any ERP zoom (67% / 100% ...), with a
-// zoomed / transformed layout wrapper, and with the page or the table scrolled.
 const positionPopupUnderButton = (btn, pop) => {
     if (!btn || !pop) return;
     for (let i = 0; i < 5; i++) {
@@ -111,7 +105,6 @@ const positionPopupUnderButton = (btn, pop) => {
         const vw = (window.visualViewport && window.visualViewport.width) || window.innerWidth;
         const vh = (window.visualViewport && window.visualViewport.height) || window.innerHeight;
 
-        // where the popup should be, in screen pixels
         let wantLeft = b.left + b.width / 2 - p.width / 2;
         wantLeft = Math.max(FILTER_POPUP_MARGIN, Math.min(wantLeft, vw - p.width - FILTER_POPUP_MARGIN));
 
@@ -125,7 +118,6 @@ const positionPopupUnderButton = (btn, pop) => {
         const dy = wantTop - p.top;
         if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) break;
 
-        // screen pixels -> CSS pixels of the popup (only a first guess, the next loop corrects any rest)
         const ratio = pop.offsetWidth ? p.width / pop.offsetWidth : 1;
         const s = ratio > 0.2 && ratio < 5 ? ratio : 1;
         const curLeft = parseFloat(pop.style.left) || 0;
@@ -135,9 +127,9 @@ const positionPopupUnderButton = (btn, pop) => {
     }
     pop.style.visibility = "visible";
 };
-/* ===== END SCROLL LOADING + AUTO-FIT CONFIG ===== */
+/* ===== END CONFIG ===== */
 
-// --- Lazy ExcelJS loader from CDN (avoids Vite resolution + npm install) ---
+// --- Lazy ExcelJS loader from CDN ---
 const EXCELJS_CDN = "https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js";
 let excelJsPromise = null;
 const loadExcelJS = () => {
@@ -157,9 +149,195 @@ const loadExcelJS = () => {
     return excelJsPromise;
 };
 
+/* ===== DATA: server response -> table rows ===== */
+
+// One job from the API (dyeingRows + deliveryTypeTotals) -> yarnRows / dyeingRows / aopRows
+const transformJob = (job) => {
+    const yarnRows = [];
+    const dyeingRows = [];
+    const aopRows = [];
+
+    (job.dyeingRows || []).forEach((row) => {
+        const dt = row.deliveryTypeTotals || {};
+
+        const hasYarn = dt["Yarn Delivery"] || dt["Yarn Return"] || dt["Grey Fabric Received"];
+
+        const hasDyeing =
+            dt["Grey Delivery"] ||
+            dt["Grey Received"] ||
+            dt["Finish Received"] ||
+            dt["Grey Return"] ||
+            dt["Received From Compacting"] ||
+            dt["Received From Reprocess"] ||
+            dt["Received From HEAT Set"];
+
+        const hasAop =
+            dt["Sent For Aop"] ||
+            dt["Received From Aop"] ||
+            dt["AOP Finish Fabric Rcvd"] ||
+            dt["Return From Aop"];
+
+        // A factory with a work order but no deliveries yet is kept in the Yarn table
+        const hasNothing = !hasYarn && !hasDyeing && !hasAop;
+
+        if (hasYarn || hasNothing) {
+            yarnRows.push({
+                factory: row.factoryName,
+                req: row.workOrderQty || 0,
+                issue: dt["Yarn Delivery"] || 0,
+                knittingGrey: dt["Grey Fabric Received"] || 0,
+                yarnReturn: dt["Yarn Return"] || 0,
+            });
+        }
+
+        if (hasDyeing) {
+            dyeingRows.push({
+                factoryName: row.factoryName,
+                greyDelivery: dt["Grey Delivery"] || 0,
+                greyRcvd: dt["Grey Received"] || 0,
+                finishRcvd: dt["Finish Received"] || 0,
+                greyReturn: dt["Grey Return"] || 0,
+                receivedFromCompacting: dt["Received From Compacting"] || 0,
+                receivedFromReprocess: dt["Received From Reprocess"] || 0,
+                receivedFromHeatSet: dt["Received From HEAT Set"] || 0,
+            });
+        }
+
+        if (hasAop) {
+            aopRows.push({
+                factoryName: row.factoryName,
+                sentForAop: dt["Sent For Aop"] || 0,
+                receivedFromAop: dt["Received From Aop"] || 0,
+                aopFinishRcvd: dt["AOP Finish Fabric Rcvd"] || 0,
+                returnFromAop: dt["Return From Aop"] || 0,
+            });
+        }
+    });
+
+    if (yarnRows.length === 0 && dyeingRows.length === 0 && aopRows.length === 0) {
+        yarnRows.push({
+            factory: "N/A",
+            req: job.totalWorkOrderQty || 0,
+            issue: 0,
+            knittingGrey: 0,
+            yarnReturn: 0,
+        });
+    }
+
+    return {
+        ...job,
+        bookingQty: job.bookingQty || 0,
+        yarnRows,
+        dyeingRows,
+        aopRows,
+        remarks: job.remarks || "",
+    };
+};
+
+// Column filters (the Excel-like filter popups). They filter the jobs that are already loaded.
+const ROW_FILTERS = {
+    yarnRows: {
+        yarnFactory: (r) => String(r.factory ?? ""),
+        yarnReq: (r) => String(r.req ?? ""),
+        yarnIssue: (r) => String(r.issue ?? ""),
+        knittingGrey: (r) => String(r.knittingGrey ?? ""),
+        yarnReturn: (r) => String(r.yarnReturn ?? ""),
+        yarnBalance: (r) => String(yarnBalance(r) ?? ""),
+    },
+    dyeingRows: {
+        dyeingFactory: (r) => String(r.factoryName ?? ""),
+        greyDelivery: (r) => String(r.greyDelivery ?? ""),
+        greyReturn: (r) => String(r.greyReturn ?? ""),
+        greyRcvd: (r) => String(r.greyRcvd ?? ""),
+        finishRcvd: (r) => String(r.finishRcvd ?? ""),
+        dyeBalance: (r) => String(dyeBalance(r) ?? ""),
+        processLoss: (r) => String(dyeProcessLoss(r) ?? ""),
+    },
+    aopRows: {
+        aopFactory: (r) => String(r.factoryName ?? ""),
+        sentForAop: (r) => String(r.sentForAop ?? ""),
+        returnFromAop: (r) => String(r.returnFromAop ?? ""),
+        receivedFromAop: (r) => String(r.receivedFromAop ?? ""),
+        aopFinishRcvd: (r) => String(r.aopFinishRcvd ?? ""),
+        aopBalance: (r) => String(aopBalance(r) ?? ""),
+        aopProcessLoss: (r) => String(aopProcessLoss(r) ?? ""),
+    },
+};
+
+const COL_TO_GROUP = {};
+Object.entries(ROW_FILTERS).forEach(([group, getters]) => {
+    Object.keys(getters).forEach((colId) => { COL_TO_GROUP[colId] = group; });
+});
+
+const filterRows = (rows, group, colFilters) =>
+    rows.filter((row) => {
+        for (const [colId, get] of Object.entries(ROW_FILTERS[group])) {
+            const excluded = colFilters[colId];
+            if (excluded && excluded.size > 0 && excluded.has(get(row))) return false;
+        }
+        return true;
+    });
+
+// returns the job with column filters applied, or null if the job is hidden by a job-level filter (Booking Qty / Remarks)
+const prepareJob = (job, colFilters) => {
+    const remarksEx = colFilters.remarks;
+    if (remarksEx && remarksEx.size > 0 && remarksEx.has(job.remarks || "")) return null;
+    const bookingEx = colFilters.bookingQty;
+    if (bookingEx && bookingEx.size > 0 && bookingEx.has(String(job.bookingQty ?? 0))) return null;
+    const hasAny = Object.values(colFilters).some((s) => s && s.size > 0);
+    if (!hasAny) return job;
+    return {
+        ...job,
+        yarnRows: filterRows(job.yarnRows, "yarnRows", colFilters),
+        dyeingRows: filterRows(job.dyeingRows, "dyeingRows", colFilters),
+        aopRows: filterRows(job.aopRows, "aopRows", colFilters),
+    };
+};
+
+const computeTotals = (jobList) => {
+    const t = {
+        booking: 0,
+        req: 0, issue: 0, knittingGrey: 0, yarnReturn: 0, yarnBal: 0,
+        greyDelivery: 0, greyReturn: 0, greyRcvd: 0, dyeBal: 0, finishRcvd: 0,
+        sentForAop: 0, returnFromAop: 0, receivedFromAop: 0, aopFinishRcvd: 0, aopBal: 0,
+    };
+    jobList.forEach((job) => {
+        t.booking += job.bookingQty || 0;
+        job.yarnRows.forEach((row) => {
+            t.req += row.req || 0;
+            t.issue += row.issue || 0;
+            t.knittingGrey += row.knittingGrey || 0;
+            t.yarnReturn += row.yarnReturn || 0;
+            t.yarnBal += yarnBalance(row);
+        });
+        job.dyeingRows.forEach((row) => {
+            t.greyDelivery += row.greyDelivery || 0;
+            t.greyReturn += row.greyReturn || 0;
+            t.greyRcvd += row.greyRcvd || 0;
+            t.dyeBal += dyeBalance(row);
+            t.finishRcvd += row.finishRcvd || 0;
+        });
+        job.aopRows.forEach((row) => {
+            t.sentForAop += row.sentForAop || 0;
+            t.returnFromAop += row.returnFromAop || 0;
+            t.receivedFromAop += row.receivedFromAop || 0;
+            t.aopFinishRcvd += row.aopFinishRcvd || 0;
+            t.aopBal += aopBalance(row);
+        });
+    });
+    return t;
+};
+
+// One API call = one page of jobs from the database (search is done by the backend)
+const fetchJobsPage = (axiosSecure, { search, page, limit, requestId, signal }) =>
+    axiosSecure.get("/api/balance/sheet", {
+        params: { search, page, limit, ...(requestId ? { requestId } : {}) },
+        signal,
+    });
+
+const isCanceled = (err) => err?.code === "ERR_CANCELED" || err?.name === "CanceledError" || err?.name === "AbortError";
+
 // --- Filter Component ---
-// The popup opens centered under the clicked icon (fixed position, measured on the real screen so any ERP zoom works).
-// The list of values is built ONLY while the popup is open (21 filters x all jobs on every render was the main slowdown).
 const ExcelFilter = ({ colId, allJobs, excluded, setExcluded, openCol, setOpenCol, valueGetter }) => {
     const isOpen = openCol === colId;
     const isActive = excluded.size > 0;
@@ -181,13 +359,11 @@ const ExcelFilter = ({ colId, allJobs, excluded, setExcluded, openCol, setOpenCo
         positionPopupUnderButton(btnRef.current, popRef.current);
     }, []);
 
-    // place the popup right after it is drawn (and again when the list of values changes its height)
     useLayoutEffect(() => {
         if (!isOpen) return;
         place();
     }, [isOpen, uniqueValues, place]);
 
-    // keep it on the icon while the page / the table is scrolled or the window is resized
     useLayoutEffect(() => {
         if (!isOpen) return;
         window.addEventListener("scroll", place, true);
@@ -233,7 +409,6 @@ const ExcelFilter = ({ colId, allJobs, excluded, setExcluded, openCol, setOpenCo
                     onClick={(e) => e.stopPropagation()}
                     className="bg-white border border-slate-300 rounded-md shadow-lg p-2 normal-case font-normal text-slate-700"
                     style={{
-                        // left / top / visibility are set by positionPopupUnderButton (hidden until it is on the icon)
                         position: "fixed",
                         left: 0,
                         top: 0,
@@ -280,34 +455,42 @@ const EXCEL_YARN_SEPARATOR_BORDER = {
 
 // --- Main Component ---
 const BalanceSheet = () => {
-    const [jobs, setJobs] = useState([]);
-    const [search, setSearch] = useState("");
+    const [jobs, setJobs] = useState([]);                 // jobs loaded from the server so far
+    const [search, setSearch] = useState("");             // what the user types
+    const [appliedSearch, setAppliedSearch] = useState(""); // debounced value that is sent to the database
     const [colFilters, setColFilters] = useState({});
     const [openCol, setOpenCol] = useState(null);
     const [hasUnsavedRemarks, setHasUnsavedRemarks] = useState(false);
     const [wrapText, setWrapText] = useState(false);
     const [editingCell, setEditingCell] = useState(null);
-    const [isLoading, setIsLoading] = useState(true);
+    const [isLoading, setIsLoading] = useState(true);     // first page / new search / refresh
     const [isExporting, setIsExporting] = useState(false);
     const [refreshKey, setRefreshKey] = useState(0);
+
+    // --- Server paging state ---
+    const [hasMore, setHasMore] = useState(false);
+    const [totalJobs, setTotalJobs] = useState(0);
+    const [loadingMore, setLoadingMore] = useState(false);
+    const [loadError, setLoadError] = useState("");
+    const [loadMoreError, setLoadMoreError] = useState(false);
+    const pageRef = useRef(0);                 // last page loaded
+    const hasMoreRef = useRef(false);
+    const loadingMoreRef = useRef(false);
+    const isLoadingRef = useRef(true);
+    const generationRef = useRef(0);           // changes on every new search / refresh, so old responses are ignored
+    const searchRef = useRef("");
 
     // --- Loading progress state ---
     const [loadingProgress, setLoadingProgress] = useState(0);
     const [loadingMessage, setLoadingMessage] = useState("Initializing...");
 
-    /* ===== SCROLL LOADING + AUTO-FIT STATE ===== */
-    const scrollRef = useRef(null);                    // the table box
-    const topRef = useRef(null);                       // title + toolbar, watched for size changes
-    const [fit, setFit] = useState({ height: 560 });   // height of the table box, calculated from the screen
-    const [visibleCount, setVisibleCount] = useState(JOB_PAGE);
-    const [loadingMore, setLoadingMore] = useState(false);
-    const loadingMoreRef = useRef(false);
-    const hasMoreJobsRef = useRef(false);
-    const loadMoreTimerRef = useRef(null);
-    /* =========================================== */
+    /* ===== AUTO-FIT STATE ===== */
+    const scrollRef = useRef(null);
+    const topRef = useRef(null);
+    const [fit, setFit] = useState({ height: 560 });
+    /* ========================== */
 
     const socket = useSocket();
-
     const axiosSecure = useAxiosPrivate();
 
     const setExcludedFor = (colId, set) => setColFilters((prev) => ({ ...prev, [colId]: set }));
@@ -326,130 +509,106 @@ const BalanceSheet = () => {
         setEditingCell(jobIdx);
     };
 
-    // Refresh = load the report again from the server. The search and the column filters stay as they are.
+    // Refresh = load again from the server ONLY the current search (page 1). Column filters stay.
     const handleRefresh = () => {
         if (isLoading) return;
         setHasUnsavedRemarks(false);
         setEditingCell(null);
         setOpenCol(null);
-        setVisibleCount(JOB_PAGE);
         setRefreshKey((k) => k + 1);
     };
 
     const hasFilters = search || Object.values(colFilters).some((s) => s && s.size > 0);
 
+    // Search box -> database search after the user stops typing
+    useEffect(() => {
+        const t = setTimeout(() => setAppliedSearch(search.trim()), SEARCH_DEBOUNCE_MS);
+        return () => clearTimeout(t);
+    }, [search]);
+
+    useEffect(() => {
+        searchRef.current = appliedSearch;
+    }, [appliedSearch]);
+
+    // Search is done by the server. Here only the column filters (Excel-like popups) are applied to the loaded jobs.
     const filteredJobs = useMemo(() => {
-        return jobs.map((job, jobIdx) => {
-            const matchesSearch = !search ||
-                job.jobNo.toLowerCase().includes(search.toLowerCase()) ||
-                job.yarnRows.some((r) => r.factory?.toLowerCase().includes(search.toLowerCase())) ||
-                job.dyeingRows.some((r) => r.factoryName?.toLowerCase().includes(search.toLowerCase())) ||
-                job.aopRows.some((r) => r.factoryName?.toLowerCase().includes(search.toLowerCase()));
+        return jobs
+            .map((job, idx) => {
+                const prepared = prepareJob(job, colFilters);
+                return prepared ? { job: prepared, idx } : null;
+            })
+            .filter(Boolean);
+    }, [jobs, colFilters]);
 
-            if (!matchesSearch) return null;
+    /* ===== LAZY LOADING FROM THE SERVER ===== */
+    const loadMoreFromServer = useCallback(async () => {
+        if (loadingMoreRef.current || isLoadingRef.current || !hasMoreRef.current) return;
 
-            const filteredYarnRows = job.yarnRows.filter((row) => {
-                const yarnColIds = ['yarnFactory', 'yarnReq', 'yarnIssue', 'knittingGrey', 'yarnReturn', 'yarnBalance'];
-                for (const colId of yarnColIds) {
-                    const excluded = colFilters[colId];
-                    if (excluded && excluded.size > 0) {
-                        let val = "";
-                        if (colId === 'yarnFactory') val = row.factory;
-                        else if (colId === 'yarnReq') val = String(row.req ?? "");
-                        else if (colId === 'yarnIssue') val = String(row.issue ?? "");
-                        else if (colId === 'knittingGrey') val = String(row.knittingGrey ?? "");
-                        else if (colId === 'yarnReturn') val = String(row.yarnReturn ?? "");
-                        else if (colId === 'yarnBalance') val = String(yarnBalance(row) ?? "");
-                        if (excluded.has(val)) return false;
-                    }
-                }
-                return true;
-            });
-
-            const filteredDyeingRows = job.dyeingRows.filter((row) => {
-                const dyeingColIds = ['dyeingFactory', 'greyDelivery', 'greyReturn', 'greyRcvd', 'dyeBalance', 'finishRcvd', 'processLoss'];
-                for (const colId of dyeingColIds) {
-                    const excluded = colFilters[colId];
-                    if (excluded && excluded.size > 0) {
-                        let val = "";
-                        if (colId === 'dyeingFactory') val = row.factoryName;
-                        else if (colId === 'greyDelivery') val = String(row.greyDelivery ?? "");
-                        else if (colId === 'greyReturn') val = String(row.greyReturn ?? "");
-                        else if (colId === 'greyRcvd') val = String(row.greyRcvd ?? "");
-                        else if (colId === 'dyeBalance') val = String(dyeBalance(row) ?? "");
-                        else if (colId === 'finishRcvd') val = String(row.finishRcvd ?? "");
-                        else if (colId === 'processLoss') val = String(dyeProcessLoss(row) ?? "");
-                        if (excluded.has(val)) return false;
-                    }
-                }
-                return true;
-            });
-
-            const filteredAopRows = job.aopRows.filter((row) => {
-                const aopColIds = ['aopFactory', 'sentForAop', 'receivedFromAop', 'aopFinishRcvd', 'aopBalance', 'aopProcessLoss'];
-                for (const colId of aopColIds) {
-                    const excluded = colFilters[colId];
-                    if (excluded && excluded.size > 0) {
-                        let val = "";
-                        if (colId === 'aopFactory') val = row.factoryName;
-                        else if (colId === 'sentForAop') val = String(row.sentForAop ?? "");
-                        else if (colId === 'receivedFromAop') val = String(row.receivedFromAop ?? "");
-                        else if (colId === 'aopFinishRcvd') val = String(row.aopFinishRcvd ?? "");
-                        else if (colId === 'aopBalance') val = String(aopBalance(row) ?? "");
-                        else if (colId === 'aopProcessLoss') val = String(aopProcessLoss(row) ?? "");
-                        if (excluded.has(val)) return false;
-                    }
-                }
-                return true;
-            });
-
-            return {
-                job: { ...job, yarnRows: filteredYarnRows, dyeingRows: filteredDyeingRows, aopRows: filteredAopRows },
-                idx: jobIdx
-            };
-        }).filter(Boolean);
-    }, [jobs, search, colFilters]);
-
-    // The table draws only these jobs (more are added while the user scrolls down).
-    // Totals and the Excel export still use ALL the filtered jobs.
-    const displayedJobs = useMemo(() => filteredJobs.slice(0, visibleCount), [filteredJobs, visibleCount]);
-    const hasMoreJobs = visibleCount < filteredJobs.length;
-    hasMoreJobsRef.current = hasMoreJobs;
-
-    /* ===== SCROLL LOADING ===== */
-    const maybeLoadMore = useCallback(() => {
-        const el = scrollRef.current;
-        if (!el || loadingMoreRef.current || !hasMoreJobsRef.current) return;
-        // start loading when less than ~LOAD_MORE_DISTANCE px are left below the visible area
-        if (el.scrollHeight - el.scrollTop - el.clientHeight > LOAD_MORE_DISTANCE) return;
         loadingMoreRef.current = true;
         setLoadingMore(true);
-        loadMoreTimerRef.current = setTimeout(() => {
-            loadMoreTimerRef.current = null;
-            loadingMoreRef.current = false;
-            setVisibleCount((c) => c + JOB_PAGE);
-            setLoadingMore(false);
-        }, 120);
-    }, []);
+        setLoadMoreError(false);
 
-    // content shorter than the box (or more jobs arrived / the screen got taller): keep loading until it is filled
+        const generation = generationRef.current;
+        const nextPage = pageRef.current + 1;
+
+        try {
+            const { data } = await fetchJobsPage(axiosSecure, {
+                search: searchRef.current,
+                page: nextPage,
+                limit: PAGE_SIZE,
+            });
+
+            if (generation !== generationRef.current) return; // a new search / refresh started meanwhile
+
+            const newJobs = (data.jobs || []).map(transformJob);
+            setJobs((prev) => {
+                const seen = new Set(prev.map((j) => j.jobNo));
+                return [...prev, ...newJobs.filter((j) => !seen.has(j.jobNo))];
+            });
+
+            pageRef.current = nextPage;
+            const more = !!data.pagination?.hasMore;
+            hasMoreRef.current = more;
+            setHasMore(more);
+        } catch (error) {
+            if (isCanceled(error) || generation !== generationRef.current) return;
+            console.error("[BalanceSheet] Load more failed:", error);
+            hasMoreRef.current = false; // stop the auto loading, the user can press Retry
+            setLoadMoreError(true);
+        } finally {
+            if (generation === generationRef.current) {
+                loadingMoreRef.current = false;
+                setLoadingMore(false);
+            }
+        }
+    }, [axiosSecure]);
+
+    const maybeLoadMore = useCallback(() => {
+        const el = scrollRef.current;
+        if (!el || loadingMoreRef.current || isLoadingRef.current || !hasMoreRef.current) return;
+        // load the next page when less than ~LOAD_MORE_DISTANCE px are left below the visible area
+        if (el.scrollHeight - el.scrollTop - el.clientHeight > LOAD_MORE_DISTANCE) return;
+        loadMoreFromServer();
+    }, [loadMoreFromServer]);
+
+    const handleRetryLoadMore = () => {
+        hasMoreRef.current = true;
+        setLoadMoreError(false);
+        loadMoreFromServer();
+    };
+
+    // content shorter than the box (big screen, column filter hides rows ...): keep loading until it is filled
     useEffect(() => {
         maybeLoadMore();
-    }, [visibleCount, filteredJobs.length, fit.height, isLoading, maybeLoadMore]);
+    }, [jobs.length, filteredJobs.length, fit.height, isLoading, hasMore, loadingMore, maybeLoadMore]);
 
-    // search / column filter changed: start again from the first jobs, back at the top of the table
+    // column filter changed: back to the top of the table
     useEffect(() => {
-        setVisibleCount(JOB_PAGE);
         if (scrollRef.current) scrollRef.current.scrollTop = 0;
-    }, [search, colFilters]);
+    }, [colFilters]);
+    /* ======================================== */
 
-    // stop the pending "load more" when the page is left
-    useEffect(() => () => {
-        if (loadMoreTimerRef.current) clearTimeout(loadMoreTimerRef.current);
-    }, []);
-    /* ========================== */
-
-    /* ===== AUTO-FIT MEASURING (same logic as the Summary page) ===== */
+    /* ===== AUTO-FIT MEASURING ===== */
     const measureFit = useCallback(() => {
         const el = scrollRef.current;
         if (!el) return;
@@ -457,7 +616,6 @@ const BalanceSheet = () => {
         const scale = getZoomScale(el);
         const rect = el.getBoundingClientRect();
 
-        // table top measured from the very top of the content, no matter how far the page / the ERP panel is scrolled
         let scrolled = window.scrollY || 0;
         let node = el.parentElement;
         while (node && node !== document.body && node !== document.documentElement) {
@@ -473,21 +631,18 @@ const BalanceSheet = () => {
 
     useLayoutEffect(() => {
         measureFit();
-        // the ERP shell / fonts / images can still move things after the first paint: measure again a bit later
         const t1 = setTimeout(measureFit, 100);
         const t2 = setTimeout(measureFit, 500);
         const t3 = setTimeout(measureFit, 1500);
         window.addEventListener('resize', measureFit);
         window.addEventListener('load', measureFit);
         if (window.visualViewport) window.visualViewport.addEventListener('resize', measureFit);
-        // the ERP zoom control changes a style / class on <html> or <body> without resizing anything: catch that too
         let mo = null;
         if (typeof MutationObserver !== 'undefined') {
             mo = new MutationObserver(() => measureFit());
             mo.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'class'] });
             mo.observe(document.body, { attributes: true, attributeFilter: ['style', 'class'] });
         }
-        // safety net: cheap re-check (state only changes when the number really changes)
         const poll = setInterval(measureFit, 800);
         let ro = null;
         if (typeof ResizeObserver !== 'undefined') {
@@ -507,51 +662,46 @@ const BalanceSheet = () => {
             if (ro) ro.disconnect();
         };
     }, [measureFit]);
-    /* =============================================================== */
+    /* =============================== */
 
-    const totals = useMemo(() => {
-        const t = {
-            req: 0, issue: 0, knittingGrey: 0, yarnReturn: 0, yarnBal: 0,
-            greyDelivery: 0, greyReturn: 0, greyRcvd: 0, dyeBal: 0, finishRcvd: 0,
-            sentForAop: 0, receivedFromAop: 0, aopFinishRcvd: 0, aopBal: 0
-        };
-        filteredJobs.forEach(({ job }) => {
-            job.yarnRows.forEach((row) => {
-                t.req += row.req || 0;
-                t.issue += row.issue || 0;
-                t.knittingGrey += row.knittingGrey || 0;
-                t.yarnReturn += row.yarnReturn || 0;
-                t.yarnBal += yarnBalance(row);
-            });
-            job.dyeingRows.forEach((row) => {
-                t.greyDelivery += row.greyDelivery || 0;
-                t.greyReturn += row.greyReturn || 0;
-                t.greyRcvd += row.greyRcvd || 0;
-                t.dyeBal += dyeBalance(row);
-                t.finishRcvd += row.finishRcvd || 0;
-            });
-            job.aopRows.forEach((row) => {
-                t.sentForAop += row.sentForAop || 0;
-                t.receivedFromAop += row.receivedFromAop || 0;
-                t.aopFinishRcvd += row.aopFinishRcvd || 0;
-                t.aopBal += aopBalance(row);
-            });
-        });
-        return t;
-    }, [filteredJobs]);
+    // Subtotal of the jobs that are loaded and visible
+    const totals = useMemo(() => computeTotals(filteredJobs.map((f) => f.job)), [filteredJobs]);
 
     const clearAll = () => {
         setSearch("");
+        setAppliedSearch("");
         setColFilters({});
         setOpenCol(null);
     };
 
-    // ---------- EXCEL EXPORT (borders + merges via CDN-loaded ExcelJS) ----------
+    // Export needs ALL jobs of the current search, not only the loaded ones: read every page from the server
+    const fetchAllJobsForExport = async () => {
+        const all = [];
+        let page = 1;
+        let more = true;
+        while (more && page <= 500) {
+            const { data } = await fetchJobsPage(axiosSecure, { search: appliedSearch, page, limit: EXPORT_PAGE_SIZE });
+            all.push(...(data.jobs || []).map(transformJob));
+            more = !!data.pagination?.hasMore;
+            page += 1;
+        }
+        return all;
+    };
+
+    // ---------- EXCEL EXPORT ----------
     const exportExcel = async () => {
         if (isExporting) return;
         setIsExporting(true);
         try {
             const ExcelJS = await loadExcelJS();
+
+            // all jobs of the current search + the column filters + the remarks typed on screen
+            const remarksMap = new Map(jobs.map((j) => [j.jobNo, j.remarks]));
+            const allJobs = await fetchAllJobsForExport();
+            const exportJobs = allJobs
+                .map((j) => prepareJob({ ...j, remarks: remarksMap.get(j.jobNo) ?? j.remarks ?? "" }, colFilters))
+                .filter(Boolean);
+            const exportTotals = computeTotals(exportJobs);
 
             const wb = new ExcelJS.Workbook();
             wb.creator = "Balance Sheet";
@@ -562,7 +712,7 @@ const BalanceSheet = () => {
                     state: "frozen",
                     xSplit: FROZEN_IDS.length,
                     ySplit: 2,
-                    activeCell: "H3"
+                    activeCell: "I3"
                 }],
                 pageSetup: {
                     orientation: "landscape",
@@ -574,7 +724,6 @@ const BalanceSheet = () => {
                 }
             });
 
-            // Column widths
             COLUMNS.forEach((col, i) => {
                 ws.getColumn(i + 1).width = Math.max(9, Math.round(col.width / 7));
             });
@@ -589,17 +738,20 @@ const BalanceSheet = () => {
                 return "FFFFFFFF";
             };
 
-            // Row 1 — Group headers
+            const BOOKING_COL = COLUMNS.findIndex((c) => c.id === "bookingQty") + 1; // 2
+            const REMARKS_COL = COLUMNS.length;                                     // 23
+
+            // Row 1 — Group headers: YARN = columns 1-8, DYEING = 9-15, AOP = 16-22, REMARKS = 23
             const groupHeaderRow = ws.addRow([
-                "YARN / KNITTING", "", "", "", "", "", "",
+                "YARN / KNITTING", "", "", "", "", "", "", "",
                 "DYEING", "", "", "", "", "", "",
-                "AOP", "", "", "", "", "",
-                "REMARKS"
+                "AOP", "", "", "", "", "", "",
+                
             ]);
             groupHeaderRow.height = 22;
-            ws.mergeCells(1, 1, 1, 7);
-            ws.mergeCells(1, 8, 1, 14);
-            ws.mergeCells(1, 15, 1, 20);
+            ws.mergeCells(1, 1, 1, 8);
+            ws.mergeCells(1, 9, 1, 15);
+            ws.mergeCells(1, 16, 1, 22);
 
             groupHeaderRow.eachCell({ includeEmpty: true }, (cell) => {
                 cell.font = { bold: true, size: 11, color: { argb: "FF0F2544" } };
@@ -621,7 +773,7 @@ const BalanceSheet = () => {
             });
 
             // Data rows
-            filteredJobs.forEach(({ job }) => {
+            exportJobs.forEach((job) => {
                 const maxRows = Math.max(job.yarnRows.length, job.dyeingRows.length, job.aopRows.length, 1);
                 const jobStartRow = ws.rowCount + 1;
 
@@ -630,8 +782,10 @@ const BalanceSheet = () => {
                     const dRow = job.dyeingRows[i];
                     const aRow = job.aopRows[i];
 
+                    // Same order as COLUMNS
                     const cells = [
                         i === 0 ? (job.jobNo ?? "") : "",
+                        i === 0 ? (job.bookingQty ?? 0) : "",
                         yRow ? (yRow.factory ?? "") : "",
                         yRow ? (yRow.req ?? 0) : "",
                         yRow ? (yRow.issue ?? 0) : "",
@@ -649,6 +803,7 @@ const BalanceSheet = () => {
 
                         aRow ? (aRow.factoryName ?? "") : "",
                         aRow ? (aRow.sentForAop ?? 0) : "",
+                        aRow ? (aRow.returnFromAop ?? 0) : "",
                         aRow ? (aRow.receivedFromAop ?? 0) : "",
                         aRow ? (aRow.aopFinishRcvd ?? 0) : "",
                         aRow ? aopBalance(aRow) : "",
@@ -686,10 +841,11 @@ const BalanceSheet = () => {
 
                 const jobEndRow = ws.rowCount;
 
-                // Merge Job No column across this job's rows
+                // Merge Job No, Booking Qty and Remarks across this job's rows
                 if (jobEndRow > jobStartRow) {
                     ws.mergeCells(jobStartRow, 1, jobEndRow, 1);
-                    ws.mergeCells(jobStartRow, COLUMNS.length, jobEndRow, COLUMNS.length);
+                    ws.mergeCells(jobStartRow, BOOKING_COL, jobEndRow, BOOKING_COL);
+                    ws.mergeCells(jobStartRow, REMARKS_COL, jobEndRow, REMARKS_COL);
                 }
 
                 const jobNoCell = ws.getCell(jobStartRow, 1);
@@ -697,27 +853,31 @@ const BalanceSheet = () => {
                 jobNoCell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
                 jobNoCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF8FAFC" } };
 
-                const remarksCell = ws.getCell(jobStartRow, COLUMNS.length);
+                const bookingCell = ws.getCell(jobStartRow, BOOKING_COL);
+                bookingCell.numFmt = "#,##0.00";
+                bookingCell.alignment = { horizontal: "right", vertical: "middle" };
+
+                const remarksCell = ws.getCell(jobStartRow, REMARKS_COL);
                 remarksCell.alignment = { horizontal: "left", vertical: "middle", wrapText: true };
             });
 
-            // Subtotal row
-            // Dyeing process loss uses Grey Received (greyRcvd) as the base,
-            // matching the per-row formula dyeProcessLoss() — not Grey Delivery.
-            const dyeLossTotal = totals.greyRcvd
-                ? (totals.greyRcvd - totals.finishRcvd) / totals.greyRcvd : null;
-            const aopLossTotal = totals.receivedFromAop
-                ? (totals.receivedFromAop - totals.aopFinishRcvd) / totals.receivedFromAop : null;
+            // Subtotal row (of ALL exported jobs) — same order as COLUMNS
+            const dyeLossTotal = exportTotals.greyRcvd
+                ? (exportTotals.greyRcvd - exportTotals.finishRcvd) / exportTotals.greyRcvd : null;
+            const aopLossTotal = exportTotals.receivedFromAop
+                ? (exportTotals.receivedFromAop - exportTotals.aopFinishRcvd) / exportTotals.receivedFromAop : null;
 
             const subtotalRow = ws.addRow([
-                "Subtotal", "",
-                totals.req, totals.issue, totals.knittingGrey, totals.yarnReturn, totals.yarnBal,
+                "Subtotal",
+                exportTotals.booking,
                 "",
-                totals.greyDelivery, totals.greyReturn, totals.greyRcvd, totals.finishRcvd,
-                totals.dyeBal, dyeLossTotal,
+                exportTotals.req, exportTotals.issue, exportTotals.knittingGrey, exportTotals.yarnReturn, exportTotals.yarnBal,
                 "",
-                totals.sentForAop, totals.receivedFromAop, totals.aopFinishRcvd, totals.aopBal,
-                aopLossTotal,
+                exportTotals.greyDelivery, exportTotals.greyReturn, exportTotals.greyRcvd, exportTotals.finishRcvd,
+                exportTotals.dyeBal, dyeLossTotal,
+                "",
+                exportTotals.sentForAop, exportTotals.returnFromAop, exportTotals.receivedFromAop, exportTotals.aopFinishRcvd,
+                exportTotals.aopBal, aopLossTotal,
                 ""
             ]);
             subtotalRow.height = 24;
@@ -757,7 +917,7 @@ const BalanceSheet = () => {
             URL.revokeObjectURL(url);
         } catch (err) {
             console.error("Excel export failed:", err);
-            alert("Excel export failed. Please check your internet connection (ExcelJS is loaded from CDN on first export).");
+            alert("Excel export failed. Please check your connection and try again (ExcelJS is loaded from CDN on first export).");
         } finally {
             setIsExporting(false);
         }
@@ -768,30 +928,12 @@ const BalanceSheet = () => {
     const isFrozen = (id) => FROZEN_IDS.includes(id);
 
     const getColValueGetter = (colId) => {
-        if (colId === 'yarnFactory') return (j) => j.yarnRows.map((r) => r.factory);
-        if (colId === 'yarnReq') return (j) => j.yarnRows.map((r) => String(r.req));
-        if (colId === 'yarnIssue') return (j) => j.yarnRows.map((r) => String(r.issue));
-        if (colId === 'knittingGrey') return (j) => j.yarnRows.map((r) => String(r.knittingGrey));
-        if (colId === 'yarnReturn') return (j) => j.yarnRows.map((r) => String(r.yarnReturn));
-        if (colId === 'yarnBalance') return (j) => j.yarnRows.map((r) => String(yarnBalance(r)));
-
-        if (colId === 'dyeingFactory') return (j) => j.dyeingRows.map((r) => r.factoryName);
-        if (colId === 'greyDelivery') return (j) => j.dyeingRows.map((r) => String(r.greyDelivery));
-        if (colId === 'greyReturn') return (j) => j.dyeingRows.map((r) => String(r.greyReturn));
-        if (colId === 'greyRcvd') return (j) => j.dyeingRows.map((r) => String(r.greyRcvd));
-        if (colId === 'finishRcvd') return (j) => j.dyeingRows.map((r) => String(r.finishRcvd));
-        if (colId === 'dyeBalance') return (j) => j.dyeingRows.map((r) => String(dyeBalance(r)));
-        if (colId === 'processLoss') return (j) => j.dyeingRows.map((r) => String(dyeProcessLoss(r)));
-
-        if (colId === 'aopFactory') return (j) => j.aopRows.map((r) => r.factoryName);
-        if (colId === 'sentForAop') return (j) => j.aopRows.map((r) => String(r.sentForAop));
-        if (colId === 'receivedFromAop') return (j) => j.aopRows.map((r) => String(r.receivedFromAop));
-        if (colId === 'aopFinishRcvd') return (j) => j.aopRows.map((r) => String(r.aopFinishRcvd));
-        if (colId === 'aopBalance') return (j) => j.aopRows.map((r) => String(aopBalance(r)));
-        if (colId === 'aopProcessLoss') return (j) => j.aopRows.map((r) => String(aopProcessLoss(r)));
-
-        if (colId === 'remarks') return (j) => [j.remarks].filter(Boolean);
-        return () => [];
+        if (colId === "remarks") return (j) => [j.remarks].filter(Boolean);
+        if (colId === "bookingQty") return (j) => [String(j.bookingQty ?? 0)];
+        const group = COL_TO_GROUP[colId];
+        if (!group) return () => [];
+        const get = ROW_FILTERS[group][colId];
+        return (j) => j[group].map(get);
     };
 
     const cellStyle = (colId, extra = {}) => {
@@ -814,9 +956,6 @@ const BalanceSheet = () => {
         };
     };
 
-    // Sticky footer (Subtotal row): pinned to the bottom of the scroll container.
-    // Frozen columns get BOTH left and bottom offsets so their bottom-left corner
-    // stays pinned while the table scrolls in either direction.
     const footerCellStyle = (colId, extra = {}) => {
         const w = getColWidth(colId);
         const isFrozenCol = isFrozen(colId);
@@ -830,79 +969,63 @@ const BalanceSheet = () => {
         };
     };
 
-    // --- Fetch data with Socket.IO progress tracking ---
-    // Runs on the first load and again every time Refresh is pressed (refreshKey).
+    // --- FIRST PAGE: runs on the first load, on every new (debounced) search, and when Refresh is pressed ---
     useEffect(() => {
         if (!socket) {
             console.error("[BalanceSheet] Socket is not available.");
             setIsLoading(false);
+            isLoadingRef.current = false;
             return;
         }
 
         let isActive = true;
         let joinedRoom = false;
 
-        const requestId = `balance_${Date.now()}_${Math.random()
-            .toString(36)
-            .slice(2, 10)}`;
+        // new generation: any older "load more" response is ignored from now on
+        generationRef.current += 1;
+        pageRef.current = 0;
+        hasMoreRef.current = false;
+        loadingMoreRef.current = false;
+        isLoadingRef.current = true;
+        setLoadingMore(false);
+        setLoadMoreError(false);
+        setHasMore(false);
 
-        console.log("[BalanceSheet] Socket connected:", socket.connected);
-        console.log("[BalanceSheet] Socket ID:", socket.id);
-        console.log("[BalanceSheet] Request ID:", requestId);
+        const controller = new AbortController();
+        const requestId = `balance_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 
-        // IMPORTANT: Register the listener BEFORE joining the room
-        // and BEFORE starting the API request.
         const handleProgress = (data) => {
             if (!isActive || !data) return;
-
-            console.log("[BalanceSheet] Progress received:", data);
-
             const percentage = Number(data.percentage);
-
             if (Number.isFinite(percentage)) {
-                setLoadingProgress(
-                    Math.min(100, Math.max(0, percentage))
-                );
+                setLoadingProgress(Math.min(100, Math.max(0, percentage)));
             }
-
-            if (data.message) {
-                setLoadingMessage(data.message);
-            }
+            if (data.message) setLoadingMessage(data.message);
         };
 
-        // Do not remove listeners belonging to other components.
+        // Register the listener BEFORE joining the room and BEFORE the API request
         socket.on("reportProgress", handleProgress);
 
-        const fetchBalanceSheetData = async () => {
+        const fetchFirstPage = async () => {
             setIsLoading(true);
+            setLoadError("");
             setLoadingProgress(0);
-            setLoadingMessage("Connecting to report server...");
+            setLoadingMessage(appliedSearch ? `Searching "${appliedSearch}"...` : "Connecting to report server...");
 
             try {
-                // Wait until the socket is connected.
                 if (!socket.connected) {
                     await new Promise((resolve, reject) => {
                         const timeout = setTimeout(() => {
                             cleanup();
                             reject(new Error("Socket connection timeout"));
                         }, 10000);
-
-                        const onConnect = () => {
-                            cleanup();
-                            resolve();
-                        };
-
-                        const onConnectError = (error) => {
-                            cleanup();
-                            reject(error);
-                        };
-
+                        const onConnect = () => { cleanup(); resolve(); };
+                        const onConnectError = (error) => { cleanup(); reject(error); };
                         const cleanup = () => {
                             clearTimeout(timeout);
                             socket.off("connect", onConnect);
                             socket.off("connect_error", onConnectError);
                         };
-
                         socket.once("connect", onConnect);
                         socket.once("connect_error", onConnectError);
                     });
@@ -910,212 +1033,87 @@ const BalanceSheet = () => {
 
                 if (!isActive) return;
 
-                console.log("[BalanceSheet] Joining room:", requestId);
-                setLoadingMessage("Joining report progress channel...");
-
-                // Wait for server acknowledgement before making API request.
                 await new Promise((resolve, reject) => {
-                    socket.timeout(7000).emit(
-                        "joinRoom",
-                        requestId,
-                        (error, response) => {
-                            if (error) {
-                                reject(
-                                    new Error("Server did not acknowledge joinRoom")
-                                );
-                                return;
-                            }
-
-                            if (!response?.success) {
-                                reject(
-                                    new Error(
-                                        response?.message || "Failed to join report room"
-                                    )
-                                );
-                                return;
-                            }
-
-                            joinedRoom = true;
-
-                            console.log(
-                                "[BalanceSheet] Successfully joined room:",
-                                response
-                            );
-
-                            resolve(response);
+                    socket.timeout(7000).emit("joinRoom", requestId, (error, response) => {
+                        if (error) {
+                            reject(new Error("Server did not acknowledge joinRoom"));
+                            return;
                         }
-                    );
+                        if (!response?.success) {
+                            reject(new Error(response?.message || "Failed to join report room"));
+                            return;
+                        }
+                        joinedRoom = true;
+                        resolve(response);
+                    });
                 });
 
                 if (!isActive) return;
 
                 setLoadingMessage("Preparing balance sheet report...");
 
-                console.log(
-                    "[BalanceSheet] Calling API:",
-                    `/api/balance/sheet?requestId=${requestId}`
-                );
-
-                const response = await axiosSecure.get(
-                    `/api/balance/sheet?requestId=${encodeURIComponent(requestId)}`
-                );
+                const response = await fetchJobsPage(axiosSecure, {
+                    search: appliedSearch,
+                    page: 1,
+                    limit: PAGE_SIZE,
+                    requestId,
+                    signal: controller.signal,
+                });
 
                 if (!isActive) return;
 
-                const rawData = response.data.jobs || response.data || [];
-
-                const transformed = rawData.map((job) => {
-                    const yarnRows = [];
-                    const dyeingRows = [];
-                    const aopRows = [];
-
-                    (job.dyeingRows || []).forEach((row) => {
-                        const dt = row.deliveryTypeTotals || {};
-
-                        const hasYarn =
-                            dt["Yarn Delivery"] ||
-                            dt["Yarn Return"] ||
-                            dt["Grey Fabric Received"];
-
-                        const hasDyeing =
-                            dt["Grey Delivery"] ||
-                            dt["Grey Received"] ||
-                            dt["Finish Received"] ||
-                            dt["Grey Return"] ||
-                            dt["Received From Compacting"] ||
-                            dt["Received From Reprocess"] ||
-                            dt["Received From HEAT Set"];
-
-                        const hasAop =
-                            dt["Sent For Aop"] ||
-                            dt["Received From Aop"] ||
-                            dt["AOP Finish Fabric Rcvd"] ||
-                            dt["Return From Aop"];
-
-                        // FIX: a factory that has a work order but no deliveries yet
-                        // (e.g. TAIPEI KNIT & COMP. LTD) used to match none of the
-                        // three groups and was silently dropped. Keep it in the
-                        // Yarn table so it always shows up in the report.
-                        const hasNothing = !hasYarn && !hasDyeing && !hasAop;
-
-                        if (hasYarn || hasNothing) {
-                            yarnRows.push({
-                                factory: row.factoryName,
-                                req: row.workOrderQty || 0,
-                                issue: dt["Yarn Delivery"] || 0,
-                                knittingGrey: dt["Grey Fabric Received"] || 0,
-                                yarnReturn: dt["Yarn Return"] || 0,
-                            });
-                        }
-
-                        if (hasDyeing) {
-                            dyeingRows.push({
-                                factoryName: row.factoryName,
-                                greyDelivery: dt["Grey Delivery"] || 0,
-                                greyRcvd: dt["Grey Received"] || 0,
-                                finishRcvd: dt["Finish Received"] || 0,
-                                greyReturn: dt["Grey Return"] || 0,
-                                receivedFromCompacting:
-                                    dt["Received From Compacting"] || 0,
-                                receivedFromReprocess:
-                                    dt["Received From Reprocess"] || 0,
-                                receivedFromHeatSet:
-                                    dt["Received From HEAT Set"] || 0,
-                            });
-                        }
-
-                        if (hasAop) {
-                            aopRows.push({
-                                factoryName: row.factoryName,
-                                sentForAop: dt["Sent For Aop"] || 0,
-                                receivedFromAop: dt["Received From Aop"] || 0,
-                                aopFinishRcvd:
-                                    dt["AOP Finish Fabric Rcvd"] || 0,
-                                returnFromAop: dt["Return From Aop"] || 0,
-                            });
-                        }
-                    });
-
-                    if (
-                        yarnRows.length === 0 &&
-                        dyeingRows.length === 0 &&
-                        aopRows.length === 0
-                    ) {
-                        yarnRows.push({
-                            factory: "N/A",
-                            req: job.totalWorkOrderQty || 0,
-                            issue: 0,
-                            knittingGrey: 0,
-                            yarnReturn: 0,
-                        });
-                    }
-
-                    return {
-                        ...job,
-                        yarnRows,
-                        dyeingRows,
-                        aopRows,
-                        remarks: job.remarks || "",
-                    };
-                });
+                const transformed = (response.data.jobs || []).map(transformJob);
+                const pg = response.data.pagination || {};
 
                 setJobs(transformed);
+                pageRef.current = 1;
+                hasMoreRef.current = !!pg.hasMore;
+                setHasMore(!!pg.hasMore);
+                setTotalJobs(pg.totalJobs ?? transformed.length);
                 setLoadingProgress(100);
                 setLoadingMessage("Balance sheet loaded successfully.");
-
-                console.log(
-                    `[BalanceSheet] Loaded ${transformed.length} jobs successfully.`
-                );
+                if (scrollRef.current) scrollRef.current.scrollTop = 0;
             } catch (error) {
+                if (isCanceled(error)) return;
                 console.error("[BalanceSheet] Report loading failed:", error);
-
                 if (isActive) {
-                    setLoadingMessage(
-                        error.message || "Failed to load balance sheet."
-                    );
+                    setLoadError(error.message || "Failed to load balance sheet.");
+                    setLoadingMessage(error.message || "Failed to load balance sheet.");
                 }
             } finally {
                 if (isActive) {
+                    isLoadingRef.current = false;
                     setIsLoading(false);
                 }
-
-                // Remove only this component's listener.
                 socket.off("reportProgress", handleProgress);
-
                 if (joinedRoom && socket.connected) {
                     socket.emit("leaveRoom", requestId);
                 }
-
-                console.log(
-                    "[BalanceSheet] Request completed:",
-                    requestId
-                );
             }
         };
 
-        fetchBalanceSheetData();
+        fetchFirstPage();
 
         return () => {
             isActive = false;
-
-            // Component-specific cleanup only.
+            controller.abort();
             socket.off("reportProgress", handleProgress);
-
             if (joinedRoom && socket.connected) {
                 socket.emit("leaveRoom", requestId);
             }
         };
-    }, [axiosSecure, socket, refreshKey]);
-
+    }, [axiosSecure, socket, appliedSearch, refreshKey]);
 
     return (
         <div className="p-5 bg-slate-50 w-full" onClick={() => setOpenCol(null)}>
-            {/* Everything above the table: watched for size changes so the table box always re-fits the screen */}
             <div ref={topRef}>
                 <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
                     <div>
                         <h2 className="text-lg font-bold text-slate-800">Yarn, Dyeing &amp; AOP Balance Sheet</h2>
-                        <p className="text-xs text-slate-500 mt-1">Figures in kg unless noted · <span className="font-semibold text-slate-700">{filteredJobs.length}</span> of <span className="font-semibold text-slate-700">{jobs.length}</span> jobs shown</p>
+                        <p className="text-xs text-slate-500 mt-1">
+                            Figures in kg unless noted · <span className="font-semibold text-slate-700">{jobs.length}</span> of <span className="font-semibold text-slate-700">{totalJobs}</span> jobs loaded
+                            {appliedSearch ? <> for "<span className="font-semibold text-slate-700">{appliedSearch}</span>"</> : null}
+                        </p>
                     </div>
 
                     <div className="flex items-center gap-2 flex-wrap">
@@ -1127,6 +1125,7 @@ const BalanceSheet = () => {
                                 type="text"
                                 value={search}
                                 onChange={(e) => setSearch(e.target.value)}
+                                onKeyDown={(e) => { if (e.key === "Enter") setAppliedSearch(search.trim()); }}
                                 onClick={(e) => e.stopPropagation()}
                                 placeholder="Search job no. or factory..."
                                 className="pl-8 pr-3 py-1.5 text-sm border border-slate-300 rounded-md w-64 outline-none focus:border-[#dfebf0] focus:ring-1 focus:ring-[#dfebf0]/20 bg-white transition-all"
@@ -1149,11 +1148,11 @@ const BalanceSheet = () => {
                             </button>
                         )}
 
-                        {/* Refresh: loads the report again, search and column filters are kept */}
+                        {/* Refresh: reloads only the current search (page 1), column filters are kept */}
                         <button
                             onClick={(e) => { e.stopPropagation(); handleRefresh(); }}
                             disabled={isLoading}
-                            title="Reload from the server"
+                            title="Reload the current filter from the server"
                             className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 px-3 py-1.5 rounded-md shadow-sm transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                         >
                             <svg className={`w-3.5 h-3.5 ${isLoading ? "animate-spin" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -1164,7 +1163,8 @@ const BalanceSheet = () => {
 
                         <button
                             onClick={(e) => { e.stopPropagation(); exportExcel(); }}
-                            disabled={isExporting || filteredJobs.length === 0}
+                            disabled={isExporting || jobs.length === 0}
+                            title="Exports all jobs of the current search"
                             className="flex items-center gap-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 rounded-md shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                             {isExporting ? (
@@ -1183,6 +1183,18 @@ const BalanceSheet = () => {
                         </button>
                     </div>
                 </div>
+
+                {loadError && !isLoading && (
+                    <div className="mb-3 flex items-center justify-between bg-rose-50 border border-rose-200 rounded-lg px-4 py-2.5 shadow-sm">
+                        <span className="text-sm font-medium text-rose-700">{loadError}</span>
+                        <button
+                            onClick={(e) => { e.stopPropagation(); handleRefresh(); }}
+                            className="text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 px-3 py-1.5 rounded-md transition-colors"
+                        >
+                            Retry
+                        </button>
+                    </div>
+                )}
 
                 {hasUnsavedRemarks && (
                     <div className="mb-3 flex items-center justify-between bg-amber-50 border border-amber-200 rounded-lg px-4 py-2.5 shadow-sm">
@@ -1205,7 +1217,6 @@ const BalanceSheet = () => {
                 )}
             </div>
 
-            {/* The box height is calculated from the screen: it fills everything under the toolbar */}
             <div
                 ref={scrollRef}
                 onScroll={maybeLoadMore}
@@ -1216,48 +1227,37 @@ const BalanceSheet = () => {
                 {isLoading && (
                     <div className="absolute inset-0 bg-white/90 z-50 flex items-center justify-center">
                         <div className="flex flex-col items-center gap-3 w-64">
-
-                            {/* Progress Track */}
                             <div
                                 className="w-full h-2.5 rounded-full overflow-hidden"
-                                style={{
-                                    backgroundColor: "#e2e8f0",
-                                }}
+                                style={{ backgroundColor: "#e2e8f0" }}
                                 role="progressbar"
                                 aria-valuenow={loadingProgress}
                                 aria-valuemin={0}
                                 aria-valuemax={100}
                             >
-                                {/* Progress Fill */}
                                 <div
                                     style={{
                                         width: "100%",
                                         height: "100%",
                                         backgroundColor: "#0f2544",
-                                        transform: `scaleX(${Math.min(
-                                            100,
-                                            Math.max(0, Number(loadingProgress) || 0)
-                                        ) / 100})`,
+                                        transform: `scaleX(${Math.min(100, Math.max(0, Number(loadingProgress) || 0)) / 100})`,
                                         transformOrigin: "left center",
                                         transition: "transform 300ms ease-in-out",
                                     }}
                                 />
                             </div>
-
                             <span className="text-xs font-medium text-slate-600 text-center">
                                 {loadingMessage} ({loadingProgress}%)
                             </span>
-
                         </div>
                     </div>
                 )}
-
 
                 <table className="border-separate border-spacing-0 tabular-nums text-[11px] border border-[#b4bcc2]" style={{ width: '100%', minWidth: TOTAL_WIDTH }}>
                     <thead>
                         <tr>
                             <th
-                                colSpan={7}
+                                colSpan={8}
                                 style={{
                                     position: 'sticky', top: 0, left: 0, zIndex: 40,
                                     width: getColLeft('yarnBalance') + getColWidth('yarnBalance'),
@@ -1270,31 +1270,29 @@ const BalanceSheet = () => {
                             <th colSpan={7} style={{ position: 'sticky', top: 0, zIndex: 20, backgroundColor: '#475569' }} className="px-0 py-2 text-center text-[10px] font-bold uppercase tracking-wide text-white border-r border-b border-[#b4bcc2]">
                                 DYEING
                             </th>
-                            <th colSpan={6} style={{ position: 'sticky', top: 0, zIndex: 20, backgroundColor: '#475569' }} className="px-0 py-2 text-center text-[10px] font-bold uppercase tracking-wide text-white border-r border-b border-[#b4bcc2]">
+                            <th colSpan={7} style={{ position: 'sticky', top: 0, zIndex: 20, backgroundColor: '#475569' }} className="px-0 py-2 text-center text-[10px] font-bold uppercase tracking-wide text-white border-r border-b border-[#b4bcc2]">
                                 AOP
                             </th>
                             <th
                                 className="px-0 py-2 text-center text-[10px] font-bold uppercase tracking-wide text-white border-r border-b border-[#b4bcc2]"
                                 style={{ position: 'sticky', top: 0, zIndex: 20, width: getColWidth('remarks'), backgroundColor: '#475569' }}
                             >
-                                <div className="flex items-center justify-center gap-1">
-                                    REMARKS
-                                    <ExcelFilter colId="remarks" allJobs={jobs} excluded={colFilters.remarks || new Set()} setExcluded={setExcludedFor} openCol={openCol} setOpenCol={setOpenCol} valueGetter={getColValueGetter('remarks')} />
-                                </div>
+                                
                             </th>
                         </tr>
                         <tr>
                             {COLUMNS.map((col) => {
                                 const isLastFrozen = col.id === 'yarnBalance';
+                                const leftAligned = col.id === 'jobNo' || col.id === 'yarnFactory' || col.id === 'dyeingFactory' || col.id === 'aopFactory';
                                 return (
                                     <th
                                         key={col.id}
                                         style={headerCellStyle(col.id, {
                                             boxShadow: isLastFrozen ? FROZEN_DIVIDER_SHADOW : undefined
                                         })}
-                                        className={`px-1 py-2 text-[10px] font-semibold uppercase border-r border-b border-[#b4bcc2] text-white ${col.id === 'jobNo' || col.id === 'yarnFactory' || col.id === 'dyeingFactory' || col.id === 'aopFactory' ? 'text-left' : 'text-right'}`}
+                                        className={`px-1 py-2 text-[10px] font-semibold uppercase border-r border-b border-[#b4bcc2] text-white ${leftAligned ? 'text-left' : 'text-right'}`}
                                     >
-                                        <div className={`flex items-center ${col.id === 'jobNo' || col.id === 'yarnFactory' || col.id === 'dyeingFactory' || col.id === 'aopFactory' ? "" : "justify-end"} gap-1`}>
+                                        <div className={`flex items-center ${leftAligned ? "" : "justify-end"} gap-1`}>
                                             {col.label}
                                             <ExcelFilter colId={col.id} allJobs={jobs} excluded={colFilters[col.id] || new Set()} setExcluded={setExcludedFor} openCol={openCol} setOpenCol={setOpenCol} valueGetter={getColValueGetter(col.id)} />
                                         </div>
@@ -1318,22 +1316,22 @@ const BalanceSheet = () => {
                             </tr>
                         )}
 
-                        {displayedJobs.map(({ job, idx: jobIdx }) => {
+                        {filteredJobs.map(({ job, idx: jobIdx }) => {
                             const maxRows = Math.max(job.yarnRows.length, job.dyeingRows.length, job.aopRows.length, 1);
 
                             return Array.from({ length: maxRows }).map((_, rowIdx) => {
                                 const yRow = job.yarnRows[rowIdx];
                                 const dRow = job.dyeingRows[rowIdx];
                                 const aRow = job.aopRows[rowIdx];
-                                // Zebra-stripe by job group (matches the reference design) instead of
-                                // per-group tint colors — applied as an inline override so it also
-                                // works correctly on the sticky frozen columns.
                                 const stripeBg = jobIdx % 2 === 0 ? '#ffffff' : '#f3f8f5';
 
                                 return (
-                                    <tr key={`${jobIdx}-${rowIdx}`} className="border-b border-slate-200 hover:bg-amber-50/40 transition-colors">
+                                    <tr key={`${job.jobNo}-${rowIdx}`} className="border-b border-slate-200 hover:bg-amber-50/40 transition-colors">
                                         {rowIdx === 0 && (
                                             <td rowSpan={maxRows} style={cellStyle("jobNo", { backgroundColor: stripeBg })} className="px-2 py-2 border-r border-b border-[#b4bcc2] align-middle text-center font-bold text-slate-800">{job.jobNo}</td>
+                                        )}
+                                        {rowIdx === 0 && (
+                                            <td rowSpan={maxRows} style={cellStyle("bookingQty", { backgroundColor: stripeBg })} className="px-2 py-2 border-r border-b border-[#b4bcc2] align-middle text-right font-medium">{fmtNum(job.bookingQty)}</td>
                                         )}
 
                                         <td style={cellStyle("yarnFactory", { backgroundColor: stripeBg })} className={`px-2 py-2 border-r border-b border-[#b4bcc2] text-slate-600 text-left ${wrapText ? 'whitespace-normal' : 'whitespace-nowrap overflow-hidden text-ellipsis'}`}>{yRow?.factory ?? ""}</td>
@@ -1353,6 +1351,7 @@ const BalanceSheet = () => {
 
                                         <td style={cellStyle("aopFactory", { backgroundColor: stripeBg })} className={`px-2 py-2 border-r border-b border-[#b4bcc2] align-middle text-center ${wrapText ? 'whitespace-normal' : 'whitespace-nowrap overflow-hidden text-ellipsis'}`}>{aRow?.factoryName ?? ""}</td>
                                         <td style={cellStyle("sentForAop", { backgroundColor: stripeBg })} className="px-2 py-2 border-r border-b border-[#b4bcc2] align-middle text-right font-medium">{aRow ? fmtNum(aRow.sentForAop) : ""}</td>
+                                        <td style={cellStyle("returnFromAop", { backgroundColor: stripeBg })} className="px-2 py-2 border-r border-b border-[#b4bcc2] align-middle text-right font-medium">{aRow ? fmtNum(aRow.returnFromAop) : ""}</td>
                                         <td style={cellStyle("receivedFromAop", { backgroundColor: stripeBg })} className="px-2 py-2 border-r border-b border-[#b4bcc2] align-middle text-right font-medium">{aRow ? fmtNum(aRow.receivedFromAop) : ""}</td>
                                         <td style={cellStyle("aopFinishRcvd", { backgroundColor: stripeBg })} className="px-2 py-2 border-r border-b border-[#b4bcc2] align-middle text-right font-medium">{aRow ? fmtNum(aRow.aopFinishRcvd) : ""}</td>
                                         <td style={cellStyle("aopBalance", { backgroundColor: stripeBg })} className="px-2 py-2 border-r border-b border-[#b4bcc2] align-middle text-right font-medium">{aRow ? fmtNum(aopBalance(aRow)) : ""}</td>
@@ -1391,28 +1390,36 @@ const BalanceSheet = () => {
                     {filteredJobs.length > 0 && (
                         <tfoot>
                             <tr className="bg-[#475569] text-white font-bold text-[11px]">
-                                <td style={footerCellStyle("jobNo", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] bg-[#475569] text-center uppercase tracking-wide">Subtotal</td>
+                                <td
+                                    style={footerCellStyle("jobNo", { borderTop: '1px solid #b4bcc2' })}
+                                    title={hasMore ? "Subtotal of the jobs loaded so far. Scroll down to load more." : "Subtotal"}
+                                    className="px-2 py-3 border-r border-b border-[#b4bcc2] bg-[#475569] text-center uppercase tracking-wide text-[10px] whitespace-nowrap overflow-hidden"
+                                >
+                                    {hasMore ? "Loaded Subtotal" : "Subtotal"}
+                                </td>
+                                <td style={footerCellStyle("bookingQty", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{fmtT(totals.booking)}</td>
                                 <td style={footerCellStyle("yarnFactory", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] bg-[#475569]"></td>
-                                <td style={footerCellStyle("yarnReq", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{totals.req.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                                <td style={footerCellStyle("yarnIssue", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{totals.issue.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                                <td style={footerCellStyle("knittingGrey", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{totals.knittingGrey.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                                <td style={footerCellStyle("yarnReturn", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{totals.yarnReturn.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                                <td style={footerCellStyle("yarnBalance", { borderTop: '1px solid #b4bcc2', boxShadow: FROZEN_DIVIDER_SHADOW })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{totals.yarnBal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                                <td style={footerCellStyle("yarnReq", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{fmtT(totals.req)}</td>
+                                <td style={footerCellStyle("yarnIssue", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{fmtT(totals.issue)}</td>
+                                <td style={footerCellStyle("knittingGrey", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{fmtT(totals.knittingGrey)}</td>
+                                <td style={footerCellStyle("yarnReturn", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{fmtT(totals.yarnReturn)}</td>
+                                <td style={footerCellStyle("yarnBalance", { borderTop: '1px solid #b4bcc2', boxShadow: FROZEN_DIVIDER_SHADOW })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{fmtT(totals.yarnBal)}</td>
 
                                 <td style={footerCellStyle("dyeingFactory", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] bg-[#475569]"></td>
-                                <td style={footerCellStyle("greyDelivery", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{totals.greyDelivery.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                                <td style={footerCellStyle("greyReturn", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{totals.greyReturn.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                                <td style={footerCellStyle("greyRcvd", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{totals.greyRcvd.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                                <td style={footerCellStyle("finishRcvd", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{totals.finishRcvd.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                                <td style={footerCellStyle("dyeBalance", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{totals.dyeBal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                                <td style={footerCellStyle("processLoss", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{(() => { const l = totals.greyRcvd ? (totals.greyRcvd - totals.finishRcvd) / totals.greyRcvd : null; return l === null ? "—" : `${(l * 100).toFixed(2)}%`; })()}</td>
+                                <td style={footerCellStyle("greyDelivery", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{fmtT(totals.greyDelivery)}</td>
+                                <td style={footerCellStyle("greyReturn", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{fmtT(totals.greyReturn)}</td>
+                                <td style={footerCellStyle("greyRcvd", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{fmtT(totals.greyRcvd)}</td>
+                                <td style={footerCellStyle("finishRcvd", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{fmtT(totals.finishRcvd)}</td>
+                                <td style={footerCellStyle("dyeBalance", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{fmtT(totals.dyeBal)}</td>
+                                <td style={footerCellStyle("processLoss", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{lossText(totals.greyRcvd, totals.finishRcvd)}</td>
 
                                 <td style={footerCellStyle("aopFactory", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] bg-[#475569]"></td>
-                                <td style={footerCellStyle("sentForAop", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{totals.sentForAop.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                                <td style={footerCellStyle("receivedFromAop", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{totals.receivedFromAop.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                                <td style={footerCellStyle("aopFinishRcvd", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{totals.aopFinishRcvd.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                                <td style={footerCellStyle("aopBalance", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{totals.aopBal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                                <td style={footerCellStyle("aopProcessLoss", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{(() => { const l = totals.receivedFromAop ? (totals.receivedFromAop - totals.aopFinishRcvd) / totals.receivedFromAop : null; return l === null ? "—" : `${(l * 100).toFixed(2)}%`; })()}</td>
+                                <td style={footerCellStyle("sentForAop", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{fmtT(totals.sentForAop)}</td>
+                                <td style={footerCellStyle("returnFromAop", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{fmtT(totals.returnFromAop)}</td>
+                                <td style={footerCellStyle("receivedFromAop", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{fmtT(totals.receivedFromAop)}</td>
+                                <td style={footerCellStyle("aopFinishRcvd", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{fmtT(totals.aopFinishRcvd)}</td>
+                                <td style={footerCellStyle("aopBalance", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{fmtT(totals.aopBal)}</td>
+                                <td style={footerCellStyle("aopProcessLoss", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] text-right bg-[#475569]">{lossText(totals.receivedFromAop, totals.aopFinishRcvd)}</td>
 
                                 <td style={footerCellStyle("remarks", { borderTop: '1px solid #b4bcc2' })} className="px-2 py-3 border-r border-b border-[#b4bcc2] bg-[#475569]"></td>
                             </tr>
@@ -1421,7 +1428,7 @@ const BalanceSheet = () => {
                 </table>
             </div>
 
-            {/* Scroll loading status */}
+            {/* Lazy loading status */}
             <div className="flex flex-wrap items-center justify-center gap-2.5 mt-2 min-h-6 text-xs text-slate-500 text-center">
                 {!isLoading && loadingMore && (
                     <span className="inline-flex items-center gap-2 font-semibold text-slate-700">
@@ -1429,13 +1436,19 @@ const BalanceSheet = () => {
                         Loading more...
                     </span>
                 )}
-                {!isLoading && !loadingMore && hasMoreJobs && (
-                    <span className="opacity-70">
-                        {displayedJobs.length} of {filteredJobs.length} jobs loaded. Scroll down to load more.
+                {!isLoading && loadMoreError && (
+                    <span className="inline-flex items-center gap-2 text-rose-600 font-medium">
+                        Could not load more jobs.
+                        <button onClick={handleRetryLoadMore} className="underline font-semibold">Retry</button>
                     </span>
                 )}
-                {!isLoading && !loadingMore && !hasMoreJobs && filteredJobs.length > 0 && (
-                    <span className="opacity-70">All {filteredJobs.length} jobs loaded</span>
+                {!isLoading && !loadingMore && !loadMoreError && hasMore && (
+                    <span className="opacity-70">
+                        {jobs.length} of {totalJobs} jobs loaded. Scroll down to load more.
+                    </span>
+                )}
+                {!isLoading && !loadingMore && !loadMoreError && !hasMore && jobs.length > 0 && (
+                    <span className="opacity-70">All {jobs.length} jobs loaded</span>
                 )}
             </div>
         </div>

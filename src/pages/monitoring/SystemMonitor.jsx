@@ -394,8 +394,14 @@ export default function SystemMonitor() {
                   <Progress label="Process CPU" value={cpuPercent} detail={cpuPercent.toFixed(1) + "%"} color="bg-blue-600" />
                   <Progress label="Node heap usage" value={memoryPercent} detail={memoryPercent.toFixed(1) + "% · " + formatBytes(server.heapUsedBytes) + " / " + formatBytes(server.heapTotalBytes)} color="bg-violet-600" />
                   <div className="grid grid-cols-2 gap-4">
-                    <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Process uptime</p><p className="mt-1 text-lg font-semibold text-slate-900">{formatUptime(server.uptimeSeconds)}</p></div>
+                    <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Process uptime</p><p className="mt-1 text-lg font-semibold text-slate-900">{formatUptime(server.processUptimeSeconds)}</p></div>
+                    <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Host / container uptime</p><p className="mt-1 text-lg font-semibold text-slate-900">{formatUptime(server.hostUptimeSeconds)}</p></div>
                     <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Node runtime</p><p className="mt-1 text-lg font-semibold text-slate-900">{server.nodeVersion}</p></div>
+                    <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Hostname / architecture</p><p className="mt-1 truncate text-sm font-semibold text-slate-900">{server.hostname} · {server.architecture}</p></div>
+                  </div>
+                  <div className="space-y-3 rounded-xl bg-slate-50 p-4">
+                    <Progress label="Event loop p95 delay" value={Math.min(100, (server.eventLoopDelayMs?.p95 || 0) / 100 * 100)} detail={(server.eventLoopDelayMs?.p95 ?? 0).toFixed(2) + " ms"} color="bg-amber-500" />
+                    <p className="text-xs text-slate-500">Load average (1 / 5 / 15 min): {(server.loadAverage?.oneMinute ?? 0).toFixed(2)} / {(server.loadAverage?.fiveMinutes ?? 0).toFixed(2)} / {(server.loadAverage?.fifteenMinutes ?? 0).toFixed(2)} · External memory {formatBytes(server.externalMemoryBytes)}</p>
                   </div>
                   <p className="text-xs leading-relaxed text-slate-500">CPU and RAM values describe this Node.js process, not total Render host utilization. RSS is shown as a trend; heap usage is shown as a percentage of the current V8 heap allocation.</p>
                 </div>

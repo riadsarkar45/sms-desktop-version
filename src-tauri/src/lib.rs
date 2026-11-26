@@ -25,15 +25,17 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
+            Some(vec!["--hidden"]),
         ))
         .setup(|app| {
-            // Register SM Sourcing to launch automatically when the user signs in.
+            // Enable automatic launch when the current user signs in.
             #[cfg(desktop)]
             {
                 use tauri_plugin_autostart::ManagerExt;
                 app.autolaunch().enable()?;
             }
+
+            let launched_hidden = std::env::args().any(|arg| arg == "--hidden");
 
             let open_item =
                 MenuItem::with_id(app, "open", "Open SM Sourcing", true, None::<&str>)?;
@@ -67,6 +69,13 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+
+            // Windows startup launches the process with --hidden, keeping it in the tray.
+            if launched_hidden {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+            }
 
             Ok(())
         })

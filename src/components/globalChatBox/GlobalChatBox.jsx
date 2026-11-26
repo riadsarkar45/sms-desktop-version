@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSocket } from "../../hooks/socketProvider/SocketContext";
 import { useAuth } from "../../auth/AuthContext";
+import { showNativeNotification } from "../../utils/nativeNotifications";
 
 const EMPTY_USERS = []; // stable default so effects do not re-run on every render
 
@@ -351,6 +352,17 @@ const GlobalChatBox = ({ currentUserId, users = EMPTY_USERS }) => {
             addMessages(peerId, [msg]);
 
             if (!incoming || !isNew) return;
+
+            // If SM Sourcing is in the tray/background or another app is focused,
+            // use a native Windows notification instead of relying only on the chat UI.
+            if (document.visibilityState !== "visible" || !document.hasFocus()) {
+                const sender = usersRef.current.find((u) => String(u.id) === peerId);
+                const messageText = String(msg.text || "You received a new message.");
+                void showNativeNotification({
+                    title: sender?.name || "New chat message",
+                    body: messageText.length > 180 ? `${messageText.slice(0, 177)}...` : messageText,
+                });
+            }
 
             const win = windowsRef.current.find((w) => w.userId === peerId);
             if (!win) {

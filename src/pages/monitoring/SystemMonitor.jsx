@@ -377,7 +377,7 @@ export default function SystemMonitor() {
             <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
               <MetricCard title="Process CPU" value={cpuPercent.toFixed(1) + "%"} detail={"Normalized across " + server.cpuCores + " CPU cores"} icon={Cpu} tone="blue" />
               <MetricCard title="Process RAM (RSS)" value={formatBytes(server.processMemoryBytes)} detail={"Heap used " + formatBytes(server.heapUsedBytes)} icon={HardDrive} tone="violet" />
-              <MetricCard title="Active HTTP requests" value={requests.active.toLocaleString()} detail={requests.totalAllowed.toLocaleString() + " completed · " + requests.totalBlocked.toLocaleString() + " blocked"} icon={Activity} tone="amber" />
+              <MetricCard title="Active HTTP requests" value={requests.active.toLocaleString()} detail={requests.totalAllowed.toLocaleString() + " completed · " + (requests.requestsPerSecond ?? 0).toFixed(2) + " req/s · " + requests.totalBlocked.toLocaleString() + " blocked"} icon={Activity} tone="amber" />
               <MetricCard title="Socket connections" value={sockets.connected.toLocaleString()} detail="Connected Socket.IO clients on this instance" icon={Wifi} tone="emerald" />
               <MetricCard title="Process uptime" value={formatUptime(server.processUptimeSeconds)} detail={"Started " + new Date(server.processStartedAt).toLocaleString()} icon={Clock3} tone="blue" />
               <MetricCard title="Redis latency" value={redis?.latencyMs == null ? "—" : redis.latencyMs.toFixed(1) + " ms"} detail={redis?.status === "connected" ? "Redis PING + INFO round-trip" : "Redis " + (redis?.status || "not sampled")} icon={Boxes} tone="violet" />
@@ -470,6 +470,9 @@ export default function SystemMonitor() {
                 <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Operations / sec</p><p className="mt-1 text-xl font-bold text-slate-900">{redis?.instantaneousOpsPerSecond ?? "—"}</p></div>
                 <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Total connections</p><p className="mt-1 text-xl font-bold text-slate-900">{redis?.totalConnectionsReceived == null ? "—" : Number(redis.totalConnectionsReceived).toLocaleString()}</p></div>
                 <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Redis round-trip</p><p className="mt-1 text-xl font-bold text-slate-900">{redis?.latencyMs == null ? "—" : redis.latencyMs.toFixed(2) + " ms"}</p></div>
+                <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Cache hit ratio</p><p className="mt-1 text-xl font-bold text-slate-900">{redis?.keyspaceHitRatePercent == null ? "—" : redis.keyspaceHitRatePercent + "%"}</p></div>
+                <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Evicted keys</p><p className="mt-1 text-xl font-bold text-slate-900">{redis?.evictedKeys == null ? "—" : Number(redis.evictedKeys).toLocaleString()}</p></div>
+                <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Redis max memory</p><p className="mt-1 text-xl font-bold text-slate-900">{redis?.maxMemoryBytes == null || redis.maxMemoryBytes === 0 ? "Unlimited / not set" : formatBytes(redis.maxMemoryBytes)}</p></div>
               </div>
               <div className="mt-4 rounded-xl bg-slate-50 p-4">
                 <p className="mb-2 text-sm font-semibold text-slate-700">Redis keyspace</p>

@@ -395,9 +395,10 @@ export default function SystemMonitor() {
                   <Progress label="Node heap usage" value={memoryPercent} detail={memoryPercent.toFixed(1) + "% · " + formatBytes(server.heapUsedBytes) + " / " + formatBytes(server.heapTotalBytes)} color="bg-violet-600" />
                   <div className="grid grid-cols-2 gap-4">
                     <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Process uptime</p><p className="mt-1 text-lg font-semibold text-slate-900">{formatUptime(server.processUptimeSeconds)}</p></div>
-                    <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Host / container uptime</p><p className="mt-1 text-lg font-semibold text-slate-900">{formatUptime(server.hostUptimeSeconds)}</p></div>
+                    <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">OS host uptime</p><p className="mt-1 text-lg font-semibold text-slate-900">{formatUptime(server.hostUptimeSeconds)}</p></div>
                     <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Node runtime</p><p className="mt-1 text-lg font-semibold text-slate-900">{server.nodeVersion}</p></div>
                     <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Hostname / architecture</p><p className="mt-1 truncate text-sm font-semibold text-slate-900">{server.hostname} · {server.architecture}</p></div>
+                    <div className="col-span-2 rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Deployment</p><p className="mt-1 truncate text-sm font-semibold text-slate-900">{server.deployment?.provider || "Unknown"} · {server.deployment?.gitCommit ? server.deployment.gitCommit.slice(0, 8) : "commit unavailable"} · Instance {server.deployment?.instanceId || "—"}</p></div>
                   </div>
                   <div className="space-y-3 rounded-xl bg-slate-50 p-4">
                     <Progress label="Event loop p95 delay" value={Math.min(100, (server.eventLoopDelayMs?.p95 || 0) / 100 * 100)} detail={(server.eventLoopDelayMs?.p95 ?? 0).toFixed(2) + " ms"} color="bg-amber-500" />

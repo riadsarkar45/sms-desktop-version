@@ -11,7 +11,8 @@
         "version:check": "node scripts/release.js check",
         "release:patch": "node scripts/release.js patch",
         "release:minor": "node scripts/release.js minor",
-        "release:major": "node scripts/release.js major"
+        "release:major": "node scripts/release.js major",
+        "release:beta": "node scripts/release-beta.js"
     },
     "dependencies": {
         "@tanstack/react-virtual": "^3.14.26",

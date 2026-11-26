@@ -174,7 +174,7 @@ function InteractiveChart({ history, range, onRangeChange }) {
         <div className="flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1">
           {[1, 6, 12, 24].map((hours) => (
             <button
-              key={minutes}
+              key={hours}
               type="button"
               onClick={() => {
                 onRangeChange(hours);
@@ -296,9 +296,11 @@ export default function SystemMonitor() {
   const [historyStorage, setHistoryStorage] = useState({ loading: true, available: null, sampleCount: 0, message: "" });
 
   useEffect(() => {
+    let active = true;
     const requestHistory = (hours) => {
       setHistoryStorage((current) => ({ ...current, loading: true }));
       socket.emit("monitoring:history:request", { hours }, (result) => {
+        if (!active) return;
         if (!result?.success || !result.available) {
           setHistoryStorage({ loading: false, available: false, sampleCount: 0, message: result?.message || "Redis history is unavailable" });
           return;
@@ -345,6 +347,7 @@ export default function SystemMonitor() {
     socket.on("system:metrics", onMetrics);
     if (socket.connected) subscribe();
     return () => {
+      active = false;
       socket.emit("monitoring:unsubscribe");
       socket.off("connect", subscribe);
       socket.off("disconnect", onDisconnect);

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import notiSound from '../../assets/notification_o14egLP.mp3';
 import { useSocket } from '../../hooks/socketProvider/SocketContext';
+import { showNativeNotification } from '../../utils/nativeNotifications';
 
 export default function GlobalNotifications() {
     const socket = useSocket();
@@ -66,6 +67,14 @@ export default function GlobalNotifications() {
 
         const handleNotification = (data) => {
             console.log(data, "received data from backend");
+
+            if (document.visibilityState !== 'visible' || !document.hasFocus()) {
+                void showNativeNotification({
+                    title: data?.title || 'SM Sourcing',
+                    body: data?.message || 'You have a new notification.',
+                });
+            }
+
             const id = Date.now() + Math.random();
             setNotifications((prev) => [...prev, { id, ...data }]);
 
@@ -89,6 +98,13 @@ export default function GlobalNotifications() {
         // flooding requests doesn't spam the UI with hundreds of cards.
         const handleBlockAlert = (data) => {
             console.log(data, "ip-block-alert received");
+
+            if (document.visibilityState !== 'visible' || !document.hasFocus()) {
+                void showNativeNotification({
+                    title: data?.title || 'IP Block Alert',
+                    body: data?.message || 'A security event was detected.',
+                });
+            }
 
             setBlockAlert((prev) => {
                 // Same IP as the one already showing -> just bump the count,

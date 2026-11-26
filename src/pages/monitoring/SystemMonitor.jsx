@@ -130,7 +130,10 @@ function InteractiveChart({ history, range, onRangeChange }) {
   const [hoverIndex, setHoverIndex] = useState(null);
 
   const metric = CHART_METRICS[metricKey];
-  const visibleHistory = useMemo(() => history, [history]);
+  const visibleHistory = useMemo(() => {
+    const cutoff = Date.now() - range * 60 * 60 * 1000;
+    return history.filter((point) => new Date(point.time).getTime() >= cutoff);
+  }, [history, range]);
 
   const values = visibleHistory
     .map(metric.getValue)

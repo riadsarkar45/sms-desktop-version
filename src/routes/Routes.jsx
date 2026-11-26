@@ -51,6 +51,7 @@ import PrivateRoutes from "../components/private.routes/PrivateRoute";
 import DailyTransaction from "../pages/mis/party.stock/DailyTransaction";
 import InTransit from "../pages/movement/In-Transit";
 import YarnDyeing from "../pages/movement/YarnDyed";
+import SystemMonitor from "../pages/monitoring/SystemMonitor";
 
 const routers = createBrowserRouter([
   {
@@ -75,6 +76,10 @@ const routers = createBrowserRouter([
               {
                 path: "home",
                 element: <Home />,
+              },
+              {
+                path: "system-monitor",
+                element: <SystemMonitor />,
               },
               {
                 path: "knitting-order",

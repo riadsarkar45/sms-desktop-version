@@ -10,12 +10,11 @@ import {
   Wifi,
   ChartNoAxesCombined,
   Clock3,
-  Boxes,
   Zap,
 } from "lucide-react";
 import { useSocket } from "../../hooks/socketProvider/SocketContext";
 
-const HISTORY_LIMIT = 180;
+const HISTORY_LIMIT = 1000
 
 const formatBytes = (bytes) => {
   if (!Number.isFinite(bytes)) return "—";
@@ -126,15 +125,14 @@ const CHART_METRICS = {
   },
 };
 
-function InteractiveChart({ history }) {
+function InteractiveChart({ history, range, onRangeChange }) {
   const [metricKey, setMetricKey] = useState("cpu");
-  const [range, setRange] = useState(5);
   const [hoverIndex, setHoverIndex] = useState(null);
 
   const metric = CHART_METRICS[metricKey];
   const visibleHistory = useMemo(() => {
-    const sampleCount = (range * 60) / 5;
-    return history.slice(-sampleCount);
+    const cutoff = Date.now() - range * 60 * 60 * 1000;
+    return history.filter((point) => new Date(point.time).getTime() >= cutoff);
   }, [history, range]);
 
   const values = visibleHistory
@@ -173,24 +171,24 @@ function InteractiveChart({ history }) {
           <ChartNoAxesCombined size={19} className="text-slate-500" />
           <div>
             <h2 className="font-semibold text-slate-900">Live performance trends</h2>
-            <p className="mt-0.5 text-xs text-slate-500">Hover or tap a point to inspect a sample</p>
+            <p className="mt-0.5 text-xs text-slate-500">Redis-backed history · hover or tap a point to inspect</p>
           </div>
         </div>
         <div className="flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1">
-          {[1, 5, 15].map((minutes) => (
+          {[1, 6, 12, 24].map((hours) => (
             <button
-              key={minutes}
+              key={hours}
               type="button"
               onClick={() => {
-                setRange(minutes);
+                onRangeChange(hours);
                 setHoverIndex(null);
               }}
               className={
                 "rounded-lg px-3 py-1.5 text-xs font-semibold transition " +
-                (range === minutes ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800")
+                (range === hours ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-800")
               }
             >
-              {minutes}m
+              {hours}h
             </button>
           ))}
         </div>
@@ -297,13 +295,43 @@ export default function SystemMonitor() {
   const [snapshot, setSnapshot] = useState(null);
   const [connected, setConnected] = useState(Boolean(socket.connected));
   const [history, setHistory] = useState([]);
+  const [historyRange, setHistoryRange] = useState(24);
+  const [historyStorage, setHistoryStorage] = useState({ loading: true, available: null, sampleCount: 0, message: "" });
 
   useEffect(() => {
+    let active = true;
+    const requestHistory = (hours) => {
+      setHistoryStorage((current) => ({ ...current, loading: true }));
+      socket.emit("monitoring:history:request", { hours }, (result) => {
+        if (!active) return;
+        if (!result?.success || !result.available) {
+          setHistoryStorage({ loading: false, available: false, sampleCount: 0, message: result?.message || "Redis history is unavailable" });
+          return;
+        }
+        const historical = (result.points || []).map((point) => ({
+          time: point.timestamp,
+          cpu: Number(point.server?.processCpuPercent ?? 0),
+          memoryMb: Number(point.server?.processMemoryBytes ?? 0) / (1024 * 1024),
+          dbLatencyMs: point.database?.latencyMs == null ? null : Number(point.database.latencyMs),
+          eventLoopP95Ms: Number(point.server?.eventLoopP95Ms ?? 0),
+        }));
+        const lastHistoricalTime = historical.length ? new Date(historical[historical.length - 1].time).getTime() : 0;
+        setHistory((previous) => {
+          const newerLiveSamples = previous.filter((point) => new Date(point.time).getTime() > lastHistoricalTime);
+          return [...historical, ...newerLiveSamples].slice(-HISTORY_LIMIT);
+        });
+        setHistoryStorage({ loading: false, available: true, sampleCount: result.sampleCount || historical.length, message: "" });
+      });
+    };
     const subscribe = () => {
       setConnected(true);
       socket.emit("monitoring:subscribe");
+      requestHistory(historyRange);
     };
-    const onDisconnect = () => setConnected(false);
+    const onDisconnect = () => {
+      setConnected(false);
+      setHistoryStorage((current) => ({ ...current, loading: false }));
+    };
     const onMetrics = (data) => {
       setSnapshot(data);
       setHistory((previous) => [
@@ -317,25 +345,23 @@ export default function SystemMonitor() {
         },
       ]);
     };
-
     socket.on("connect", subscribe);
     socket.on("disconnect", onDisconnect);
     socket.on("system:metrics", onMetrics);
     if (socket.connected) subscribe();
-
     return () => {
+      active = false;
       socket.emit("monitoring:unsubscribe");
       socket.off("connect", subscribe);
       socket.off("disconnect", onDisconnect);
       socket.off("system:metrics", onMetrics);
     };
-  }, [socket]);
+  }, [socket, historyRange]);
 
   const server = snapshot?.server;
   const db = snapshot?.database;
   const requests = snapshot?.requests;
   const sockets = snapshot?.sockets;
-  const redis = snapshot?.redis;
   const memoryPercent = useMemo(() => {
     if (!server?.heapTotalBytes) return 0;
     return (server.heapUsedBytes / server.heapTotalBytes) * 100;
@@ -380,7 +406,7 @@ export default function SystemMonitor() {
               <MetricCard title="Active HTTP requests" value={requests.active.toLocaleString()} detail={requests.totalAllowed.toLocaleString() + " completed · " + (requests.requestsPerSecond ?? 0).toFixed(2) + " req/s · " + requests.totalBlocked.toLocaleString() + " blocked"} icon={Activity} tone="amber" />
               <MetricCard title="Socket connections" value={sockets.connected.toLocaleString()} detail="Connected Socket.IO clients on this instance" icon={Wifi} tone="emerald" />
               <MetricCard title="Process uptime" value={formatUptime(server.processUptimeSeconds)} detail={"Started " + new Date(server.processStartedAt).toLocaleString()} icon={Clock3} tone="blue" />
-              <MetricCard title="Redis latency" value={redis?.latencyMs == null ? "—" : redis.latencyMs.toFixed(1) + " ms"} detail={redis?.status === "connected" ? "Redis PING + INFO round-trip" : "Redis " + (redis?.status || "not sampled")} icon={Boxes} tone="violet" />
+
             </section>
 
             <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -391,7 +417,6 @@ export default function SystemMonitor() {
                   { label: "Node heap", ok: memoryPercent < 90, value: memoryPercent.toFixed(1) + "%", warning: "Heap above 90% of current allocation" },
                   { label: "Event loop p95", ok: (server.eventLoopDelayMs?.p95 ?? 0) < 100, value: (server.eventLoopDelayMs?.p95 ?? 0).toFixed(1) + " ms", warning: "Event loop delay above 100 ms" },
                   { label: "Database round-trip", ok: db.latencyMs != null && db.latencyMs < 500, value: db.latencyMs == null ? "Unavailable" : db.latencyMs.toFixed(1) + " ms", warning: "Database latency above 500 ms or unavailable" },
-                  { label: "Redis", ok: redis?.status === "connected", value: redis?.status || "Not sampled", warning: "Redis connection or telemetry unavailable" },
                   { label: "Blocked requests", ok: requests.totalBlocked === 0, value: requests.totalBlocked.toLocaleString(), warning: "Rate-limited requests observed" },
                 ].map((check) => (
                   <div key={check.label} className={"flex items-center justify-between gap-3 rounded-xl border px-3 py-3 " + (check.ok ? "border-emerald-100 bg-emerald-50/60" : "border-amber-200 bg-amber-50")}>
@@ -451,45 +476,6 @@ export default function SystemMonitor() {
 
 
             <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-              <div className="mb-5 flex flex-wrap items-center gap-2">
-                <Boxes size={19} className="text-slate-500" />
-                <div>
-                  <h2 className="font-semibold text-slate-900">Redis cache & queue telemetry</h2>
-                  <p className="text-xs text-slate-500">Using the backend's existing ioredis connection · sampled every 15 seconds</p>
-                </div>
-                <span className={"ml-auto rounded-full px-2.5 py-1 text-xs font-semibold " + (redis?.status === "connected" ? "bg-emerald-50 text-emerald-700" : redis?.status === "connecting" ? "bg-amber-50 text-amber-700" : "bg-rose-50 text-rose-700")}>
-                  {redis?.status === "connected" ? "Connected" : redis?.status === "connecting" ? "Connecting" : redis?.status === "error" ? "Telemetry error" : "Unavailable"}
-                </span>
-              </div>
-              <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Redis uptime</p><p className="mt-1 text-xl font-bold text-slate-900">{redis?.uptimeSeconds == null ? "—" : formatUptime(redis.uptimeSeconds)}</p></div>
-                <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Connected clients</p><p className="mt-1 text-xl font-bold text-slate-900">{redis?.connectedClients ?? "—"}</p></div>
-                <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Used memory</p><p className="mt-1 text-xl font-bold text-slate-900">{redis?.usedMemoryBytes == null ? "—" : formatBytes(redis.usedMemoryBytes)}</p></div>
-                <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Peak memory</p><p className="mt-1 text-xl font-bold text-slate-900">{redis?.usedMemoryPeakBytes == null ? "—" : formatBytes(redis.usedMemoryPeakBytes)}</p></div>
-                <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Commands processed</p><p className="mt-1 text-xl font-bold text-slate-900">{redis?.totalCommandsProcessed == null ? "—" : Number(redis.totalCommandsProcessed).toLocaleString()}</p></div>
-                <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Operations / sec</p><p className="mt-1 text-xl font-bold text-slate-900">{redis?.instantaneousOpsPerSecond ?? "—"}</p></div>
-                <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Total connections</p><p className="mt-1 text-xl font-bold text-slate-900">{redis?.totalConnectionsReceived == null ? "—" : Number(redis.totalConnectionsReceived).toLocaleString()}</p></div>
-                <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Redis round-trip</p><p className="mt-1 text-xl font-bold text-slate-900">{redis?.latencyMs == null ? "—" : redis.latencyMs.toFixed(2) + " ms"}</p></div>
-                <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Cache hit ratio</p><p className="mt-1 text-xl font-bold text-slate-900">{redis?.keyspaceHitRatePercent == null ? "—" : redis.keyspaceHitRatePercent + "%"}</p></div>
-                <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Evicted keys</p><p className="mt-1 text-xl font-bold text-slate-900">{redis?.evictedKeys == null ? "—" : Number(redis.evictedKeys).toLocaleString()}</p></div>
-                <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Redis max memory</p><p className="mt-1 text-xl font-bold text-slate-900">{redis?.maxMemoryBytes == null || redis.maxMemoryBytes === 0 ? "Unlimited / not set" : formatBytes(redis.maxMemoryBytes)}</p></div>
-              </div>
-              <div className="mt-4 rounded-xl bg-slate-50 p-4">
-                <p className="mb-2 text-sm font-semibold text-slate-700">Redis keyspace</p>
-                {redis?.keyspace && Object.keys(redis.keyspace).length ? (
-                  <div className="flex flex-wrap gap-2">
-                    {Object.entries(redis.keyspace).map(([dbName, value]) => (
-                      <span key={dbName} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
-                        <strong>{dbName}</strong> · {value.keys ?? "—"} keys · {value.expires ?? "—"} expiring
-                      </span>
-                    ))}
-                  </div>
-                ) : <p className="text-xs text-slate-500">No keyspace entries reported, or Redis telemetry is unavailable.</p>}
-              </div>
-              <p className="mt-3 text-xs leading-relaxed text-slate-500">Redis INFO statistics are server-wide for the Redis instance, not only this ERP process. Key names, values, credentials and cached payloads are never exposed here.</p>
-            </section>
-
-            <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <div className="mb-4 flex items-center gap-2"><Zap size={18} className="text-slate-500" /><h2 className="font-semibold text-slate-900">Slowest API routes (rolling sample)</h2></div>
               {requests.routes?.length ? (
                 <div className="overflow-x-auto">
@@ -510,7 +496,8 @@ export default function SystemMonitor() {
               <p className="mt-3 text-xs text-slate-500">P95 uses the latest 200 successful responses per route, held in process memory. Restarting the backend resets these counters; this is not long-term analytics.</p>
             </section>
 
-            <InteractiveChart history={history} />
+            <InteractiveChart history={history} range={historyRange} onRangeChange={setHistoryRange} />
+            <p className="text-xs text-slate-500">{historyStorage.loading ? "Loading saved monitoring history from Redis…" : historyStorage.available ? `Redis history available · ${historyStorage.sampleCount.toLocaleString()} stored samples in the selected ${historyRange}-hour window` : `Historical storage unavailable: ${historyStorage.message}. Live metrics are still updating.`}</p>
             <p className="text-right text-xs text-slate-400">Last update: {new Date(snapshot.timestamp).toLocaleTimeString()}</p>
           </>
         )}

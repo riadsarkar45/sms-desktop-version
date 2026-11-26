@@ -7,12 +7,14 @@ import "./index.css";
 import { SocketProvider } from "./hooks/socketProvider/SocketContext";
 import ChatLauncher from "./components/globalChatBox/ChatLauncher";
 import UpdateChecker from "./components/update.checker/UpdateChecker";
+import GlobalNotifications from "./components/notifications/NotificationProvider";
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
     <AuthProvider>
       <SocketProvider>
         <RouterProvider router={routers} />
         <ChatLauncher />
+        <GlobalNotifications />
         <UpdateChecker />
       </SocketProvider>
     </AuthProvider>

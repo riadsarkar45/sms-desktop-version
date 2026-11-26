@@ -9,6 +9,7 @@ import {
 
 import {
   LayoutDashboard,
+  Gauge,
   Package,
   ShoppingCart,
   ArrowLeftRight,
@@ -71,6 +72,7 @@ const MAX_TABS = 15;
 
 const PAGE_TITLES = {
   "/dashboard/home": "Dashboard",
+  "/dashboard/system-monitor": "System Monitor",
 
   "/dashboard/yarn": "Yarn Purchase",
   "/dashboard/spinning-yarn-movement": "Yarn Movement Spinning",
@@ -815,6 +817,12 @@ export default function Sidebar() {
       path: HOME_PATH,
     },
     {
+      id: "system-monitor",
+      label: "System Monitor",
+      icon: Gauge,
+      path: "/dashboard/system-monitor",
+    },
+    {
       id: "yarn",
       label: "Yarn",
       icon: Package,
@@ -954,6 +962,7 @@ export default function Sidebar() {
 
   const pageTitles = {
     "/dashboard/home": "Dashboard",
+    "/dashboard/system-monitor": "System Monitor",
 
     "/dashboard/yarn": "Yarn Purchase",
     "/dashboard/spinning-yarn-movement": "Yarn Movement Spinning",

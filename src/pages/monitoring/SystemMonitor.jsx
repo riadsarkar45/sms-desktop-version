@@ -9,6 +9,9 @@ import {
   Server,
   Wifi,
   ChartNoAxesCombined,
+  Clock3,
+  Boxes,
+  Zap,
 } from "lucide-react";
 import { useSocket } from "../../hooks/socketProvider/SocketContext";
 
@@ -112,6 +115,14 @@ const CHART_METRICS = {
     getValue: (point) => point.dbLatencyMs,
     format: (value) => value.toFixed(1) + " ms",
     max: (values) => Math.max(100, Math.ceil(Math.max(...values, 100) / 100) * 100),
+  },
+  eventLoop: {
+    label: "Event loop p95",
+    unit: "ms",
+    color: "#d97706",
+    getValue: (point) => point.eventLoopP95Ms,
+    format: (value) => value.toFixed(1) + " ms",
+    max: (values) => Math.max(20, Math.ceil(Math.max(...values, 20) / 20) * 20),
   },
 };
 
@@ -302,6 +313,7 @@ export default function SystemMonitor() {
           cpu: Number(data.server?.processCpuPercent ?? 0),
           memoryMb: Number(data.server?.processMemoryBytes ?? 0) / (1024 * 1024),
           dbLatencyMs: data.database?.latencyMs == null ? null : Number(data.database.latencyMs),
+          eventLoopP95Ms: Number(data.server?.eventLoopDelayMs?.p95 ?? 0),
         },
       ]);
     };
@@ -323,6 +335,7 @@ export default function SystemMonitor() {
   const db = snapshot?.database;
   const requests = snapshot?.requests;
   const sockets = snapshot?.sockets;
+  const redis = snapshot?.redis;
   const memoryPercent = useMemo(() => {
     if (!server?.heapTotalBytes) return 0;
     return (server.heapUsedBytes / server.heapTotalBytes) * 100;
@@ -366,6 +379,8 @@ export default function SystemMonitor() {
               <MetricCard title="Process RAM (RSS)" value={formatBytes(server.processMemoryBytes)} detail={"Heap used " + formatBytes(server.heapUsedBytes)} icon={HardDrive} tone="violet" />
               <MetricCard title="Active HTTP requests" value={requests.active.toLocaleString()} detail={requests.totalAllowed.toLocaleString() + " completed · " + requests.totalBlocked.toLocaleString() + " blocked"} icon={Activity} tone="amber" />
               <MetricCard title="Socket connections" value={sockets.connected.toLocaleString()} detail="Connected Socket.IO clients on this instance" icon={Wifi} tone="emerald" />
+              <MetricCard title="Process uptime" value={formatUptime(server.processUptimeSeconds)} detail={"Started " + new Date(server.processStartedAt).toLocaleString()} icon={Clock3} tone="blue" />
+              <MetricCard title="Redis latency" value={redis?.latencyMs == null ? "—" : redis.latencyMs.toFixed(1) + " ms"} detail={redis?.status === "connected" ? "Redis PING + INFO round-trip" : "Redis " + (redis?.status || "not sampled")} icon={Boxes} tone="violet" />
             </section>
 
             <section className="grid grid-cols-1 gap-5 xl:grid-cols-2">
@@ -403,6 +418,64 @@ export default function SystemMonitor() {
                 <Progress label="DB latency" value={latencyPercent} detail={db.latencyMs == null ? "Unavailable" : db.latencyMs.toFixed(1) + " ms · 500 ms visual scale"} color={latencyPercent >= 80 ? "bg-rose-500" : latencyPercent >= 50 ? "bg-amber-500" : "bg-teal-600"} />
                 <p className="mt-4 text-xs leading-relaxed text-slate-500">Session counts come from pg_stat_activity and may be limited by the database role's permissions. They are not Neon compute utilization. The latency bar is a visual reference, not a database capacity limit.</p>
               </div>
+            </section>
+
+
+            <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-5 flex flex-wrap items-center gap-2">
+                <Boxes size={19} className="text-slate-500" />
+                <div>
+                  <h2 className="font-semibold text-slate-900">Redis cache & queue telemetry</h2>
+                  <p className="text-xs text-slate-500">Using the backend's existing ioredis connection · sampled every 15 seconds</p>
+                </div>
+                <span className={"ml-auto rounded-full px-2.5 py-1 text-xs font-semibold " + (redis?.status === "connected" ? "bg-emerald-50 text-emerald-700" : redis?.status === "connecting" ? "bg-amber-50 text-amber-700" : "bg-rose-50 text-rose-700")}>
+                  {redis?.status === "connected" ? "Connected" : redis?.status === "connecting" ? "Connecting" : redis?.status === "error" ? "Telemetry error" : "Unavailable"}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Redis uptime</p><p className="mt-1 text-xl font-bold text-slate-900">{redis?.uptimeSeconds == null ? "—" : formatUptime(redis.uptimeSeconds)}</p></div>
+                <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Connected clients</p><p className="mt-1 text-xl font-bold text-slate-900">{redis?.connectedClients ?? "—"}</p></div>
+                <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Used memory</p><p className="mt-1 text-xl font-bold text-slate-900">{redis?.usedMemoryBytes == null ? "—" : formatBytes(redis.usedMemoryBytes)}</p></div>
+                <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Peak memory</p><p className="mt-1 text-xl font-bold text-slate-900">{redis?.usedMemoryPeakBytes == null ? "—" : formatBytes(redis.usedMemoryPeakBytes)}</p></div>
+                <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Commands processed</p><p className="mt-1 text-xl font-bold text-slate-900">{redis?.totalCommandsProcessed == null ? "—" : Number(redis.totalCommandsProcessed).toLocaleString()}</p></div>
+                <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Operations / sec</p><p className="mt-1 text-xl font-bold text-slate-900">{redis?.instantaneousOpsPerSecond ?? "—"}</p></div>
+                <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Total connections</p><p className="mt-1 text-xl font-bold text-slate-900">{redis?.totalConnectionsReceived == null ? "—" : Number(redis.totalConnectionsReceived).toLocaleString()}</p></div>
+                <div className="rounded-xl bg-slate-50 p-4"><p className="text-xs text-slate-500">Redis round-trip</p><p className="mt-1 text-xl font-bold text-slate-900">{redis?.latencyMs == null ? "—" : redis.latencyMs.toFixed(2) + " ms"}</p></div>
+              </div>
+              <div className="mt-4 rounded-xl bg-slate-50 p-4">
+                <p className="mb-2 text-sm font-semibold text-slate-700">Redis keyspace</p>
+                {redis?.keyspace && Object.keys(redis.keyspace).length ? (
+                  <div className="flex flex-wrap gap-2">
+                    {Object.entries(redis.keyspace).map(([dbName, value]) => (
+                      <span key={dbName} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
+                        <strong>{dbName}</strong> · {value.keys ?? "—"} keys · {value.expires ?? "—"} expiring
+                      </span>
+                    ))}
+                  </div>
+                ) : <p className="text-xs text-slate-500">No keyspace entries reported, or Redis telemetry is unavailable.</p>}
+              </div>
+              <p className="mt-3 text-xs leading-relaxed text-slate-500">Redis INFO statistics are server-wide for the Redis instance, not only this ERP process. Key names, values, credentials and cached payloads are never exposed here.</p>
+            </section>
+
+            <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="mb-4 flex items-center gap-2"><Zap size={18} className="text-slate-500" /><h2 className="font-semibold text-slate-900">Slowest API routes (rolling sample)</h2></div>
+              {requests.routes?.length ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[650px] text-left text-sm">
+                    <thead><tr className="border-b border-slate-200 text-xs text-slate-500"><th className="py-2 pr-4">Route</th><th className="py-2 pr-4">Requests</th><th className="py-2 pr-4">Average</th><th className="py-2 pr-4">P95</th><th className="py-2">Max</th></tr></thead>
+                    <tbody>{requests.routes.map((route) => (
+                      <tr key={route.route} className="border-b border-slate-100 last:border-0">
+                        <td className="max-w-[360px] truncate py-3 pr-4 font-mono text-xs text-slate-700">{route.route}</td>
+                        <td className="py-3 pr-4 tabular-nums">{route.count.toLocaleString()}</td>
+                        <td className="py-3 pr-4 tabular-nums">{route.averageDurationMs.toFixed(1)} ms</td>
+                        <td className="py-3 pr-4 tabular-nums font-semibold">{route.p95DurationMs.toFixed(1)} ms</td>
+                        <td className="py-3 tabular-nums">{route.maxDurationMs.toFixed(1)} ms</td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              ) : <p className="text-sm text-slate-500">Waiting for completed API requests to build route latency samples.</p>}
+              <p className="mt-3 text-xs text-slate-500">P95 uses the latest 200 successful responses per route, held in process memory. Restarting the backend resets these counters; this is not long-term analytics.</p>
             </section>
 
             <InteractiveChart history={history} />

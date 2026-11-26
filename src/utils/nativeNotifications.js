@@ -31,6 +31,9 @@ export async function showNativeNotification({ title, body }) {
         sendNotification({
             title: String(title || "SM Sourcing"),
             body: String(body || ""),
+            // Tauri's Windows notification plugin accepts a .wav file path.
+            // Use the standard Windows 10/11 notification sound.
+            sound: "C:\\Windows\\Media\\Windows Notify System Generic.wav",
         });
     } catch (error) {
         console.warn("[Native notification] Could not display notification:", error);

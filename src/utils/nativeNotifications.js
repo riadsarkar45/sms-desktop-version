@@ -1,0 +1,40 @@
+import { isTauri } from "@tauri-apps/api/core";
+import {
+    isPermissionGranted,
+    requestPermission,
+    sendNotification,
+} from "@tauri-apps/plugin-notification";
+
+let permissionPromise;
+
+/**
+ * Show a native OS notification in the Tauri desktop app.
+ * Web builds intentionally keep using their existing in-app notifications.
+ */
+export async function showNativeNotification({ title, body }) {
+    if (!isTauri()) return;
+
+    try {
+        if (!permissionPromise) {
+            permissionPromise = (async () => {
+                const alreadyGranted = await isPermissionGranted();
+                if (alreadyGranted) return true;
+
+                const permission = await requestPermission();
+                return permission === "granted";
+            })();
+        }
+
+        const granted = await permissionPromise;
+        if (!granted) return;
+
+        sendNotification({
+            title: String(title || "SM Sourcing"),
+            body: String(body || ""),
+        });
+    } catch (error) {
+        console.warn("[Native notification] Could not display notification:", error);
+        // Allow a later event to retry if the plugin was temporarily unavailable.
+        permissionPromise = undefined;
+    }
+}

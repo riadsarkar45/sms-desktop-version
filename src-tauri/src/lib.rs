@@ -6,7 +6,7 @@ use tauri::{
 
 #[tauri::command]
 fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
+    format!("Hello, {}! You've been greeted from the Rust side!", name)
 }
 
 fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
@@ -23,7 +23,18 @@ pub fn run() {
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .setup(|app| {
+            // Register SM Sourcing to launch automatically when the user signs in.
+            #[cfg(desktop)]
+            {
+                use tauri_plugin_autostart::ManagerExt;
+                app.autolaunch().enable()?;
+            }
+
             let open_item =
                 MenuItem::with_id(app, "open", "Open SM Sourcing", true, None::<&str>)?;
             let separator = PredefinedMenuItem::separator(app)?;

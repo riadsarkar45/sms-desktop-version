@@ -821,6 +821,7 @@ export default function Sidebar() {
       label: "System Monitor",
       icon: Gauge,
       path: "/dashboard/system-monitor",
+      permission: sections.newSoftwareUpdates?.systemMonitoringAndVerification === true,
     },
     {
       id: "yarn",

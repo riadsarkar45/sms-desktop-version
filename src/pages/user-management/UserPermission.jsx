@@ -42,6 +42,7 @@ const PERMISSION_SECTIONS = [
         title: "New Software Updates",
         items: [
             yes('getNewUpdates', "Get Updates"),
+            yes('systemMonitoringAndVerification', "System Monitoring"),
         ],
     },
     {

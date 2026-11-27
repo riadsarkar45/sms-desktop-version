@@ -6,6 +6,21 @@ import useAxiosPublic from "../hooks/AxiosPublic";
 
 export const AuthContext = createContext(null);
 
+const normalizeSessionUser = (user) => {
+  if (!user || typeof user !== "object") return null;
+
+  // Login currently returns permissions as "role", while /auth/me
+  // returns the same permissionSections array as "userRole".
+  const userRole = user.userRole ?? user.role ?? [];
+
+  return {
+    ...user,
+    name: user.name ?? user.userName ?? "",
+    userName: user.userName ?? user.name ?? "",
+    userRole: Array.isArray(userRole) ? userRole : [],
+  };
+};
+
 export const AuthProvider = ({ children }) => {
   const axiosPublic = useAxiosPublic();
   const [isLoggedOut, setIsLoggedOut] = useState(false);
@@ -37,7 +52,7 @@ export const AuthProvider = ({ children }) => {
           },
         });
 
-        setUser(meResponse.data);
+        setUser(normalizeSessionUser(meResponse.data));
       } catch (error) {
         setAccessToken(null);
         setUser(null);
@@ -64,9 +79,8 @@ export const AuthProvider = ({ children }) => {
       if (!data?.accessToken) {
         throw new Error("Login response did not contain an access token.");
       }
-      console.log(data.accessToken);
       setAccessToken(data.accessToken);
-      setUser(data.user);
+      setUser(normalizeSessionUser(data.user));
 
       return data;
     } catch (error) {

@@ -48,6 +48,7 @@ import {
 
 import UseUserRoles from "../hooks/all-users/UseUserRoles";
 import { useAuth } from "../auth/AuthContext";
+import { useSocket } from "../hooks/socketProvider/SocketContext";
 import Logo from "../assets/image.png";
 import { Spool } from "lucide";
 
@@ -279,7 +280,54 @@ export default function Sidebar() {
   const navigate = useNavigate();
   const outlet = useOutlet();
 
-  const { user, logout, isLoggedOut } = useAuth();
+  const { user, accessToken, logout, isLoggedOut } = useAuth();
+  const socket = useSocket();
+  const activitySessionId = useRef(
+    globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`,
+  );
+  const lastInteractionAt = useRef(Date.now());
+
+  // Report one heartbeat for the active application tab. The backend derives
+  // identity from the access token; no user ID or business data is sent.
+  useEffect(() => {
+    const userId = user?.id ?? user?._id ?? user?.userId;
+    if (!userId || !accessToken) return undefined;
+
+    const sendHeartbeat = () => {
+      if (!socket.connected) return;
+      socket.emit("monitoring:user-activity:heartbeat", {
+        token: accessToken,
+        sessionId: activitySessionId.current,
+        path: location.pathname,
+        pageTitle: PAGE_TITLES[location.pathname] || location.pathname.split("/").filter(Boolean).pop() || "Dashboard",
+        isVisible: document.visibilityState === "visible",
+        lastInteractionAt: lastInteractionAt.current,
+      });
+    };
+
+    const markInteraction = () => {
+      lastInteractionAt.current = Date.now();
+    };
+    const onVisibilityChange = () => sendHeartbeat();
+
+    socket.on("connect", sendHeartbeat);
+    document.addEventListener("pointerdown", markInteraction, { passive: true });
+    document.addEventListener("keydown", markInteraction);
+    document.addEventListener("wheel", markInteraction, { passive: true });
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    if (socket.connected) sendHeartbeat();
+    const heartbeatTimer = window.setInterval(sendHeartbeat, 20_000);
+
+    return () => {
+      window.clearInterval(heartbeatTimer);
+      socket.off("connect", sendHeartbeat);
+      document.removeEventListener("pointerdown", markInteraction);
+      document.removeEventListener("keydown", markInteraction);
+      document.removeEventListener("wheel", markInteraction);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [accessToken, location.pathname, socket, user?.id, user?._id, user?.userId]);
   const { sections = {} } = UseUserRoles() || {};
 
   console.log(sections, "lists of user permission");

@@ -586,7 +586,7 @@ const Deliveries = ({ deliveries, deliveryIssue, challanIssue, orderType, change
     // Grey Received is a cross-work-order batch operation: select the matching
     // composition/color rows together so they become one visible aggregate row.
     if (selectedType === "Grey Received") {
-      const matchingRows = baseRows.filter((item) =>
+      const matchingRows = visibleRows.filter((item) =>
         norm(item.composition) === norm(row.composition) &&
         norm(item.color) === norm(row.color) &&
         norm(item.factoryName) === norm(row.factoryName)

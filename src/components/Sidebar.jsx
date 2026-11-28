@@ -282,52 +282,8 @@ export default function Sidebar() {
 
   const { user, accessToken, logout, isLoggedOut } = useAuth();
   const socket = useSocket();
-  const activitySessionId = useRef(
-    globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`,
-  );
-  const lastInteractionAt = useRef(Date.now());
+  const activitySessionIds = useRef(new Map());
 
-  // Report one heartbeat for the active application tab. The backend derives
-  // identity from the access token; no user ID or business data is sent.
-  useEffect(() => {
-    const userId = user?.id ?? user?._id ?? user?.userId;
-    if (!userId || !accessToken) return undefined;
-
-    const sendHeartbeat = () => {
-      if (!socket.connected) return;
-      socket.emit("monitoring:user-activity:heartbeat", {
-        token: accessToken,
-        sessionId: activitySessionId.current,
-        path: location.pathname,
-        pageTitle: PAGE_TITLES[location.pathname] || location.pathname.split("/").filter(Boolean).pop() || "Dashboard",
-        isVisible: document.visibilityState === "visible",
-        lastInteractionAt: lastInteractionAt.current,
-      });
-    };
-
-    const markInteraction = () => {
-      lastInteractionAt.current = Date.now();
-    };
-    const onVisibilityChange = () => sendHeartbeat();
-
-    socket.on("connect", sendHeartbeat);
-    document.addEventListener("pointerdown", markInteraction, { passive: true });
-    document.addEventListener("keydown", markInteraction);
-    document.addEventListener("wheel", markInteraction, { passive: true });
-    document.addEventListener("visibilitychange", onVisibilityChange);
-
-    if (socket.connected) sendHeartbeat();
-    const heartbeatTimer = window.setInterval(sendHeartbeat, 20_000);
-
-    return () => {
-      window.clearInterval(heartbeatTimer);
-      socket.off("connect", sendHeartbeat);
-      document.removeEventListener("pointerdown", markInteraction);
-      document.removeEventListener("keydown", markInteraction);
-      document.removeEventListener("wheel", markInteraction);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-  }, [accessToken, location.pathname, socket, user?.id, user?._id, user?.userId]);
   const { sections = {} } = UseUserRoles() || {};
 
   console.log(sections, "lists of user permission");
@@ -386,6 +342,60 @@ export default function Sidebar() {
 
   const currentKey = location.pathname;
   const currentFullPath = location.pathname + location.search;
+
+  // Track every page tab retained by the Sidebar tab cache.
+  const trackedTabs = tabs.some((tab) => tab.key === currentKey)
+    ? tabs
+    : [...tabs, { key: currentKey, path: currentFullPath }];
+
+  const getActivitySessionId = (tabKey) => {
+    let sessionId = activitySessionIds.current.get(tabKey);
+    if (!sessionId) {
+      sessionId = globalThis.crypto?.randomUUID?.() ||
+        `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+      activitySessionIds.current.set(tabKey, sessionId);
+    }
+    return sessionId;
+  };
+
+  useEffect(() => {
+    if (!accessToken) return undefined;
+
+    const sendHeartbeats = () => {
+      if (!socket.connected) return;
+      trackedTabs.forEach((tab) => {
+        const pathname = tab.path.split("?")[0];
+        socket.emit("monitoring:user-activity:heartbeat", {
+          token: accessToken,
+          sessionId: getActivitySessionId(tab.key),
+          path: pathname,
+          pageTitle: getPageTitle(pathname),
+        });
+      });
+    };
+
+    socket.on("connect", sendHeartbeats);
+    if (socket.connected) sendHeartbeats();
+    const heartbeatTimer = window.setInterval(sendHeartbeats, 20_000);
+
+    return () => {
+      window.clearInterval(heartbeatTimer);
+      socket.off("connect", sendHeartbeats);
+    };
+  }, [accessToken, currentFullPath, currentKey, socket, tabs]);
+
+  // Explicitly remove this user's tracked sessions on logout/app unmount.
+  useEffect(() => {
+    if (!accessToken) return undefined;
+    return () => {
+      if (!socket.connected) return;
+      socket.emit("monitoring:user-activity:logout", {
+        token: accessToken,
+        sessionIds: Array.from(activitySessionIds.current.values()),
+      });
+    };
+  }, [accessToken, socket]);
+
 
   // Always store the latest element for the active tab.
   if (outlet) {
@@ -453,6 +463,15 @@ export default function Sidebar() {
 
     const index = tabs.findIndex((tab) => tab.key === tabKey);
     if (index === -1) return;
+
+    const closingSessionId = activitySessionIds.current.get(tabKey);
+    if (closingSessionId && accessToken && socket.connected) {
+      socket.emit("monitoring:user-activity:close", {
+        token: accessToken,
+        sessionId: closingSessionId,
+      });
+    }
+    activitySessionIds.current.delete(tabKey);
 
     const remaining = tabs.filter((tab) => tab.key !== tabKey);
 

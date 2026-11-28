@@ -3,10 +3,76 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Manager, WindowEvent,
 };
+use std::{fs, path::Path, process::Command};
 
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from the Rust side!", name)
+}
+
+fn downloads_directory(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    app.path()
+        .download_dir()
+        .map_err(|error| format!("Unable to locate Downloads folder: {error}"))
+}
+
+#[tauri::command]
+fn save_export(
+    app: tauri::AppHandle,
+    file_name: String,
+    bytes: Vec<u8>,
+) -> Result<String, String> {
+    let safe_name = Path::new(&file_name)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "Invalid export filename".to_string())?;
+
+    let directory = downloads_directory(&app)?;
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("Unable to create Downloads folder: {error}"))?;
+
+    let file_path = directory.join(safe_name);
+    fs::write(&file_path, bytes)
+        .map_err(|error| format!("Unable to save export: {error}"))?;
+
+    file_path
+        .to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| "Export path contains invalid characters".to_string())
+}
+
+#[tauri::command]
+fn open_downloads_folder(app: tauri::AppHandle) -> Result<(), String> {
+    let directory = downloads_directory(&app)?;
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("Unable to create Downloads folder: {error}"))?;
+
+    Command::new("explorer.exe")
+        .arg(&directory)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("Unable to open Downloads folder: {error}"))
+}
+
+#[tauri::command]
+fn open_exported_file(app: tauri::AppHandle, file_name: String) -> Result<(), String> {
+    let safe_name = Path::new(&file_name)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "Invalid export filename".to_string())?;
+
+    let file_path = downloads_directory(&app)?.join(safe_name);
+    if !file_path.is_file() {
+        return Err(format!("Export file does not exist: {}", file_path.display()));
+    }
+
+    Command::new("explorer.exe")
+        .arg(&file_path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("Unable to open exported file: {error}"))
 }
 
 fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
@@ -88,7 +154,12 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            save_export,
+            open_downloads_folder,
+            open_exported_file
+        ])
         .run(tauri::generate_context!())
         .expect("error while running SM Sourcing");
 }

@@ -458,7 +458,7 @@ const Deliveries = ({ deliveries, deliveryIssue, challanIssue, orderType, change
     if (!groups[key]) groups[key] = [];
     groups[key].push(row);
     return groups;
-  }, {}));
+  }, {})).filter((members) => new Set(members.map((item) => item.workOrderId)).size > 1);
 
   const greyAggregateRows = greyReceivedGroups.map((members) => {
     const first = members[0];
@@ -476,7 +476,7 @@ const Deliveries = ({ deliveries, deliveryIssue, challanIssue, orderType, change
     };
   });
 
-  const greyReceivedIds = new Set(greyReceivedRows.map((row) => row.yarnId));
+  const greyReceivedIds = new Set(greyAggregateRows.flatMap((row) => row.members.map((member) => member.yarnId)));
   const ordinaryGroups = Object.values(visibleRows
     .filter((row) => !greyReceivedIds.has(row.yarnId))
     .reduce((groups, row) => {

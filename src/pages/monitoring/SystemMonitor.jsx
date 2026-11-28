@@ -13,6 +13,7 @@ import {
   Zap,
 } from "lucide-react";
 import { useSocket } from "../../hooks/socketProvider/SocketContext";
+import UserActivityPanel from "./UserActivityPanel";
 
 const HISTORY_LIMIT = 1000
 
@@ -496,6 +497,7 @@ export default function SystemMonitor() {
               <p className="mt-3 text-xs text-slate-500">P95 uses the latest 200 successful responses per route, held in process memory. Restarting the backend resets these counters; this is not long-term analytics.</p>
             </section>
 
+            <UserActivityPanel />
             <InteractiveChart history={history} range={historyRange} onRangeChange={setHistoryRange} />
             <p className="text-xs text-slate-500">{historyStorage.loading ? "Loading saved monitoring history from Redis…" : historyStorage.available ? `Redis history available · ${historyStorage.sampleCount.toLocaleString()} stored samples in the selected ${historyRange}-hour window` : `Historical storage unavailable: ${historyStorage.message}. Live metrics are still updating.`}</p>
             <p className="text-right text-xs text-slate-400">Last update: {new Date(snapshot.timestamp).toLocaleTimeString()}</p>

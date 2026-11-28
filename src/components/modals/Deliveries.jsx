@@ -811,9 +811,10 @@ const Deliveries = ({ deliveries, deliveryIssue, challanIssue, orderType, change
     }
     if (totalRemaining <= 0) return { error: "No outstanding quantity remains for this composition." };
 
+    const eligibleCapacities = capacities.filter((item) => item.remaining > 0);
     let allocated = 0;
-    const allocations = capacities.map((item, index) => {
-      const allocationQty = index === capacities.length - 1
+    const allocations = eligibleCapacities.map((item, index) => {
+      const allocationQty = index === eligibleCapacities.length - 1
         ? Number((qty - allocated).toFixed(2))
         : Number((qty * item.remaining / totalRemaining).toFixed(2));
       allocated += allocationQty;
@@ -855,7 +856,7 @@ const Deliveries = ({ deliveries, deliveryIssue, challanIssue, orderType, change
     const selectedDisplayRows = groupList.flatMap((group) =>
       group.rows.filter((row) => openYarnIds.has(row.yarnId))
     );
-    const rowsToSubmit = selectedDisplayRows.filter((row) => row.isGreyReceivedAggregate || !row.members);
+    const rowsToSubmit = selectedDisplayRows.filter((row) => row.isGreyReceivedAggregate || !row.members || row.members.length === 1);
 
     const errors = [];
     const payloadsByYarnId = {};

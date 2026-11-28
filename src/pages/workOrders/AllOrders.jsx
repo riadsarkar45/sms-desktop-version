@@ -850,8 +850,10 @@ const AllOrders = ({ orderType }) => {
         // one UI action. The backend validates and creates all allocations atomically.
         if (mainPayload.greyReceivedBatch === true) {
             const workOrderIds = [...new Set((mainPayload.allocations || []).map((item) => Number(item.workOrderId)))];
+            let batchSaved = false;
             try {
                 const response = await axiosPrivate.post("/api/grey-received-batch", mainPayload);
+                batchSaved = true;
                 (mainPayload.allocations || []).forEach((allocation) => {
                     const revisedWo = findWorkOrder(allocation.yarnId, allocation.workOrderId);
                     if (revisedWo) markRevised(revisedWo);
@@ -888,7 +890,9 @@ const AllOrders = ({ orderType }) => {
             } catch (error) {
                 const errorPayload = error.response?.data;
                 setDeliveryIssue([{
-                    message: errorPayload?.message || error.message || "Grey Received batch failed. No allocations were confirmed.",
+                    message: batchSaved
+                        ? "Grey Received was saved successfully, but the screen could not refresh. Reopen the delivery modal to verify the saved quantities."
+                        : (errorPayload?.message || error.message || "Grey Received batch failed. No allocations were confirmed."),
                     type: "error",
                 }]);
             } finally {

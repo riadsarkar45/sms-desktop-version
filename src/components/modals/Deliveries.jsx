@@ -972,7 +972,9 @@ const Deliveries = ({ deliveries, deliveryIssue, challanIssue, orderType, change
 
                     <div className="flex items-center gap-3 flex-wrap">
                       <span
-                        onClick={() => handleShowDeliveryInputs(row.yarnId)}
+                        onClick={() => row.members
+                          ? row.members.forEach((member) => handleShowDeliveryInputs(member.yarnId))
+                          : handleShowDeliveryInputs(row.yarnId)}
                         className="inline-flex items-center text-[10px] font-semibold px-2.5 py-1 rounded-full bg-violet-50 border border-violet-200 text-violet-800 cursor-pointer"
                       >
                         {row.composition} {row.members ? `(${row.members.length} Work Orders)` : `ID: ${row.yarnId}`}
@@ -1050,7 +1052,9 @@ const Deliveries = ({ deliveries, deliveryIssue, challanIssue, orderType, change
                           deliveryTypes={deliveryTypes}
                           handleEditOnChange={handleEditOnChange}
                           handleTypeChange={handleTypeChange}
-                          handleRemove={handleRemove}
+                          handleRemove={row.members
+                            ? (_id, _yarnId) => row.members.forEach((member) => handleRemove(member.id, member.yarnId))
+                            : handleRemove}
                         />
                       </>
                     )}

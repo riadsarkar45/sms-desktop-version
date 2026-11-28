@@ -13,6 +13,7 @@ import {
   Zap,
 } from "lucide-react";
 import { useSocket } from "../../hooks/socketProvider/SocketContext";
+import { useAuth } from "../../auth/AuthContext";
 import UserActivityPanel from "./UserActivityPanel";
 
 const HISTORY_LIMIT = 1000
@@ -293,6 +294,7 @@ function InteractiveChart({ history, range, onRangeChange }) {
 
 export default function SystemMonitor() {
   const socket = useSocket();
+  const { accessToken } = useAuth();
   const [snapshot, setSnapshot] = useState(null);
   const [connected, setConnected] = useState(Boolean(socket.connected));
   const [history, setHistory] = useState([]);
@@ -326,8 +328,15 @@ export default function SystemMonitor() {
     };
     const subscribe = () => {
       setConnected(true);
-      socket.emit("monitoring:subscribe");
-      requestHistory(historyRange);
+      if (!accessToken) return;
+      socket.emit("monitoring:subscribe", { token: accessToken }, (result) => {
+        if (!result?.success) {
+          console.error("[SystemMonitor] Live metrics subscription failed:", result?.message || "Unknown error");
+          setConnected(false);
+          return;
+        }
+        requestHistory(historyRange);
+      });
     };
     const onDisconnect = () => {
       setConnected(false);
@@ -357,7 +366,7 @@ export default function SystemMonitor() {
       socket.off("disconnect", onDisconnect);
       socket.off("system:metrics", onMetrics);
     };
-  }, [socket, historyRange]);
+  }, [socket, historyRange, accessToken]);
 
   const server = snapshot?.server;
   const db = snapshot?.database;

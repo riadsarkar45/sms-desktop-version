@@ -846,6 +846,57 @@ const AllOrders = ({ orderType }) => {
         // Knitting / Dyeing / AOP never need it and never send it.
         const isYarnDye = orderType === "yarnDyeingOrder";
 
+        // Grey Received aggregates multiple matching Work Order compositions into
+        // one UI action. The backend validates and creates all allocations atomically.
+        if (mainPayload.greyReceivedBatch === true) {
+            const workOrderIds = [...new Set((mainPayload.allocations || []).map((item) => Number(item.workOrderId)))];
+            try {
+                const response = await axiosPrivate.post("/api/grey-received-batch", mainPayload);
+                (mainPayload.allocations || []).forEach((allocation) => {
+                    const revisedWo = findWorkOrder(allocation.yarnId, allocation.workOrderId);
+                    if (revisedWo) markRevised(revisedWo);
+                });
+
+                setChallanIssue([{
+                    message: response.data?.message || "Grey Received batch saved successfully.",
+                    type: "success",
+                }]);
+                setChangedField((prev) => {
+                    const next = { ...prev };
+                    delete next[yarnId];
+                    return next;
+                });
+
+                await Promise.all([
+                    fetchData(`/api/work-order/${orderType}`, {
+                        params: { page, limit, filters: filtersParam }
+                    }).then((res) => {
+                        if (res) {
+                            setOrders(res.data ?? []);
+                            if (res.pagination) setPagination(res.pagination);
+                            setIsEditing(false);
+                        }
+                    }),
+                    Promise.all(workOrderIds.map((id) =>
+                        fetchData(`/api/deliveries/${orderType}`, {
+                            params: { workOrderIds: id }
+                        })
+                    )).then((results) => {
+                        setDeliveries(results.flatMap((result) => Array.isArray(result) ? result : []));
+                    }),
+                ]);
+            } catch (error) {
+                const errorPayload = error.response?.data;
+                setDeliveryIssue([{
+                    message: errorPayload?.message || error.message || "Grey Received batch failed. No allocations were confirmed.",
+                    type: "error",
+                }]);
+            } finally {
+                setIsLoading(false);
+            }
+            return;
+        }
+
         const isFinishReceived = (p) =>
             Array.isArray(p?.deliveries) &&
             p.deliveries.some((d) => d.deliveryType === "Finish Received");

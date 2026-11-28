@@ -449,7 +449,55 @@ const Deliveries = ({ deliveries, deliveryIssue, challanIssue, orderType, change
     groups[key].rows.push(row);
     return groups;
   }, {});
-  const groupList = Object.values(groupedRows);
+  const greyReceivedRows = visibleRows.filter(
+    (row) => changedField?.[row.yarnId]?.deliveryType === "Grey Received"
+  );
+  const greyReceivedGroups = Object.values(greyReceivedRows.reduce((groups, row) => {
+    // Keep allocations together only when composition, color and receiving factory match.
+    const key = [norm(row.composition), norm(row.color), norm(row.factoryName)].join("::");
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(row);
+    return groups;
+  }, {}));
+
+  const greyAggregateRows = greyReceivedGroups.map((members) => {
+    const first = members[0];
+    const totalQty = members.reduce((sum, item) => sum + Number(item.workOrderQty || 0), 0);
+    const remainingQty = members.reduce((sum, item) =>
+      sum + Math.max(0, computeDeliveryTotals(item.deliveries, item.workOrderQty).remaining), 0);
+    return {
+      ...first,
+      id: `grey-received-${members.map((item) => item.yarnId).join("-")}`,
+      yarnId: first.yarnId,
+      workOrderQty: totalQty,
+      remainingQty,
+      members,
+      isGreyReceivedAggregate: members.length > 1,
+    };
+  });
+
+  const greyReceivedIds = new Set(greyReceivedRows.map((row) => row.yarnId));
+  const ordinaryGroups = Object.values(visibleRows
+    .filter((row) => !greyReceivedIds.has(row.yarnId))
+    .reduce((groups, row) => {
+      const key = row.workOrderId;
+      if (!groups[key]) {
+        groups[key] = { workOrderId: row.workOrderId, factoryName: row.factoryName, jobNo: row.jobNo, rows: [] };
+      }
+      groups[key].rows.push(row);
+      return groups;
+    }, {}));
+
+  const groupList = [
+    ...ordinaryGroups,
+    ...greyAggregateRows.map((row) => ({
+      workOrderId: row.id,
+      factoryName: row.factoryName,
+      jobNo: row.jobNo,
+      rows: [row],
+      isGreyReceivedGroup: true,
+    })),
+  ];
 
   const clearLinkedForRow = (yarnId) => {
     setCompositionDetails((prev) => {
@@ -534,6 +582,32 @@ const Deliveries = ({ deliveries, deliveryIssue, challanIssue, orderType, change
         : selectedDeliveryTypes.filter((id) => id !== row.yarnId);
 
     setDeliveryTypes(next);
+
+    // Grey Received is a cross-work-order batch operation: select the matching
+    // composition/color rows together so they become one visible aggregate row.
+    if (selectedType === "Grey Received") {
+      const matchingRows = baseRows.filter((item) =>
+        norm(item.composition) === norm(row.composition) &&
+        norm(item.color) === norm(row.color) &&
+        norm(item.factoryName) === norm(row.factoryName)
+      );
+      matchingRows.forEach((item) => {
+        if (item.yarnId !== row.yarnId) {
+          handleEditOnChange(item.yarnId, {
+            target: { name: "deliveryType", value: "Grey Received", type: "text" },
+          });
+        }
+      });
+      setOpenYarnIds((prev) => new Set([...prev, ...matchingRows.map((item) => item.yarnId)]));
+    } else if (row.members?.length) {
+      row.members.forEach((item) => {
+        if (item.yarnId !== row.yarnId) {
+          handleEditOnChange(item.yarnId, {
+            target: { name: "deliveryType", value: selectedType, type: "text" },
+          });
+        }
+      });
+    }
 
     if (selectedType === GREY_FABRIC_RECEIVED) {
       const jobNo = row.jobNo || groupedRows[row.workOrderId]?.jobNo;
@@ -721,17 +795,75 @@ const Deliveries = ({ deliveries, deliveryIssue, challanIssue, orderType, change
     return { payload: fullPayload };
   };
 
-  // Validate every selected row first, collect every error.
-  // If anything is invalid, submit NOTHING. Otherwise one handleSubmit per row
-  // (the parent also sends the row's linked Grey Delivery, if any).
+  const buildGreyReceivedBatchPayload = (row) => {
+    const members = row.members || [row];
+    const representative = changedField?.[row.yarnId] || {};
+    const qty = Number(representative.deliveryQty);
+    if (!Number.isFinite(qty) || qty <= 0) return { error: "Enter a valid total Grey Received quantity." };
+
+    const capacities = members.map((member) => ({
+      member,
+      remaining: Math.max(0, computeDeliveryTotals(member.deliveries, member.workOrderQty).remaining),
+    }));
+    const totalRemaining = capacities.reduce((sum, item) => sum + item.remaining, 0);
+    if (qty - totalRemaining > 0.01) {
+      return { error: `Grey Received quantity (${formatKg(qty)}) exceeds the combined outstanding quantity (${formatKg(totalRemaining)}).` };
+    }
+    if (totalRemaining <= 0) return { error: "No outstanding quantity remains for this composition." };
+
+    let allocated = 0;
+    const allocations = capacities.map((item, index) => {
+      const allocationQty = index === capacities.length - 1
+        ? Number((qty - allocated).toFixed(2))
+        : Number((qty * item.remaining / totalRemaining).toFixed(2));
+      allocated += allocationQty;
+      return {
+        yarnId: item.member.yarnId,
+        workOrderId: item.member.workOrderId,
+        qty: allocationQty,
+        lotNo: item.member.lotNo || "",
+        piId: item.member.piId || "",
+      };
+    }).filter((item) => item.qty > 0);
+
+    const date = representative.date || new Date().toISOString().split("T")[0];
+    const challanNo = representative.challanNo;
+    const fromFactory = representative.fromFactory ?? row.factoryName ?? "";
+    const toFactory = representative.toFactory ?? "";
+    if (!challanNo || !fromFactory || !toFactory) {
+      return { error: "Enter Challan No, From Factory and To Factory before submitting Grey Received." };
+    }
+
+    return {
+      payload: {
+        greyReceivedBatch: true,
+        deliveryType: "Grey Received",
+        deliveryQty: qty,
+        date,
+        challanNo,
+        fromFactory,
+        toFactory,
+        allocations,
+        workOrderIds: [...new Set(allocations.map((item) => item.workOrderId))],
+      },
+    };
+  };
+
+  // Validate every selected row first, collect every error. Grey Received
+  // aggregates submit once; all other delivery types keep their original flow.
   const handleGlobalSubmit = async () => {
-    const rowsToSubmit = visibleRows.filter((r) => openYarnIds.has(r.yarnId));
+    const selectedDisplayRows = groupList.flatMap((group) =>
+      group.rows.filter((row) => openYarnIds.has(row.yarnId))
+    );
+    const rowsToSubmit = selectedDisplayRows.filter((row) => row.isGreyReceivedAggregate || !row.members);
 
     const errors = [];
     const payloadsByYarnId = {};
 
     for (const row of rowsToSubmit) {
-      const result = buildRowPayload(row);
+      const result = row.isGreyReceivedAggregate
+        ? buildGreyReceivedBatchPayload(row)
+        : buildRowPayload(row);
       if (result.error) {
         errors.push(result.error);
       } else {
@@ -745,7 +877,12 @@ const Deliveries = ({ deliveries, deliveryIssue, challanIssue, orderType, change
     }
 
     for (const row of rowsToSubmit) {
-      await handleSubmit(row.yarnId, row.workOrderId, payloadsByYarnId[row.yarnId]);
+      const payload = payloadsByYarnId[row.yarnId];
+      await handleSubmit(
+        row.yarnId,
+        row.isGreyReceivedAggregate ? payload.workOrderIds : row.workOrderId,
+        payload
+      );
     }
   };
 
@@ -811,11 +948,17 @@ const Deliveries = ({ deliveries, deliveryIssue, challanIssue, orderType, change
               )}
 
               {group.rows.map((row) => {
-                const aggregated = aggregateDeliveries(row.deliveries);
-                const { remaining: remainingDelivery } = computeDeliveryTotals(
-                  row.deliveries,
-                  row.workOrderQty
-                );
+                const aggregated = row.members
+                  ? row.members.reduce((all, member) => {
+                      Object.entries(aggregateDeliveries(member.deliveries)).forEach(([type, qty]) => {
+                        all[type] = (all[type] || 0) + qty;
+                      });
+                      return all;
+                    }, {})
+                  : aggregateDeliveries(row.deliveries);
+                const remainingDelivery = row.members
+                  ? row.remainingQty
+                  : computeDeliveryTotals(row.deliveries, row.workOrderQty).remaining;
 
                 const isOpen = openYarnIds.has(row.yarnId);
                 const rowChangedField = changedField?.[row.yarnId] || {};
@@ -831,7 +974,7 @@ const Deliveries = ({ deliveries, deliveryIssue, challanIssue, orderType, change
                         onClick={() => handleShowDeliveryInputs(row.yarnId)}
                         className="inline-flex items-center text-[10px] font-semibold px-2.5 py-1 rounded-full bg-violet-50 border border-violet-200 text-violet-800 cursor-pointer"
                       >
-                        {row.composition} ID: {row.yarnId}
+                        {row.composition} {row.members ? `(${row.members.length} Work Orders)` : `ID: ${row.yarnId}`}
                       </span>
                       <span
                         className="inline-flex items-center text-[10px] font-semibold px-2.5 py-1 rounded-full bg-violet-50 border border-violet-200 text-violet-800 cursor-pointer"
@@ -889,13 +1032,13 @@ const Deliveries = ({ deliveries, deliveryIssue, challanIssue, orderType, change
                     {isOpen && (
                       <>
                         {/* Only THIS row's linked composition; click its factory to select */}
-                        <LinkedCompositionStrip
+                        {!row.isGreyReceivedAggregate && <LinkedCompositionStrip
                           details={details}
                           selectedId={selectedItem?.id}
                           knittingFactory={getKnittingFactory(row)}
                           pendingQty={rowChangedField.deliveryQty}
                           onSelect={(item) => handleSelectLinked(row, item)}
-                        />
+                        />}
 
                         <DeliveryRowInputs
                           row={row}
